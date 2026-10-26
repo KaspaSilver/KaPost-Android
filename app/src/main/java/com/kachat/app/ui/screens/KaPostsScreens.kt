@@ -1006,54 +1006,39 @@ private fun KaPostsFeedScreen(
                     )
                     BalanceTopBarLabel(modifier = Modifier.align(Alignment.Center))
                 }
-                Text(
-                    text = "KaPosts",
-                    color = colors.textPrimary,
-                    fontSize = LargeTitleSize,
-                    fontWeight = FontWeight.Bold,
-                    // as MainPageHeader's title: 24 below the bar's glass, the icon row close under
-                    modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 0.dp),
-                )
-                // Profile / Notifications / Bookmarks / Muted / Blocked, as the icons themselves
-                // rather than behind a hamburger. Their own row above the feed tabs, left-aligned
-                // where the hamburger used to be: five icons and three tabs do not fit one row on
-                // a phone, and the point of the change is that every destination is one tap,
-                // which a cramped row would undo.
-                //
-                // iOS sideMenuIconRow: SideMenuItem's order (profile, search, bell, drafts,
-                // bookmarks, muted, blocked, scheduled, settings), outline symbols in the primary
-                // colour, each in a 42pt frame, 2pt apart, the row inset 6pt. Nine of them come to
-                // 406pt, a few points more than the iPhone's 402, so iOS lets the row (and the feed
-                // under it) spill ~2pt past each edge; the first icon lands ~4pt in, which the
-                // 4dp start here reproduces on a phone wide enough to hold the row as written.
+                // The hamburger before the title, which is fixed chrome above the feed so a
+                // pull-to-refresh moves nothing but the feed (iOS KaPosts feedMenuButton).
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    KaPostsMenuIcon(Icons.Outlined.AccountCircle, "Profile") {
-                        showMyProfile = true; viewModel.loadMyProfile()
-                    }
-                    KaPostsMenuIcon(Icons.Outlined.Search, "Search") { showSearch = true }
-                    KaPostsMenuIcon(
-                        Icons.Outlined.Notifications,
-                        "Notifications",
-                        onClick = { showNotifications = true },
-                        badgeCount = kaPostsUnseen,
+                    KaPostsFeedMenuButton(
+                        unseenNotifications = kaPostsUnseen,
+                        onSelect = { item ->
+                            when (item) {
+                                KaPostsFeedMenuItem.SEARCH -> showSearch = true
+                                KaPostsFeedMenuItem.NOTIFICATIONS -> showNotifications = true
+                                KaPostsFeedMenuItem.DRAFTS -> {
+                                    drafts = KaPostDraftStore.load(draftContext, myAddressForDrafts.orEmpty())
+                                    showDrafts = true
+                                }
+                                KaPostsFeedMenuItem.BOOKMARKS -> showBookmarks = true
+                                KaPostsFeedMenuItem.MUTED -> moderationKind = false
+                                KaPostsFeedMenuItem.BLOCKED -> moderationKind = true
+                                KaPostsFeedMenuItem.SCHEDULED -> {
+                                    viewModel.refreshScheduledPosts()
+                                    showScheduled = true
+                                }
+                            }
+                        },
                     )
-                    KaPostsMenuIcon(SquareAndPencil, "Drafts") {
-                        drafts = KaPostDraftStore.load(draftContext, myAddressForDrafts.orEmpty())
-                        showDrafts = true
-                    }
-                    KaPostsMenuIcon(Icons.Outlined.BookmarkBorder, "Bookmarks") { showBookmarks = true }
-                    KaPostsMenuIcon(Icons.Outlined.VolumeOff, "Muted") { moderationKind = false }
-                    KaPostsMenuIcon(Icons.Outlined.PanTool, "Blocked") { moderationKind = true }
-                    KaPostsMenuIcon(Icons.Outlined.Schedule, "Scheduled") {
-                        viewModel.refreshScheduledPosts()
-                        showScheduled = true
-                    }
-                    KaPostsMenuIcon(Icons.Outlined.Settings, "KaPosts Settings") { showKaPostsSettings = true }
-                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = "KaPosts",
+                        color = colors.textPrimary,
+                        fontSize = LargeTitleSize,
+                        fontWeight = FontWeight.Bold,
+                    )
                 }
                 FeedTabsRow(
                     selected = selectedFeed,
@@ -7557,49 +7542,79 @@ private fun squareAndPencil(viewport: Float): ImageVector =
     }.build()
 
 /** One KaPosts destination in the header's icon row - see the row's own comment. */
+
+/** What the feed's hamburger lists. Profile and Settings are dock tabs in KaPosts, so they are
+ *  not repeated here (iOS KaPosts `SideMenuItem.feedMenu`). */
+private enum class KaPostsFeedMenuItem(val title: String, val icon: ImageVector) {
+    SEARCH("Search", Icons.Outlined.Search),
+    NOTIFICATIONS("Notifications", Icons.Outlined.Notifications),
+    DRAFTS("Drafts", SquareAndPencil),
+    BOOKMARKS("Bookmarks", Icons.Outlined.BookmarkBorder),
+    MUTED("Muted", Icons.Outlined.VolumeOff),
+    BLOCKED("Blocked", Icons.Outlined.PanTool),
+    SCHEDULED("Scheduled", Icons.Outlined.Schedule),
+}
+
+/**
+ * The hamburger beside the KaPosts title: Search, Notifications, Drafts, Bookmarks, Muted, Blocked
+ * and Scheduled, one tap each. A red dot on it while notifications are unseen, and the count on
+ * the Notifications row, so the news is visible without opening the menu (iOS KaPosts 494751a).
+ */
 @Composable
-private fun KaPostsMenuIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    /** Unseen count for this destination, drawn as a badge. Zero draws nothing. Declared before
-     *  [onClick] so a trailing lambda still binds to the click, as every other call site here
-     *  writes it. */
-    badgeCount: Int = 0,
-    onClick: () -> Unit,
-) {
-    // iOS: a 20pt semibold symbol in a 42pt frame. A 24dp Material glyph is drawn ~20dp across
-    // (the grid keeps 2dp clear on each side), the same as the symbol measures on the iPhone.
-    IconButton(onClick = onClick, modifier = Modifier.size(42.dp)) {
-        Box {
-            Icon(
-                icon,
-                contentDescription = if (badgeCount > 0) {
-                    "$contentDescription, $badgeCount unseen"
-                } else {
-                    contentDescription
+private fun KaPostsFeedMenuButton(unseenNotifications: Int, onSelect: (KaPostsFeedMenuItem) -> Unit) {
+    val colors = LocalAppColors.current
+    val haptic = com.kachat.app.util.rememberHaptics()
+    var expanded by remember { mutableStateOf(false) }
+    val badgeText = if (unseenNotifications > 99) "99+" else unseenNotifications.toString()
+    Box {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .clickable { expanded = true }
+                .semantics {
+                    contentDescription = if (unseenNotifications > 0) "Menu, $unseenNotifications unseen notifications" else "Menu"
                 },
-                tint = LocalAppColors.current.textPrimary,
-                modifier = Modifier.size(24.dp),
-            )
-            // A count rather than a plain dot: in here you are one tap from the list, so how many
-            // are waiting is worth knowing before you decide to look.
-            if (badgeCount > 0) {
-                Text(
-                    if (badgeCount > 99) "99+" else badgeCount.toString(),
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Menu, contentDescription = null, tint = colors.textPrimary, modifier = Modifier.size(26.dp))
+            if (unseenNotifications > 0) {
+                Box(
+                    Modifier
                         .align(Alignment.TopEnd)
-                        .offset(x = 8.dp, y = (-4).dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(Color(0xFFE0245E))
-                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                        .offset(x = (-2).dp, y = 4.dp)
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFFF3B30)),
+                )
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.background(colors.surface),
+        ) {
+            KaPostsFeedMenuItem.entries.forEach { item ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (item == KaPostsFeedMenuItem.NOTIFICATIONS && unseenNotifications > 0) "${item.title} ($badgeText)" else item.title,
+                            color = colors.textPrimary,
+                            fontSize = 17.sp,
+                        )
+                    },
+                    trailingIcon = { Icon(item.icon, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(22.dp)) },
+                    onClick = {
+                        haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                        expanded = false
+                        onSelect(item)
+                    },
                 )
             }
         }
     }
 }
+
 
 
 /**

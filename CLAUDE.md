@@ -34,7 +34,7 @@ What is still KaChat-shaped underneath:
 
 | Tab | Route | Screen |
 |---|---|---|
-| Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`) |
+| Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`), the ☰ menu beside the title |
 | Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); rooms hide the dock |
 | Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile` |
 | Wallet | `wallet` | `IdentityAddressDetailScreen(title = "Wallet")` - the one address's balance, history, UTXOs, domains |
