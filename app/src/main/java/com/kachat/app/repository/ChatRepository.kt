@@ -76,7 +76,6 @@ class ChatRepository @Inject constructor(
     private val nextcloudSyncServiceLazy: dagger.Lazy<com.kachat.app.services.NextcloudSyncService>,
     // Lazy for the same reason: CallService sends its envelopes through WalletService, which
     // depends on this repository. Incoming call envelopes are handed to it from the ingest.
-    private val callServiceLazy: dagger.Lazy<com.kachat.app.services.CallService>,
     // Lazy: ContactNoteService sends through WalletService, which itself depends on this.
     private val contactNotesLazy: dagger.Lazy<com.kachat.app.services.ContactNoteService>,
     private val onboardingGate: com.kachat.app.services.OnboardingGate,
@@ -128,6 +127,8 @@ class ChatRepository @Inject constructor(
             // the exponential backoff below so a dead indexer doesn't get the full fan-out
             // retried at the fast cadence forever.
             var consecutiveIndexerFailures = 0
+            // KaPosts: no 1:1 chats to keep live, so no poll loop.
+            if (!ONE_TO_ONE_CHATS_ENABLED) return@launch
             while (true) {
                 // Pause while backgrounded with healthy push; resume instantly (suspend on the
                 // combined flow, no polling) on foreground or push loss, then sync immediately
@@ -1388,6 +1389,8 @@ class ChatRepository @Inject constructor(
     }
 
     suspend fun syncMessages(fromPollLoop: Boolean = false) {
+        // KaPosts has no 1:1 chats: they live in KaChat (iOS KaPosts `oneToOneChatsEnabled`).
+        if (!ONE_TO_ONE_CHATS_ENABLED) return
         // Every other caller (pull-to-refresh, the sync worker, push handling) is held too - the
         // wizard is exclusive. The post-wizard initial sync releases the gate before running.
         if (onboardingGate.isHeld) return
@@ -2202,13 +2205,8 @@ class ChatRepository @Inject constructor(
             )
         )
 
-        // Call events (invite / answer / hang-up) ring through the chat itself. They DO stay as
-        // bubbles - the chat shows "Voice call · 4:12" the way a phone's history would - so this
-        // only hands the envelope to CallService and carries on.
+        // Call events stay as bubbles ("Voice call · 4:12"); calls themselves are KaChat's.
         val callEnvelope = if (contact.id != myAddress) com.kachat.app.util.CallCodec.parseOrNull(plaintext) else null
-        callEnvelope?.let { envelope ->
-            callServiceLazy.get().handleIncoming(envelope, contact.id, message.blockTime, isOutgoing = false)
-        }
         // A call from someone calls are off for (or never turned on) is ignored silently: no
         // "Incoming call" banner either (MESSAGING.md "Consent before ringing", iOS 88aa3c1).
         val unwantedCall = callEnvelope != null && com.kachat.app.util.CallCodec.isOpeningCall(callEnvelope) &&
@@ -3309,6 +3307,13 @@ class ChatRepository @Inject constructor(
     }
 
     companion object {
+        /**
+         * Off in KaPosts: 1:1 chats live in KaChat, so their sync never runs here - no handshakes,
+         * inbox, contextual messages or chat payments are fetched (iOS KaPosts
+         * `ChatService.oneToOneChatsEnabled = false`). The send path stays: tips go out as
+         * payments through it, and the address's node subscription runs on its own.
+         */
+        const val ONE_TO_ONE_CHATS_ENABLED = false
         /**
          * [firstContactInboxTag]'s decision. Every address check is case-insensitive, the
          * "have they written to us" lookup included: it used to match the stored conversation

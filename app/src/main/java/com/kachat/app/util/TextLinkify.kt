@@ -15,7 +15,7 @@ object TextLinkify {
     // than left as dead text. Recognition of WHICH in-app link it is, and routing it in place
     // instead of out to a browser, is the caller's job (see KaChatLink).
     private val URL_REGEX = Regex(
-        """kachat://\S+|https?://\S+|(?:www\.)?$LABEL(?:\.$LABEL)*\.(?:$TLDS)\b(?:/\S*)?""",
+        """(?:kachat|kaposts)://\S+|https?://\S+|(?:www\.)?$LABEL(?:\.$LABEL)*\.(?:$TLDS)\b(?:/\S*)?""",
         RegexOption.IGNORE_CASE
     )
     private val TRAILING_PUNCTUATION = setOf('.', ',', '!', '?', ';', ':', '\'', '"', ')', ']', '}', '>')

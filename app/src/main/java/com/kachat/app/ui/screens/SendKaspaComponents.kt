@@ -873,7 +873,7 @@ fun SendFromSection(
         if (!isLocked) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SelectablePill(
-                    title = stringResource(R.string.chatting_address),
+                    title = "Your Address",
                     selected = source is SendSource.Chatting,
                     modifier = Modifier.weight(1f),
                 ) { if (enabled) onSourceChange(SendSource.Chatting) }
@@ -895,7 +895,7 @@ fun SendFromSection(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
                     when (source) {
-                        SendSource.Chatting -> stringResource(R.string.chatting_address)
+                        SendSource.Chatting -> "Your Address"
                         is SendSource.Spending -> source.label
                     },
                     color = colors.textPrimary,
@@ -1044,10 +1044,10 @@ fun OwnAddressPicker(
                         ) {
                             val chatting = chattingAddress
                             if (chatting != null) {
-                                OwnAddressPickerSectionHeader(stringResource(R.string.chatting_address))
+                                OwnAddressPickerSectionHeader("Your Address")
                                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(colors.surface)) {
                                     OwnAddressPickerRow(
-                                        title = stringResource(R.string.chatting_address),
+                                        title = "Your Address",
                                         address = chatting,
                                         balance = chattingBalance,
                                         used = used[chatting],

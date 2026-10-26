@@ -114,8 +114,8 @@
     <string name="kns_domains">KNS домены</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">Логотип KaChat</string>
-    <string name="kachat_can_t_show_notifications_until">KaChat не может показывать уведомления, пока вы не разрешите их для этого приложения.</string>
-    <string name="kachat_needs_to_connect_to_a">KaChat нужно подключиться к узлу. Как вы хотите подключиться?</string>
+    <string name="kachat_can_t_show_notifications_until">KaPosts не может показывать уведомления, пока вы не разрешите их для этого приложения.</string>
+    <string name="kachat_needs_to_connect_to_a">KaPosts нужно подключиться к узлу. Как вы хотите подключиться?</string>
     <string name="kaspa">Kaspa</string>
     <string name="kaspa_address_or_kns_domain">Адрес Kaspa или KNS домен</string>
     <string name="kaspa_explorer">Kaspa Explorer</string>
@@ -577,8 +577,8 @@
     <string name="welcome_fund_chatting_body">Для начала рекомендуется 50 Kaspa — этого хватит, чтобы получить имя .kachat и какое-то время общаться. 5 Kaspa хватает примерно на 2500 сообщений.</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">Testnet</string>
-    <string name="testnet_restart_to_testnet">Полностью закройте KaChat и откройте снова, чтобы завершить переход на Testnet.</string>
-    <string name="testnet_restart_to_mainnet">Полностью закройте KaChat и откройте снова, чтобы завершить возврат на Mainnet.</string>
+    <string name="testnet_restart_to_testnet">Полностью закройте KaPosts и откройте снова, чтобы завершить переход на Testnet.</string>
+    <string name="testnet_restart_to_mainnet">Полностью закройте KaPosts и откройте снова, чтобы завершить возврат на Mainnet.</string>
     <string name="kaposts_not_on_testnet">KaPosts пока недоступен в тестовой сети</string>
     <string name="kaposts_not_on_testnet_sub">Для тестовой сети нет индексатора KaPost. Выключите тестовую сеть в Настройки > Подключение, чтобы читать и публиковать в основной сети.</string>
     <string name="nextcloud_off_on_testnet">Nextcloud отключён, пока включена тестовая сеть.</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">До истечения этого имени осталось меньше %1$s. Скоро его придётся продлить.</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">Это адрес Testnet. KaChat работает в Mainnet.</string>
-    <string name="address_other_network_mainnet">Это адрес Mainnet. KaChat работает в Testnet.</string>
+    <string name="address_other_network_testnet">Это адрес Testnet. KaPosts работает в Mainnet.</string>
+    <string name="address_other_network_mainnet">Это адрес Mainnet. KaPosts работает в Testnet.</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">Одна транзакция может потратить не более %1$d UTXO, поэтому выбрать больше нельзя.</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1041,7 +1041,7 @@
     <string name="what_is_this">Что это?</string>
     <string name="what_is_a_seed_phrase">Что такое seed phrase?</string>
     <string name="seed_phrase_explainer_master_key">Seed phrase это список из 12 или 24 обычных слов, который служит главным ключом к вашему аккаунту. Из него получаются ваш кошелёк, адрес для чатов и сообщения.</string>
-    <string name="seed_phrase_explainer_anyone">Любой, у кого есть эти слова, может забрать всё из вашего аккаунта. Если вы потеряете их и потеряете это устройство, никто не сможет вернуть ваш аккаунт, даже KaChat.</string>
+    <string name="seed_phrase_explainer_anyone">Любой, у кого есть эти слова, может забрать всё из вашего аккаунта. Если вы потеряете их и потеряете это устройство, никто не сможет вернуть ваш аккаунт, даже KaPosts.</string>
     <string name="seed_phrase_explainer_paper">Запишите слова на бумаге по порядку и храните их в надёжном и укромном месте. Никогда не вводите их на сайтах, не отправляйте в чатах и не храните в скриншотах или облачных заметках.</string>
     <string name="seed_phrase_explainer_lengths">12 слов уже очень надёжны. 24 слова дают ещё больше защиты.</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

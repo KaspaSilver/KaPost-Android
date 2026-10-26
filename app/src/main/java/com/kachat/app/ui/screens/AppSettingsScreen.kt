@@ -106,15 +106,11 @@ fun AppCustomizationScreen(
 @Composable
 fun AppSecurityScreen(
     onBack: () -> Unit,
-    onNavigateToChildMode: () -> Unit,
     walletViewModel: WalletViewModel = hiltViewModel(),
 ) {
     AppSettingsPageScaffold(title = stringResource(R.string.security), onBack = onBack) {
         SettingsFormSection(title = stringResource(R.string.security)) {
-            SecuritySettingsItems(
-                walletViewModel = walletViewModel,
-                onNavigateToChildMode = onNavigateToChildMode
-            )
+            SecuritySettingsItems(walletViewModel = walletViewModel)
         }
     }
 }

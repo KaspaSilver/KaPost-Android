@@ -3,14 +3,8 @@ package com.kachat.app.services
 import android.util.Log
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import com.kachat.app.models.ContactNotificationMode
-import com.kachat.app.repository.ChatRepository
-import com.kachat.app.util.KasiaCipher
-import com.kachat.app.util.MessageProtocol
-import com.kachat.app.util.MessageReaction
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.runBlocking
-import java.util.Base64
 import javax.inject.Inject
 
 /**
@@ -19,10 +13,7 @@ import javax.inject.Inject
  * Two shapes arrive from the server (`kasia-indexer` `push.rs`):
  *  - **Public content** (broadcast / KaPosts) is sent WITH a `notification` block, so the OS shows
  *    it even when the app is dead; `onMessageReceived` also runs when the app is alive.
- *  - **Encrypted DM/group content** is sent **data-only** (no `notification` block) so this handler
- *    runs and can DECRYPT the body locally with the wallet key — mirroring iOS's Notification
- *    Service Extension. (Data-only needs the app wake-able; a force-closed app under OEM battery
- *    optimization may not fire — set the app's battery usage to Unrestricted.)
+ *  - 1:1 and group chat pushes are KaChat's; KaPosts ignores them.
  *
  * Data schema:
  *   broadcast : type, channel, title, subtitle, body, thread_id, tx_id
@@ -37,10 +28,7 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
     @Inject lateinit var notificationHelper: NotificationHelper
     @Inject lateinit var pushRegistrationManager: PushRegistrationManager
     @Inject lateinit var walletManager: WalletManager
-    @Inject lateinit var chatRepository: ChatRepository
-    @Inject lateinit var groupRepository: com.kachat.app.repository.GroupRepository
     @Inject lateinit var settingsRepository: com.kachat.app.repository.AppSettingsRepository
-    @Inject lateinit var callService: CallService
 
     override fun onNewToken(token: String) {
         // FCM rotated the token — re-register it with the indexer (signed with the wallet key).
@@ -133,132 +121,9 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
                         )
                     }
 
-                    "group_message" -> {
-                        // Group decryption is stateful (needs the local group seed + a ciphertext
-                        // fetch), so a push can't be decrypted inline the way a DM's enc_payload
-                        // can. Instead, run the normal indexer catch-up sync: it fetches the
-                        // ciphertext, decrypts it, and posts the PRECISE banner itself through
-                        // NotificationHelper ("Alice: hi", "Alice reacted 👍 to your message") —
-                        // or deliberately stays silent (e.g. a reaction to someone else's
-                        // message, a muted member). Only when the sync could not ingest the tx
-                        // at all (indexer lag, no network) does the generic fallback fire.
-                        val groupId = data["blinded_group_id"] ?: return@runBlocking
-                        val txId = data["tx_id"].orEmpty()
-                        // Bounded, as group_control is: syncGroups() is a full catch-up (every
-                        // group, backfill sends included) and FCM gives this handler about 20 s.
-                        // A sync still running at 8 s is left behind and the generic fallback
-                        // below posts in time (audit AND-008).
-                        val ingested = try {
-                            kotlinx.coroutines.withTimeoutOrNull(GROUP_SYNC_BUDGET_MS) { groupRepository.syncGroups() }
-                            txId.isNotBlank() && groupRepository.isGroupTxIngested(txId)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Push-triggered group sync failed: ${e.message}")
-                            false
-                        }
-                        if (!ingested) {
-                            // The generic fallback can't know whether the un-ingested message
-                            // mentions the user, so in a group with "Only Notify if I'm
-                            // Mentioned" on it can't be posted correctly. Resolve the per-sender
-                            // blinded id back to the local group and consult the toggle:
-                            // mentions-only means suppress. Tradeoff: a missed banner for a
-                            // non-mention is exactly what the toggle asks for, while a missed
-                            // banner for an actual mention is the cost of the ingest failure;
-                            // the message itself still lands on the next successful sync, and if
-                            // this tx ingests later the precise local path still banners the
-                            // mention (which is why the txId is deliberately NOT claimed here).
-                            // When the blinded id matches no local group the toggle can't be
-                            // consulted, so the generic banner fires as before.
-                            val resolvedGroup = try {
-                                groupRepository.findGroupByBlindedId(groupId)
-                            } catch (e: Exception) {
-                                null
-                            }
-                            // When the blinded id resolves, silent and mentions-only both
-                            // suppress. When it does NOT resolve we cannot tell which group it is,
-                            // so the only honest question is whether the answer would be the same
-                            // for all of them - if every known group is silenced or mentions-only,
-                            // no group here would have allowed this banner.
-                            val suppressed = if (resolvedGroup != null) {
-                                groupRepository.isGroupSilent(resolvedGroup.groupId) ||
-                                    groupRepository.isGroupMentionsOnly(resolvedGroup.groupId)
-                            } else {
-                                groupRepository.allGroupsSuppressUnidentifiedPushes()
-                            }
-                            if (suppressed) {
-                                Log.i(TAG, "Generic group fallback suppressed by notification settings")
-                            } else {
-                                notificationHelper.showGroup(
-                                    // Prefer the resolved real group id/name: the tap intent
-                                    // then opens the actual thread and the open-thread
-                                    // suppression keys correctly.
-                                    groupId = resolvedGroup?.groupId ?: groupId,
-                                    title = resolvedGroup?.name ?: title.ifEmpty { "Group" },
-                                    text = body.ifEmpty { "New group message" },
-                                    dedupeTxId = txId.takeIf { it.isNotBlank() },
-                                    // Unresolved: `groupId` here is the per-sender BLINDED id,
-                                    // which is not a route argument any thread can be found by.
-                                    // Send the tap to the Group Chats list instead.
-                                    targetGroupId = resolvedGroup?.groupId,
-                                )
-                            }
-                        }
-                    }
-
-                    "group_control" -> {
-                        // "You were added to a group" / group update. This push is usually the
-                        // FIRST this device hears of the group, and nothing else was ingesting
-                        // it - the notification arrived, the tap had nothing to open, and the
-                        // group only turned up on the next manual refresh. Sync here so the
-                        // group actually exists by the time the notification is posted, which
-                        // also lets the blinded id below resolve to a real thread to open.
-                        //
-                        // Bounded: a push handler has seconds, not minutes, and a notification
-                        // that never posts is worse than one whose tap lands on the group list.
-                        runCatching {
-                            kotlinx.coroutines.withTimeoutOrNull(GROUP_SYNC_BUDGET_MS) { groupRepository.syncGroups() }
-                        }
-                        val blindedId = data["blinded_group_id"]?.takeIf { it.isNotBlank() }
-                        val key = blindedId ?: data["tx_id"] ?: "group"
-                        // Neither a blinded id nor a tx id is a local group id, so a tap keyed on
-                        // one opened `group_chat/<tx id>` — a thread with no group behind it, no
-                        // title, no messages and a composer that could not send. Resolve it when
-                        // the blinded id is there; otherwise route to the Group Chats list, where
-                        // the group appears as soon as the next sync ingests its root.
-                        val resolvedGroup = blindedId?.let {
-                            try { groupRepository.findGroupByBlindedId(it) } catch (e: Exception) { null }
-                        }
-                        notificationHelper.showGroup(
-                            groupId = resolvedGroup?.groupId ?: key,
-                            title = resolvedGroup?.name ?: title.ifEmpty { "Group" },
-                            text = body.ifEmpty { "Group update" },
-                            dedupeTxId = data["tx_id"]?.takeIf { it.isNotBlank() },
-                            targetGroupId = resolvedGroup?.groupId,
-                        )
-                    }
-
-                    "contextual" -> handleDirectMessage(data)
-
-                    // Payment / handshake bodies are already meaningful ("Payment received",
-                    // "Started a conversation") — no decryption needed.
-                    "payment", "handshake" -> {
-                        val sender = data["sender"] ?: return@runBlocking
-                        // Payments land in your own chat and ring as before; a handshake is
-                        // first contact like any other (Message Requests).
-                        if (type == "handshake" && applyMessageRequestRule(sender, data)) return@runBlocking
-                        notificationHelper.show(
-                            contactId = sender,
-                            title = contactTitle(sender, sender),
-                            // A payment: "<who> - Sent you 1.5 KAS" (iOS dcb329a).
-                            text = if (type == "payment") paymentPushBody(data["amount"]) else body.ifEmpty { "New message" },
-                            dedupeTxId = data["tx_id"]?.takeIf { it.isNotBlank() },
-                            // A tip's payment push carries the tip's txid as its collapse key
-                            // (IDX-028): its banner shares a tag with the KaPosts one (IDX-030).
-                            tipTxId = data["tx_id"]?.takeIf {
-                                type == "payment" && it.isNotBlank() && message.collapseKey == it
-                            },
-                        )
-                    }
-
+                    // 1:1 messages, payments, handshakes, groups and calls live in KaChat:
+                    // KaPosts shows only its own pushes and public chat rooms (iOS KaPosts
+                    // AppDelegate).
                     else -> Log.d(TAG, "Ignoring push of unknown type: $type")
                 }
             } catch (e: Exception) {
@@ -267,122 +132,6 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
         }
     }
 
-    /**
-     * 1:1 message: decrypt `enc_payload` locally (stateless ECDH — only needs our wallet key and
-     * the ephemeral key embedded in the sealed blob) and show the real sender + text. Falls back to
-     * the server's generic text on any failure (no wallet, tag mismatch, unknown format).
-     */
-    private suspend fun handleDirectMessage(data: Map<String, String>) {
-        val sender = data["sender"] ?: return
-        // Always hand the message to the app's ingest, whatever the banner below ends up being
-        // (iOS 60c9fd0): it is stored now, in the background, instead of waiting for a sync to
-        // stumble on it - a photo, voice or long message stayed off the chat list until that
-        // chat was opened. Queued, so duplicates are ignored; blocked senders are dropped there.
-        data["tx_id"]?.takeIf { it.isNotBlank() }?.let { chatRepository.notePushedMessage(it, sender) }
-        // Media/large messages exceed FCM's 4KB cap, so the server can't attach the encrypted body
-        // (enc_payload absent) — the server's generic body is used for those. Small text messages
-        // carry enc_payload and are decrypted here for the real preview.
-        val fallback = data["body"].orEmpty().ifEmpty { "New message" }
-
-        // No enc_payload means the message was too big for FCM - which is EVERY photo and voice
-        // message, since those run to tens of kilobytes. Read it off chain so the preview below
-        // can say what it is instead of falling back to the server's generic wording.
-        // Bounded so the fallback text still posts when the REST API is slow (audit AND-008).
-        val plaintext = decryptDirectMessage(data["enc_payload"])
-            ?: data["tx_id"]?.takeIf { it.isNotBlank() }?.let { txId ->
-                runCatching {
-                    kotlinx.coroutines.withTimeoutOrNull(CHAIN_READ_BUDGET_MS) { chatRepository.decryptChainMessage(txId) }
-                }.getOrNull()
-            }
-        if (plaintext != null && MessageReaction.parseOrNull(plaintext) != null) {
-            // Reactions are never shown as their own notification (matches ChatRepository).
-            return
-        }
-        // Nor is an edit: it changes an earlier bubble in place (MESSAGING.md "Message Edits").
-        if (plaintext != null && com.kachat.app.util.BroadcastPushPreview.isEditEnvelope(plaintext)) {
-            data["tx_id"]?.takeIf { it.isNotBlank() }?.let { notificationHelper.claimWithoutNotifying(it) }
-            return
-        }
-        // Payment-pool envelopes are invisible protocol traffic - no banner at all, as on iOS's
-        // notification service extension (isSilentPoolEnvelope, 927322b): the retired addr_pool /
-        // addr_pool_request, and a payment_notice naming anything but our chatting address (an
-        // old app's payment to one of our former pool addresses, which the app drops - XP-023).
-        // A payment_notice for a payment to our chatting address (a chat payment sent From the
-        // contact's spending address) IS a payment the reader should see, so it falls through and
-        // reads "Received payment" below (dmNotificationText).
-        val silentPoolEnvelope = when (val pool = com.kachat.app.util.PaymentPoolProtocol.parse(plaintext)) {
-            null -> false
-            is com.kachat.app.util.PaymentPoolProtocol.Envelope.Notice -> {
-                val myAddress = runCatching { walletManager.getAddress() }.getOrNull()
-                myAddress.isNullOrBlank() || !pool.content.address.trim().equals(myAddress, ignoreCase = true)
-            }
-            else -> true
-        }
-        if (silentPoolEnvelope) {
-            Log.i(TAG, "Payment pool envelope push kept silent")
-            data["tx_id"]?.takeIf { it.isNotBlank() }?.let { notificationHelper.claimWithoutNotifying(it) }
-            return
-        }
-
-        // Message Requests (NO_HANDSHAKE_MESSAGING.md §4): one "New message request" per new
-        // sender, then nothing from them until accepted; nothing at all from a blocked address.
-        if (applyMessageRequestRule(sender, data)) return
-
-        // A call. The chain is how a call is carried, but a closed app cannot watch the chain -
-        // this push is what wakes it, and the phone must ring, not show a banner. Hand the
-        // envelope to the call machinery, which rings exactly as it does with the app open
-        // (once per call id, only if calls are on for this contact, only while it is fresh) and
-        // posts the full-screen call notification. The invite and the request are the two that
-        // ring; everything else about a call still reads as an ordinary line in the chat.
-        val callEnvelope = plaintext?.let { com.kachat.app.util.CallCodec.parseOrNull(it) }
-        // A call from someone this phone hasn't allowed calls from ("Allow calls" off, or never
-        // turned on): ignored silently, decided here before anything waits or rings - no ring,
-        // no "Incoming call" notification (MESSAGING.md "Consent before ringing", iOS 88aa3c1).
-        if (callEnvelope != null && com.kachat.app.util.CallCodec.isOpeningCall(callEnvelope)) {
-            val allowed = runCatching { chatRepository.getContact(sender)?.callsEnabled == true }.getOrDefault(false)
-            if (!allowed) {
-                Log.i(TAG, "Call push ${callEnvelope.callId.take(8)} from ${sender.takeLast(8)} ignored: calls are off for them")
-                data["tx_id"]?.takeIf { it.isNotBlank() }?.let { notificationHelper.claimWithoutNotifying(it) }
-                return
-            }
-        }
-        if (callEnvelope != null) {
-            val sentAtMs = pushSentAtMs(data)
-            val opening = callEnvelope is com.kachat.app.util.CallEnvelope.Invite ||
-                callEnvelope is com.kachat.app.util.CallEnvelope.Request
-            if (!opening) {
-                callService.handleIncoming(callEnvelope, contactAddress = sender, blockTimeMs = sentAtMs, isOutgoing = false)
-            } else if (callService.receivePushedCall(callEnvelope, contactAddress = sender, sentAtMs = sentAtMs)) {
-                // It is ringing: the call screen is the notification.
-                data["tx_id"]?.takeIf { it.isNotBlank() }?.let { notificationHelper.claimWithoutNotifying(it) }
-                return
-            }
-            // Turned away - already over, nothing to host with, or another call in progress
-            // (calls off for this contact never get here: silent, above). It used to vanish without a trace; now the ordinary
-            // notification says a call came, and the chat it opens says why it did not ring.
-        }
-
-        val text = plaintext?.let { notificationPreview(it) } ?: fallback
-        notificationHelper.show(
-            contactId = sender,
-            title = contactTitle(sender, data["title"].orEmpty().ifEmpty { sender }),
-            text = text,
-            notificationOverride = contactOverride(sender),
-            // Collapses with the in-app poll's banner when the app is foregrounded and both
-            // paths see the same message.
-            dedupeTxId = data["tx_id"]?.takeIf { it.isNotBlank() },
-        )
-    }
-
-    /**
-     * What a 1:1 push from [sender] does under Message Requests (iOS NotificationService
-     * `messageRequestDecision`). True when the push was handled here - silent, or the one "New
-     * message request" - and the caller must not post its own notification.
-     *
-     * Blocked or a pending request -> silent. A contact the app already has as an ordinary chat
-     * -> the normal notification. Anyone else -> "New message request", once; the app then looks
-     * the sender up in the inbox so the request is there when the user opens it.
-     */
     /**
      * A `.kachat` name event, written in the device's language (iOS NotificationService
      * handleNameEvent). Payload (indexer Part E): `event` (name_offer, name_sold,
@@ -429,98 +178,6 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
     private fun kasText(sompi: Long): String =
         String.format(java.util.Locale.US, "%.8f", sompi / 100_000_000.0).trimEnd('0').trimEnd('.')
 
-    private suspend fun applyMessageRequestRule(sender: String, data: Map<String, String>): Boolean {
-        val myAddress = runCatching { walletManager.getAddress() }.getOrNull() ?: return false
-        if (sender.equals(myAddress, ignoreCase = true)) return false
-        val txId = data["tx_id"]?.takeIf { it.isNotBlank() }
-        val silent = when {
-            chatRepository.isChatBlocked(sender) -> true
-            else -> {
-                val contact = runCatching { chatRepository.getContact(sender) }.getOrNull()
-                if (contact != null) {
-                    if (!chatRepository.isMessageRequest(contact, myAddress)) return false
-                    true
-                } else if (chatRepository.markRequestNotified(sender)) {
-                    notificationHelper.showMessageRequest(sender, dedupeTxId = txId)
-                    runCatching { kotlinx.coroutines.withTimeoutOrNull(8_000) { chatRepository.syncInbox() } }
-                    return true
-                } else {
-                    true
-                }
-            }
-        }
-        if (silent) txId?.let { notificationHelper.claimWithoutNotifying(it) }
-        return silent
-    }
-
-    /**
-     * When the message this push is about was sent, in milliseconds. A call only rings while it
-     * is fresh, so this decides whether a push that arrives late still rings: the server's
-     * timestamp is the honest answer, and arrival time is the fallback when it is missing or
-     * unreadable. Seconds are accepted too - the field has been written both ways.
-     */
-    private fun pushSentAtMs(data: Map<String, String>): Long {
-        val raw = data["timestamp"]?.trim()?.toLongOrNull() ?: return System.currentTimeMillis()
-        if (raw <= 0) return System.currentTimeMillis()
-        return if (raw < 100_000_000_000L) raw * 1000 else raw
-    }
-
-    /** Base64 → EncryptedMessage → ChaCha20-Poly1305 decrypt with the wallet key. Null on failure
-     * (no encrypted body attached, e.g. an oversized/media message; or a tag/key mismatch). An
-     * iPhone photo or voice note in the binary media frame opens as its media-file JSON here too
-     * (KasiaCipher.decrypt, iOS NotificationService.mediaFrameEnvelope), so its banner is "Sent a
-     * photo" / "Sent a voice message" as before. */
-    private fun decryptDirectMessage(encPayload: String?): String? {
-        if (encPayload.isNullOrEmpty()) return null
-        return try {
-            val sealed = Base64.getDecoder().decode(encPayload)
-            val encrypted = KasiaCipher.EncryptedMessage.fromBytes(sealed) ?: return null
-            MessageProtocol.decrypt(encrypted, walletManager.getPrivateKeyBytes())
-        } catch (e: Exception) {
-            Log.d(TAG, "DM decrypt failed, using fallback: ${e.message}")
-            null
-        }
-    }
-
-    /** The banner body for a decrypted 1:1 message - the same rule the in-app poller uses
-     *  (ChatRepository), so both paths word one message alike (audit AND-007). */
-    private fun notificationPreview(plaintext: String): String =
-        com.kachat.app.util.dmNotificationText(plaintext, notificationHelper.dmNotificationLabels())
-
-    private suspend fun contactTitle(senderId: String, default: String): String {
-        val contact = runCatching { chatRepository.getContact(senderId) }.getOrNull()
-        // Who they are in the app: a name you gave them (chat or Address Book), else their
-        // .kachat name, else the short address - so a push from someone with a .kachat name says
-        // it, not their address (iOS dcb329a, ContactsManager.displayName).
-        if (contact != null) {
-            return com.kachat.app.models.addressDisplayName(
-                senderId,
-                alias = contact.alias,
-                knsName = contact.knsName?.takeIf { com.kachat.app.services.KnsService.SHOWS_DOMAIN_NAMES_AS_IDENTITY },
-            )
-        }
-        return AddressBookManager.nameFor(senderId) ?: default.takeLast(12)
-    }
-
-    /**
-     * A chat payment's body under the sender's name: "Sent you 1.5 KAS", the amount without
-     * trailing zeros; with no amount on the push, "Sent you a payment" (iOS dcb329a
-     * NotificationService.handlePayment). TKAS on testnet.
-     */
-    private fun paymentPushBody(amount: String?): String {
-        val text = amount?.trim().orEmpty()
-        val sompi = text.toLongOrNull() ?: text.toDoubleOrNull()?.toLong()
-        if (sompi == null || sompi <= 0) return getString(com.kachat.app.R.string.push_sent_you_payment)
-        return com.kachat.app.util.KaspaUnit.label(
-            getString(com.kachat.app.R.string.push_sent_you_kas, com.kachat.app.util.KaspaUnit.plain(sompi))
-        )
-    }
-
-    private suspend fun contactOverride(senderId: String): ContactNotificationMode? {
-        val contact = runCatching { chatRepository.getContact(senderId) }.getOrNull()
-        return ContactNotificationMode.fromName(contact?.notificationOverride)
-    }
-
     companion object {
         // Same tag as PushRegistrationManager: `adb logcat -s KaChatPush` shows registrations,
         // token rotations, and every received push in one stream.
@@ -530,11 +187,5 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
          *  Kept in sync with MainActivity.FCM_KEYS_POST_ID, which reads the same payload when
          *  FCM drew the notification itself. */
         private val POST_ID_KEYS = listOf("post_id", "postId", "content_id")
-
-        /** How long a push may spend on a group catch-up before the generic banner posts. */
-        private const val GROUP_SYNC_BUDGET_MS = 8_000L
-
-        /** How long a payload-less DM push may spend reading its message off chain. */
-        private const val CHAIN_READ_BUDGET_MS = 5_000L
     }
 }

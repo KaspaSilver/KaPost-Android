@@ -150,7 +150,7 @@ fun BroadcastRoomInfoScreen(
             )
             Text(
                 if (isCurated) {
-                    "A curated room, always in your list. Anyone running KaChat can post to it."
+                    "A curated room, always in your list. Anyone on KaPosts or KaChat can post to it."
                 } else {
                     "A room you added. Anyone who knows the name can post to it."
                 },
@@ -183,7 +183,7 @@ fun BroadcastRoomInfoScreen(
             ActionSheetRow(
                 icon = Icons.Default.Share,
                 title = "Share this room",
-                subtitle = "Sends a link that opens it in KaChat, and a web link for anyone without it.",
+                subtitle = "Sends a link that opens it in KaPosts, and a web link for anyone without it.",
             ) {
                 // The https link only: it previews everywhere and opens the app when it is
                 // installed, which a bare kachat:// line does neither of.

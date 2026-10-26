@@ -114,8 +114,8 @@
     <string name="kns_domains">KNS डोमेन</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">KaChat लोगो</string>
-    <string name="kachat_can_t_show_notifications_until">जब तक आप इस ऐप के लिए सूचनाओं की अनुमति नहीं देते, KaChat सूचनाएं नहीं दिखा सकता।</string>
-    <string name="kachat_needs_to_connect_to_a">KaChat को एक नोड से जुड़ने की आवश्यकता है। आप कैसे कनेक्ट करना चाहेंगे?</string>
+    <string name="kachat_can_t_show_notifications_until">जब तक आप इस ऐप के लिए सूचनाओं की अनुमति नहीं देते, KaPosts सूचनाएं नहीं दिखा सकता।</string>
+    <string name="kachat_needs_to_connect_to_a">KaPosts को एक नोड से जुड़ने की आवश्यकता है। आप कैसे कनेक्ट करना चाहेंगे?</string>
     <string name="kaspa">कास्पा</string>
     <string name="kaspa_address_or_kns_domain">Kaspa पता या KNS डोमेन</string>
     <string name="kaspa_explorer">कास्पा एक्सप्लोरर</string>
@@ -577,8 +577,8 @@
     <string name="welcome_fund_chatting_body">शुरुआत के लिए 50 Kaspa की सलाह दी जाती है - इतना कि एक .kachat नाम ले सकें और कुछ समय चैट कर सकें। 5 Kaspa लगभग 2500 मैसेज के लिए काफ़ी हैं।</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">टेस्टनेट</string>
-    <string name="testnet_restart_to_testnet">टेस्टनेट पर स्विच पूरा करने के लिए KaChat को पूरी तरह बंद करके फिर खोलें।</string>
-    <string name="testnet_restart_to_mainnet">मेननेट पर वापस जाने के लिए KaChat को पूरी तरह बंद करके फिर खोलें।</string>
+    <string name="testnet_restart_to_testnet">टेस्टनेट पर स्विच पूरा करने के लिए KaPosts को पूरी तरह बंद करके फिर खोलें।</string>
+    <string name="testnet_restart_to_mainnet">मेननेट पर वापस जाने के लिए KaPosts को पूरी तरह बंद करके फिर खोलें।</string>
     <string name="kaposts_not_on_testnet">KaPosts अभी टेस्टनेट पर उपलब्ध नहीं है</string>
     <string name="kaposts_not_on_testnet_sub">टेस्टनेट के लिए कोई KaPost इंडेक्सर नहीं है। मेननेट पर पढ़ने और पोस्ट करने के लिए सेटिंग्स > कनेक्शन में टेस्टनेट बंद करें।</string>
     <string name="nextcloud_off_on_testnet">टेस्टनेट चालू रहने तक Nextcloud बंद है।</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">इस नाम की समाप्ति में %1$s से कम बचा है। आपको इसे जल्द नवीनीकृत करना होगा।</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">यह एक Testnet पता है। KaChat अभी Mainnet पर है।</string>
-    <string name="address_other_network_mainnet">यह एक Mainnet पता है। KaChat अभी Testnet पर है।</string>
+    <string name="address_other_network_testnet">यह एक Testnet पता है। KaPosts अभी Mainnet पर है।</string>
+    <string name="address_other_network_mainnet">यह एक Mainnet पता है। KaPosts अभी Testnet पर है।</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">एक लेन-देन में अधिकतम %1$d UTXO खर्च किए जा सकते हैं, इसलिए और नहीं चुने जा सकते।</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1041,7 +1041,7 @@
     <string name="what_is_this">यह क्या है?</string>
     <string name="what_is_a_seed_phrase">seed phrase क्या है?</string>
     <string name="seed_phrase_explainer_master_key">seed phrase 12 या 24 साधारण शब्दों की एक सूची है जो आपके खाते की मास्टर चाबी की तरह काम करती है। आपका वॉलेट, चैटिंग पता और संदेश सब इसी से बनते हैं।</string>
-    <string name="seed_phrase_explainer_anyone">जिसके पास ये शब्द हैं वह आपके खाते का सब कुछ ले सकता है। अगर आप इन्हें खो दें और यह डिवाइस भी खो दें, तो कोई भी आपका खाता वापस नहीं ला सकता, KaChat भी नहीं।</string>
+    <string name="seed_phrase_explainer_anyone">जिसके पास ये शब्द हैं वह आपके खाते का सब कुछ ले सकता है। अगर आप इन्हें खो दें और यह डिवाइस भी खो दें, तो कोई भी आपका खाता वापस नहीं ला सकता, KaPosts भी नहीं।</string>
     <string name="seed_phrase_explainer_paper">शब्दों को क्रम से कागज़ पर लिखें और किसी सुरक्षित, निजी जगह पर रखें। इन्हें कभी किसी वेबसाइट पर टाइप न करें, चैट में न भेजें, और स्क्रीनशॉट या क्लाउड नोट्स में न रखें।</string>
     <string name="seed_phrase_explainer_lengths">12 शब्द पहले से ही बहुत सुरक्षित हैं। 24 शब्द और भी ज़्यादा सुरक्षा देते हैं।</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

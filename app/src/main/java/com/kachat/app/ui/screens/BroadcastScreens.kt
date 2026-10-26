@@ -118,6 +118,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import com.kachat.app.R
 import com.kachat.app.models.BroadcastRetention
 import com.kachat.app.models.addressDisplayName
@@ -274,7 +275,19 @@ fun BroadcastListScreen(
                 if (address == myAddressForRows) "You"
                 else addressDisplayName(address, contactAliases[address], senderKnsNames[address])
 
+            // The joined rooms arrive a moment after the language rows are laid out, and the list
+            // would keep its place on the first language row - opening scrolled past #kaspa and
+            // #kachat-bugs. The first time there are rooms, it starts at the top.
+            val roomListState = androidx.compose.foundation.lazy.rememberLazyListState()
+            var roomsArrived by remember { mutableStateOf(false) }
+            LaunchedEffect(listed.isNotEmpty()) {
+                if (listed.isNotEmpty() && !roomsArrived) {
+                    roomsArrived = true
+                    roomListState.scrollToItem(0)
+                }
+            }
             LazyColumn(
+                state = roomListState,
                 modifier = Modifier.fillMaxSize(),
                 // Room at the bottom so the last row never sits under the floating button, nor
                 // the dock the list runs under.
@@ -830,6 +843,8 @@ fun BroadcastChannelScreen(
     // The sender whose avatar was tapped. One sheet serves every row - the parent presents it
     // for whichever sender was tapped, rather than a menu attached to each avatar in the list.
     var senderSheetTarget by remember { mutableStateOf<SenderSheetTarget?>(null) }
+    /** Send Kaspa from a member's menu: the send screen with their address filled in. */
+    var sendTarget by remember { mutableStateOf<String?>(null) }
     // Same trick as 1:1 chat's fee pill — recover the mass implied by whatever's currently being
     // composed (text vs. voice) by dividing the live fee preview back out by the rate that
     // produced it, instead of duplicating estimatedFeeSompi's own calculation here.
@@ -1319,6 +1334,21 @@ fun BroadcastChannelScreen(
                 )
             }
         } else {
+            sendTarget?.let { recipient ->
+                val myAddress by walletViewModel.address.collectAsState()
+                val myBalanceSompi by walletViewModel.balanceSompi.collectAsState()
+                IosFullSheet(onDismissed = { sendTarget = null }, swipeToDismiss = false) { close ->
+                    SpendingAddressSendFlow(
+                        fromAddress = myAddress.orEmpty(),
+                        balanceSompi = myBalanceSompi,
+                        title = "Send Kaspa",
+                        viewModel = walletViewModel,
+                        onDone = close,
+                        presentedAsSheet = true,
+                        prefillAddress = recipient,
+                    )
+                }
+            }
             senderSheetTarget?.let { target ->
                 val address = target.address
                 val sheetClipboard = LocalClipboardManager.current
@@ -1328,17 +1358,19 @@ fun BroadcastChannelScreen(
                     displayName = addressDisplayName(address, contactAliases[address], senderKnsNames[address]),
                     isOwnMessage = target.isOwnMessage,
                     onDismiss = { senderSheetTarget = null },
-                    // Broadcast senders are usually strangers: openSenderProfile creates the
-                    // contact row first, then hands back the address to navigate with.
+                    // Their KaPosts profile, on the Feed tab (iOS KaPosts `viewProfile`).
                     onViewProfile = {
-                        broadcastViewModel.openSenderProfile(address) { navController.navigate("chat_info/$it") }
+                        KaPostsDeepLink.pendingProfileAddress.value = address
+                        navController.navigate(com.kachat.app.ui.Screen.KaPosts.route) {
+                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
                     },
-                    onOpenChat = {
-                        broadcastViewModel.openSenderProfile(address) { navController.navigate("chat/$it") }
-                    },
-                    onPayInKaspa = {
-                        broadcastViewModel.openSenderProfile(address) { navController.navigate("chat/$it?paymentMode=true") }
-                    },
+                    // Chats live in KaChat.
+                    onOpenChat = null,
+                    // The send screen with their address filled in.
+                    onPayInKaspa = { sendTarget = address },
                     onCopyAddress = {
                         sheetClipboard.setText(AnnotatedString(address))
                         com.kachat.app.util.showAddressCopiedToast(sheetContext, address, haptic = false)

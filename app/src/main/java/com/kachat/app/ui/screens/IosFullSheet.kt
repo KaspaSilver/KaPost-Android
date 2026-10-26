@@ -178,15 +178,3 @@ fun IosSheetNavBar(
     }
 }
 
-/** A text button in [IosSheetNavBar]: the accent colour at 17, semibold for a confirming action. */
-@Composable
-fun IosBarTextButton(text: String, onClick: () -> Unit, bold: Boolean = false, enabled: Boolean = true) {
-    androidx.compose.material3.TextButton(onClick = onClick, enabled = enabled) {
-        androidx.compose.material3.Text(
-            text,
-            color = if (enabled) com.kachat.app.ui.theme.KaspaTeal else LocalAppColors.current.textSecondary,
-            fontSize = 17.sp,
-            fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
-        )
-    }
-}

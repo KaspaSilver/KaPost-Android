@@ -29,6 +29,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -287,6 +288,10 @@ object KaPostsDeepLink {
      *  Notifications list instead of just dropping the user on the feed with no idea what the
      *  ping was about. Mirrors iOS's `KaPostsDeepLink.pendingOpenNotifications`. */
     val pendingOpenNotifications = MutableStateFlow(false)
+
+    /** Someone's KaPosts profile to open over the feed: a kachat://profile or kaposts://profile
+     *  link, or View Profile on a public chat member (iOS KaPosts `pendingProfileAddress`). */
+    val pendingProfileAddress = MutableStateFlow<String?>(null)
 }
 
 /**
@@ -536,6 +541,13 @@ private sealed interface KaPostsProfileReturn {
 }
 
 /**
+ * What a KaPosts screen is the root of: the feed (the Feed tab) or your own profile (the Profile
+ * tab). Both share every handler and presenter, so a post tapped on your profile opens, quotes
+ * and replies exactly as it does in the feed (iOS KaPosts `KaPostsView.RootMode`).
+ */
+enum class KaPostsRootMode { FEED, MY_PROFILE }
+
+/**
  * KaPosts, or - on a network with no KaPost indexer (testnet) - a page saying so, with none of
  * the feed work started (iOS KaPostsUnavailableView, 0bda85e).
  */
@@ -544,13 +556,20 @@ fun KaPostsScreen(
     navController: NavController,
     walletViewModel: WalletViewModel = hiltViewModel(),
     handlesDeepLinks: Boolean = true,
+    rootMode: KaPostsRootMode = KaPostsRootMode.FEED,
     connectionViewModel: com.kachat.app.viewmodels.ConnectionViewModel = hiltViewModel(),
 ) {
     val kapostIndexerUrl by connectionViewModel.runningKapostIndexerUrl.collectAsState()
     when {
         kapostIndexerUrl == null -> Box(Modifier.fillMaxSize().background(LocalAppColors.current.background))
         kapostIndexerUrl.isNullOrBlank() -> KaPostsUnavailable()
-        else -> KaPostsFeedScreen(navController = navController, walletViewModel = walletViewModel, handlesDeepLinks = handlesDeepLinks)
+        else -> KaPostsFeedScreen(
+            navController = navController,
+            walletViewModel = walletViewModel,
+            // The feed, scheduled posts and the links are the Feed tab's.
+            handlesDeepLinks = handlesDeepLinks && rootMode == KaPostsRootMode.FEED,
+            rootMode = rootMode,
+        )
     }
 }
 
@@ -598,6 +617,7 @@ private fun KaPostsFeedScreen(
      * lives by default.
      */
     handlesDeepLinks: Boolean = true,
+    rootMode: KaPostsRootMode = KaPostsRootMode.FEED,
 ) {
     val colors = LocalAppColors.current
     val scope = rememberCoroutineScope()
@@ -815,7 +835,8 @@ private fun KaPostsFeedScreen(
         val returnTo = profileReturns[closingIndex] ?: return
         profileReturns = profileReturns - closingIndex
         when (returnTo) {
-            KaPostsProfileReturn.Mine -> {
+            // On the Profile tab your profile never closed: it is the page under the thread.
+            KaPostsProfileReturn.Mine -> if (rootMode == KaPostsRootMode.FEED) {
                 showMyProfile = true
                 viewModel.loadMyProfile()
             }
@@ -873,6 +894,12 @@ private fun KaPostsFeedScreen(
     }
 
     LaunchedEffect(Unit) {
+        // The Profile tab loads its own posts; the feed and the scheduled posts are the Feed tab's.
+        if (rootMode == KaPostsRootMode.MY_PROFILE) {
+            viewModel.loadMyProfile()
+            viewModel.refreshTranslationLanguages()
+            return@LaunchedEffect
+        }
         // Coming back to the tab keeps the feed and the place in it: page one is pulled only when
         // nothing is loaded or it has gone stale, otherwise just newer posts are looked for
         // (iOS c18fb77).
@@ -900,6 +927,17 @@ private fun KaPostsFeedScreen(
         }
     }
 
+    // Someone's profile from outside the feed - a profile link, or View Profile on a public chat
+    // member - opens over the feed (iOS KaPosts `.openKaPostsProfile`).
+    val pendingProfileAddress by KaPostsDeepLink.pendingProfileAddress.collectAsState()
+    LaunchedEffect(pendingProfileAddress, handlesDeepLinks) {
+        if (!handlesDeepLinks) return@LaunchedEffect
+        val address = pendingProfileAddress ?: return@LaunchedEffect
+        KaPostsDeepLink.pendingProfileAddress.value = null
+        threadStack = emptyList()
+        viewModel.openPosterProfile(address, null)
+    }
+
     // The repost icon's plain tap only reaches here for a post with no txid yet (on-chain posts
     // open the Repost/Quote sheet instead): that just flips the flag locally, as on iOS.
     val repostHandler: (KaPostDraft) -> Unit = { post -> viewModel.scheduleRepost(post) }
@@ -911,7 +949,8 @@ private fun KaPostsFeedScreen(
         // inside the Hub the shell lays it out above the dock and the inset is 0. The status bar
         // stays the Scaffold's to clear: the feed's header has no padding of its own for it.
         contentWindowInsets = WindowInsets.statusBars,
-        floatingActionButton = {
+        floatingActionButton = fab@{
+            if (rootMode != KaPostsRootMode.FEED) return@fab
             // iOS createPostButton: a 56pt circle in the material fill with an outlined
             // square.and.pencil in accent (22pt semibold, so drawn a size up from the icon row's),
             // not a filled accent button - the chat list's create-chat button shape.
@@ -929,7 +968,27 @@ private fun KaPostsFeedScreen(
         },
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            if (rootMode == KaPostsRootMode.MY_PROFILE) {
+                // The Profile tab: your own profile at the root, under the dot and the balance.
+                Column(modifier = Modifier.fillMaxSize()) {
+                    KaPostsOverlayStatusBar()
+                    KaPostsProfilePage(
+                        address = viewModel.myAddress() ?: "",
+                        pubkey = null,
+                        isMine = true,
+                        viewModel = viewModel,
+                        navController = navController,
+                        onClose = {},
+                        onOpenThread = { openThreadFromProfile(KaPostsProfileReturn.Mine, it) },
+                        onRepostTap = { repostHandler(it) },
+                        onViewEngagement = { engagementTarget = it },
+                        onOpenQuoted = { openSharedFromProfile(KaPostsProfileReturn.Mine, it) },
+                        onOpenFollowList = { followListPubkey = null; followListKind = it },
+                        onReply = { replyComposerTarget = it },
+                        bottomInset = dockInset,
+                    )
+                }
+            } else Column(modifier = Modifier.fillMaxSize()) {
                 // Top chrome mirrors iOS's KaPostsPageView navigation bar: clickable connection
                 // dot leading + centered balance (ConnectionStatusIndicator / BalanceToolbarLabel
                 // toolbar items), then the bold left-aligned large title, then the hamburger
@@ -1705,21 +1764,6 @@ private fun ancestorsFromMemory(
 // MARK: - Side menu
 
 
-@Composable
-private fun SideMenuRow(icon: ImageVector, label: String, onClick: () -> Unit) {
-    val colors = LocalAppColors.current
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-    ) {
-        Icon(icon, contentDescription = null, tint = colors.textPrimary, modifier = Modifier.size(22.dp))
-        Spacer(modifier = Modifier.width(16.dp))
-        Text(label, color = colors.textPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
 
 /**
  * The header's clickable connection dot (same look as the chat-thread and broadcast-room
@@ -1918,7 +1962,7 @@ private fun scheduledStatusLine(entry: com.kachat.app.services.KaPostScheduledEn
     com.kachat.app.services.KaPostScheduledEntry.STATUS_CANCELLED -> "Cancelled"
     else -> {
         val whenText = formatScheduledTime(entry.notBeforeMs, is24Hour)
-        if (entry.onServer) "Goes out $whenText" else "Goes out $whenText - from this phone, so open KaChat around then"
+        if (entry.onServer) "Goes out $whenText" else "Goes out $whenText - from this phone, so open KaPosts around then"
     }
 }
 
@@ -2480,7 +2524,7 @@ fun KaPostCell(
                                 ActionSheetRow(
                                     icon = Icons.Default.Flag,
                                     title = "Report",
-                                    subtitle = "Tell KaChat about abusive or objectionable content. Opens an email with this post attached.",
+                                    subtitle = "Report abusive or objectionable content. Opens an email with this post attached.",
                                     tint = LocalAppColors.current.danger,
                                 ) {
                                     showOverflow = false
@@ -4859,10 +4903,72 @@ fun KaPostsProfileOverlay(
     onViewEngagement: (KaPostDraft) -> Unit,
     onOpenQuoted: (String) -> Unit,
     onOpenFollowList: ((Boolean) -> Unit)?,
-    /** Quick-tip dialog opener; falls back to the chat payment screen when null. */
+    /** Quick-tip dialog opener; null tips nothing (your own posts). */
     onTip: ((KaPostDraft) -> Unit)? = null,
     /** The reply bubble on a profile row opens the Reply composer (iOS). */
     onReply: ((KaPostDraft) -> Unit)? = null,
+) {
+    val colors = LocalAppColors.current
+    Dialog(
+        onDismissRequest = onClose,
+        properties = KaPostsFullScreenDialogProperties,
+    ) {
+        // Same window-sizing fix as the other overlays.
+        ForceFullScreenDialogWindow()
+        val profileSlide = rememberKaPostsCoverSlideState(onClose)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .then(profileSlide.modifier)
+                .background(colors.background)
+                .windowInsetsPadding(KaPostsOverlayInsets),
+        ) {
+            // The bar - back chevron, dot, balance - with the banner starting BELOW it (iOS).
+            CompositionLocalProvider(LocalKaPostsBack provides profileSlide.back) { KaPostsOverlayStatusBar() }
+            KaPostsProfilePage(
+                address = address,
+                pubkey = pubkey,
+                isMine = isMine,
+                viewModel = viewModel,
+                navController = navController,
+                onClose = onClose,
+                onOpenThread = onOpenThread,
+                onRepostTap = onRepostTap,
+                onViewEngagement = onViewEngagement,
+                onOpenQuoted = onOpenQuoted,
+                onOpenFollowList = onOpenFollowList,
+                onTip = onTip,
+                onReply = onReply,
+            )
+        }
+    }
+}
+
+/**
+ * A KaPosts profile page - banner, avatar, name, counts, bio, then Posts / Replies - under
+ * whatever bar its host draws: the profile overlay (back chevron, dot, balance), or the Profile
+ * tab, which is your own profile at the root of the dock (iOS KaPosts `rootMode: .myProfile`).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
+    address: String,
+    pubkey: String?,
+    isMine: Boolean,
+    viewModel: KaPostsViewModel,
+    navController: NavController,
+    onClose: () -> Unit,
+    onOpenThread: (KaPostDraft) -> Unit,
+    onRepostTap: (KaPostDraft) -> Unit,
+    onViewEngagement: (KaPostDraft) -> Unit,
+    onOpenQuoted: (String) -> Unit,
+    onOpenFollowList: ((Boolean) -> Unit)?,
+    /** Quick-tip dialog opener; null tips nothing (your own posts). */
+    onTip: ((KaPostDraft) -> Unit)? = null,
+    /** The reply bubble on a profile row opens the Reply composer (iOS). */
+    onReply: ((KaPostDraft) -> Unit)? = null,
+    /** The dock's height, when the page is the Profile tab and runs on under it. */
+    bottomInset: androidx.compose.ui.unit.Dp = 0.dp,
 ) {
     val colors = LocalAppColors.current
     // Per-address slices for THIS profile's chrome (see collectSelectedAsState): the rows
@@ -4914,291 +5020,294 @@ fun KaPostsProfileOverlay(
 
     LaunchedEffect(address) { viewModel.ensureSenderProfileFetched(address) }
 
-    Dialog(
-        onDismissRequest = onClose,
-        properties = KaPostsFullScreenDialogProperties,
+    val repliesPage = selectedTab == 1
+    val pageItems = if (repliesPage) repliesList else myPostsList
+    val pagePaging = pagingStateOf(
+        viewModel,
+        profilePubkey?.let { KaPostsViewModel.pageProfile(it, isMine, repliesPage) } ?: "profile:none",
+    )
+    EndlessScroll(listState = profileListState, key = selectedTab to profilePubkey) {
+        viewModel.loadMoreProfile(isMine, replies = repliesPage)
+    }
+    // Pull-to-refresh reloads page one of the tab being looked at (iOS .refreshable).
+    val pullRefreshState = rememberPullToRefreshState()
+    LaunchedEffect(pullRefreshState.isRefreshing) {
+        if (pullRefreshState.isRefreshing) {
+            viewModel.refreshProfileTab(isMine, replies = repliesPage)
+            pullRefreshState.endRefresh()
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds()
+            .nestedScroll(pullRefreshState.nestedScrollConnection),
     ) {
-        // Same window-sizing fix as the other overlays.
-        ForceFullScreenDialogWindow()
-        val profileSlide = rememberKaPostsCoverSlideState(onClose)
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .then(profileSlide.modifier)
-                .background(colors.background)
-                .windowInsetsPadding(KaPostsOverlayInsets),
-        ) {
-            // The bar - back chevron, dot, balance - with the banner starting BELOW it (iOS).
-            CompositionLocalProvider(LocalKaPostsBack provides profileSlide.back) { KaPostsOverlayStatusBar() }
-            val repliesPage = selectedTab == 1
-            val pageItems = if (repliesPage) repliesList else myPostsList
-            val pagePaging = pagingStateOf(
-                viewModel,
-                profilePubkey?.let { KaPostsViewModel.pageProfile(it, isMine, repliesPage) } ?: "profile:none",
-            )
-            EndlessScroll(listState = profileListState, key = selectedTab to profilePubkey) {
-                viewModel.loadMoreProfile(isMine, replies = repliesPage)
-            }
-            // Pull-to-refresh reloads page one of the tab being looked at (iOS .refreshable).
-            val pullRefreshState = rememberPullToRefreshState()
-            LaunchedEffect(pullRefreshState.isRefreshing) {
-                if (pullRefreshState.isRefreshing) {
-                    viewModel.refreshProfileTab(isMine, replies = repliesPage)
-                    pullRefreshState.endRefresh()
-                }
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clipToBounds()
-                    .nestedScroll(pullRefreshState.nestedScrollConnection),
-            ) {
-            LazyColumn(
-                state = profileListState,
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                item(key = "profile-header") {
-                    Column {
-                        val bannerUrl = profileBannerUrl
-                        if (bannerUrl != null) {
-                            // The whole banner at the full width (its own proportions, no crop);
-                            // the plain canvas only when there is no banner (iOS c66bfc7).
-                            WholeBanner(model = bannerUrl, placeholderHeight = 140.dp) {
-                                Box(Modifier.fillMaxSize().background(colors.surfaceVariant))
-                            }
-                        } else {
-                            Box(Modifier.fillMaxWidth().height(140.dp).background(colors.surfaceVariant))
-                        }
-                        // Avatar overlapping the banner, X-style, with a 3dp ring in the page
-                        // background so it reads as sitting on top of the banner. The slot is
-                        // only as tall as the part below the banner (82 - 38), so nothing under
-                        // it has to be offset back up.
-                        Box(modifier = Modifier.padding(start = 16.dp).height(44.dp)) {
-                            Box(
-                                modifier = Modifier
-                                    .offset(y = (-38).dp)
-                                    .size(82.dp)
-                                    .clip(CircleShape)
-                                    .background(colors.background),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                ContactAvatar(
-                                    imageUrl = profileAvatarUrl,
-                                    fallbackText = name,
-                                    size = 76.dp,
-                                    backupPhotoBase64 = profilePhoto?.backupPhotoBase64,
-                                    // The .kachat avatar - your own in your header too (iOS 3d6fb7c).
-                                    address = address,
-                                )
-                            }
-                        }
-                        Column(
-                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            // Name with the actions in a single row: name - Follow - Chat. Your
-                            // own profile carries the name alone (iOS).
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    name,
-                                    color = colors.textPrimary,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 20.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false),
-                                )
-                                if (!isMine) {
-                                    Spacer(Modifier.weight(1f))
-                                    if (!isOwnAddress) {
-                                        val isFollowing = address in following
-                                        Button(
-                                            onClick = {
-                                                hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-                                                viewModel.toggleFollow(address, pubkey)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (isFollowing) colors.textSecondary.copy(alpha = 0.35f) else KaspaTeal,
-                                                contentColor = if (isFollowing) colors.textPrimary else Color.Black,
-                                            ),
-                                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                            modifier = Modifier.height(30.dp),
-                                        ) {
-                                            Text(if (isFollowing) "Following" else "Follow", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                        }
-                                    }
-                                    OutlinedButton(
-                                        onClick = {
-                                            hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-                                            viewModel.ensureContactExists(address) { contactId ->
-                                                onClose()
-                                                navController.navigate("chat/$contactId")
-                                            }
-                                        },
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, KaspaTeal.copy(alpha = 0.5f)),
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = KaspaTeal),
-                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                        modifier = Modifier.height(30.dp),
-                                    ) {
-                                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(14.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text("Chat", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    }
-                                }
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                val followingCount = if (isMine) following.size else posterProfile?.followingCount ?: 0
-                                val followersCount = if (isMine) (myFollowersCount ?: 0) else posterProfile?.followersCount ?: 0
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    modifier = Modifier.clickable(enabled = onOpenFollowList != null) { onOpenFollowList?.invoke(false) },
-                                ) {
-                                    Text("$followingCount", color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                    Text("Following", color = colors.textSecondary, fontSize = 15.sp)
-                                }
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    modifier = Modifier.clickable(enabled = onOpenFollowList != null) { onOpenFollowList?.invoke(true) },
-                                ) {
-                                    Text("$followersCount", color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                    Text("Followers", color = colors.textSecondary, fontSize = 15.sp)
-                                }
-                            }
-                            profileBio?.takeIf { it.isNotBlank() }?.let { bio ->
-                                Box(Modifier.padding(top = 2.dp)) { ExpandableBioText(bio) }
-                            }
-                            if (isMine) {
-                                // Everything above this - avatar, banner, name, bio - comes from your KNS
-                                // profile, so the way to change any of it belongs here rather than only on
-                                // the Profile tab. Same destination that tab's own Edit KNS Profile uses.
-                                Row(
-                                    modifier = Modifier
-                                        .padding(top = 2.dp)
-                                        .clip(RoundedCornerShape(50))
-                                        .background(KaspaTeal.copy(alpha = 0.15f))
-                                        .clickable {
-                                            onClose()
-                                            // KaChat's own profile (iOS 09e0403); .kas profiles are
-                                            // customized per domain in Your Domains.
-                                            navController.navigate("edit_kachat_profile")
-                                        }
-                                        .padding(horizontal = 12.dp, vertical = 7.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(Icons.Default.Badge, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(stringResource(R.string.edit_kachat_profile), color = KaspaTeal, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                }
-                            }
-                        }
-                        HorizontalDivider(color = colors.surfaceVariant)
-                        // iOS profileFeedTabBar: accent bold / accent at half, full-width 2.5dp underline.
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            listOf("Posts", "Replies").forEachIndexed { index, label ->
-                                val isSelected = index == selectedTab
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable {
-                                            hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-                                            selectedTab = index
-                                        }
-                                        .padding(top = 10.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                ) {
-                                    Text(
-                                        label,
-                                        color = if (isSelected) KaspaTeal else KaspaTeal.copy(alpha = 0.5f),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(2.5.dp)
-                                            .background(if (isSelected) KaspaTeal else Color.Transparent),
-                                    )
-                                }
-                            }
-                        }
-                        HorizontalDivider(color = colors.surfaceVariant)
-                    }
-                }
-                val items = pageItems
-                if (items.isEmpty()) {
-                    item(key = "empty") {
-                        val loading = if (isMine) isLoadingMyProfile else posterProfile?.isLoading == true
-                        Column(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp, horizontal = 40.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            if (loading) {
-                                com.kachat.app.ui.theme.IosActivityIndicator(color = KaspaTeal, modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp)
-                            } else {
-                                // Your own profile says whose posts these would be; another
-                                // person's carries the title alone (iOS).
-                                Icon(
-                                    if (repliesPage) Icons.Outlined.ChatBubbleOutline else Icons.Default.Edit,
-                                    contentDescription = null,
-                                    tint = colors.textSecondary,
-                                    modifier = Modifier.size(44.dp),
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Text(
-                                    if (repliesPage) "No replies yet" else "No posts yet",
-                                    color = colors.textPrimary,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                if (isMine) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        if (repliesPage) "Replies you post will show up here." else "Your posts will show up here.",
-                                        color = colors.textSecondary,
-                                        fontSize = 13.sp,
-                                        textAlign = TextAlign.Center,
-                                    )
-                                }
-                            }
-                        }
+    LazyColumn(
+        state = profileListState,
+        modifier = Modifier.fillMaxSize(),
+        // The last row scrolls clear of the dock when the page is the Profile tab.
+        contentPadding = PaddingValues(bottom = bottomInset),
+    ) {
+        item(key = "profile-header") {
+            Column {
+                val bannerUrl = profileBannerUrl
+                if (bannerUrl != null) {
+                    // The whole banner at the full width (its own proportions, no crop);
+                    // the plain canvas only when there is no banner (iOS c66bfc7).
+                    WholeBanner(model = bannerUrl, placeholderHeight = 140.dp) {
+                        Box(Modifier.fillMaxSize().background(colors.surfaceVariant))
                     }
                 } else {
-                    items(items, key = { "profile-${it.id}" }) { post ->
-                        LaunchedEffect(post.posterAddress) {
-                            viewModel.ensureSenderProfileFetched(post.posterAddress)
-                        }
-                        KaPostCell(
-                            post = post,
-                            viewModel = viewModel,
-                            onOpenThread = { onOpenThread(post) },
-                            onRepostTap = { onRepostTap(post) },
-                            onOpenQuoted = onOpenQuoted,
-                            onViewEngagement = { onViewEngagement(post) },
-                            onReply = onReply?.let { reply -> { reply(post) } },
-                            // The fallback navigates the NAV HOST, which this profile Dialog
-                            // window covers - close the profile first or the chat screen
-                            // only becomes visible after the user closes it themselves.
-                            onTip = onTip?.let { open -> { open(post) } }
-                                ?: { onClose(); navController.navigate("chat/${post.posterAddress}?paymentMode=true") },
-                        )
-                        HorizontalDivider(
-                            color = colors.surfaceVariant,
-                            modifier = Modifier.padding(start = 68.dp),
+                    Box(Modifier.fillMaxWidth().height(140.dp).background(colors.surfaceVariant))
+                }
+                // Avatar overlapping the banner, X-style, with a 3dp ring in the page
+                // background so it reads as sitting on top of the banner. The slot is
+                // only as tall as the part below the banner (82 - 38), so nothing under
+                // it has to be offset back up.
+                Box(modifier = Modifier.padding(start = 16.dp).height(44.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .offset(y = (-38).dp)
+                            // Taller than the 44dp slot on purpose: unbounded, or size() is clamped to the slot
+                            // and the circle comes out a squashed pill.
+                            .wrapContentSize(Alignment.TopStart, unbounded = true)
+                            .size(82.dp)
+                            .clip(CircleShape)
+                            .background(colors.background),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        ContactAvatar(
+                            imageUrl = profileAvatarUrl,
+                            fallbackText = name,
+                            size = 76.dp,
+                            backupPhotoBase64 = profilePhoto?.backupPhotoBase64,
+                            // The .kachat avatar - your own in your header too (iOS 3d6fb7c).
+                            address = address,
                         )
                     }
-                    pagingFooter(pagePaging, keySuffix = "profile-$selectedTab") {
-                        viewModel.loadMoreProfile(isMine, replies = repliesPage, manual = true)
+                }
+                Column(
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    // Name with the actions in a single row: name - Follow - Chat. Your
+                    // own profile carries the name alone (iOS).
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            name,
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (!isMine) {
+                            Spacer(Modifier.weight(1f))
+                            if (!isOwnAddress) {
+                                val isFollowing = address in following
+                                Button(
+                                    onClick = {
+                                        hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                                        viewModel.toggleFollow(address, pubkey)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isFollowing) colors.textSecondary.copy(alpha = 0.35f) else KaspaTeal,
+                                        contentColor = if (isFollowing) colors.textPrimary else Color.Black,
+                                    ),
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(30.dp),
+                                ) {
+                                    Text(if (isFollowing) "Following" else "Follow", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                            }
+                            val chatContext = LocalContext.current
+                            OutlinedButton(
+                                onClick = {
+                                    hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                                    openChatInKaChat(chatContext, address)
+                                },
+                                border = androidx.compose.foundation.BorderStroke(1.dp, KaspaTeal.copy(alpha = 0.5f)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = KaspaTeal),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.height(30.dp),
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Chat in KaChat", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        val followingCount = if (isMine) following.size else posterProfile?.followingCount ?: 0
+                        val followersCount = if (isMine) (myFollowersCount ?: 0) else posterProfile?.followersCount ?: 0
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.clickable(enabled = onOpenFollowList != null) { onOpenFollowList?.invoke(false) },
+                        ) {
+                            Text("$followingCount", color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text("Following", color = colors.textSecondary, fontSize = 15.sp)
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.clickable(enabled = onOpenFollowList != null) { onOpenFollowList?.invoke(true) },
+                        ) {
+                            Text("$followersCount", color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text("Followers", color = colors.textSecondary, fontSize = 15.sp)
+                        }
+                    }
+                    profileBio?.takeIf { it.isNotBlank() }?.let { bio ->
+                        Box(Modifier.padding(top = 2.dp)) { ExpandableBioText(bio) }
+                    }
+                    if (isMine) {
+                        // Everything above this - avatar, banner, name, bio - comes from your KNS
+                        // profile, so the way to change any of it belongs here rather than only on
+                        // the Profile tab. Same destination that tab's own Edit KNS Profile uses.
+                        Row(
+                            modifier = Modifier
+                                .padding(top = 2.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(KaspaTeal.copy(alpha = 0.15f))
+                                .clickable {
+                                    onClose()
+                                    // KaChat's own profile (iOS 09e0403); .kas profiles are
+                                    // customized per domain in Your Domains.
+                                    navController.navigate("edit_kachat_profile")
+                                }
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Badge, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Edit Profile", color = KaspaTeal, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+                HorizontalDivider(color = colors.surfaceVariant)
+                // iOS profileFeedTabBar: accent bold / accent at half, full-width 2.5dp underline.
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    listOf("Posts", "Replies").forEachIndexed { index, label ->
+                        val isSelected = index == selectedTab
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                                    selectedTab = index
+                                }
+                                .padding(top = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(
+                                label,
+                                color = if (isSelected) KaspaTeal else KaspaTeal.copy(alpha = 0.5f),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(2.5.dp)
+                                    .background(if (isSelected) KaspaTeal else Color.Transparent),
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = colors.surfaceVariant)
+            }
+        }
+        val items = pageItems
+        if (items.isEmpty()) {
+            item(key = "empty") {
+                val loading = if (isMine) isLoadingMyProfile else posterProfile?.isLoading == true
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp, horizontal = 40.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (loading) {
+                        com.kachat.app.ui.theme.IosActivityIndicator(color = KaspaTeal, modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                    } else {
+                        // Your own profile says whose posts these would be; another
+                        // person's carries the title alone (iOS).
+                        Icon(
+                            if (repliesPage) Icons.Outlined.ChatBubbleOutline else Icons.Default.Edit,
+                            contentDescription = null,
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(44.dp),
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            if (repliesPage) "No replies yet" else "No posts yet",
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        if (isMine) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                if (repliesPage) "Replies you post will show up here." else "Your posts will show up here.",
+                                color = colors.textSecondary,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
                     }
                 }
             }
-            if (pullRefreshState.verticalOffset > 0f || pullRefreshState.isRefreshing) {
-                PullToRefreshContainer(
-                    state = pullRefreshState,
-                    modifier = Modifier.align(Alignment.TopCenter),
+        } else {
+            items(items, key = { "profile-${it.id}" }) { post ->
+                LaunchedEffect(post.posterAddress) {
+                    viewModel.ensureSenderProfileFetched(post.posterAddress)
+                }
+                KaPostCell(
+                    post = post,
+                    viewModel = viewModel,
+                    onOpenThread = { onOpenThread(post) },
+                    onRepostTap = { onRepostTap(post) },
+                    onOpenQuoted = onOpenQuoted,
+                    onViewEngagement = { onViewEngagement(post) },
+                    onReply = onReply?.let { reply -> { reply(post) } },
+                    // The fallback navigates the NAV HOST, which this profile Dialog
+                    // window covers - close the profile first or the chat screen
+                    // only becomes visible after the user closes it themselves.
+                    // Tips go through the tip sheet; with none (your own posts) there is nothing to tip.
+                    onTip = onTip?.let { open -> { open(post) } } ?: {},
+                )
+                HorizontalDivider(
+                    color = colors.surfaceVariant,
+                    modifier = Modifier.padding(start = 68.dp),
                 )
             }
+            pagingFooter(pagePaging, keySuffix = "profile-$selectedTab") {
+                viewModel.loadMoreProfile(isMine, replies = repliesPage, manual = true)
             }
         }
+    }
+    if (pullRefreshState.verticalOffset > 0f || pullRefreshState.isRefreshing) {
+        PullToRefreshContainer(
+            state = pullRefreshState,
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
+    }
+    }
+}
+
+/**
+ * Chats live in KaChat: this poster's profile there (their User Info, with Open Chat on it), or
+ * their kachat.app page - with the download buttons - when KaChat isn't installed. Mirrors iOS
+ * KaPosts `openInKaChat`.
+ */
+internal fun openChatInKaChat(context: android.content.Context, address: String) {
+    val normalized = address.lowercase()
+    fun open(uri: String): Boolean = runCatching {
+        context.startActivity(
+            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri))
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }.isSuccess
+    if (!open(KaChatLink.profileUrl(normalized))) {
+        open(KaChatLink.profileWebUrl(normalized))
     }
 }
 
@@ -7346,12 +7455,6 @@ fun relativePostTime(timestampMs: Long): String {
     }
 }
 
-/** 1234 -> "1.2K" etc., X-style compact counters. */
-fun formatEngagementCount(count: Int): String = when {
-    count >= 1_000_000 -> "%.1fM".format(count / 1_000_000f).removeSuffix(".0M").let { if (it.endsWith("M")) it else it + "M" }
-    count >= 1_000 -> "%.1fK".format(count / 1_000f).removeSuffix(".0K").let { if (it.endsWith("K")) it else it + "K" }
-    else -> count.toString()
-}
 
 /**
  * The floating "Show N new posts" pill, X-style.

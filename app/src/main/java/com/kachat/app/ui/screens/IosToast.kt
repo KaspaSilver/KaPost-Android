@@ -121,17 +121,6 @@ object IosToasts {
     }
 }
 
-/**
- * A toast bound to a piece of state, as iOS's `.toast(message:)` modifier is bound to an optional
- * string: up while [message] is non-null, down when it turns null or this leaves the screen.
- */
-@Composable
-fun IosToastWhile(message: String?, style: IosToastStyle = IosToastStyle.Success) {
-    DisposableEffect(message, style) {
-        val id = message?.let { IosToasts.state.show(it, style, IosToastDuration.UNTIL_DISMISSED) }
-        onDispose { id?.let { IosToasts.state.dismiss(it) } }
-    }
-}
 
 /**
  * Where [IosToasts] draws: iOS's `ToastPresenter`, the capsule at the bottom of the screen (or

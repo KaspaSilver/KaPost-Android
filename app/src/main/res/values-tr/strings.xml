@@ -114,8 +114,8 @@
     <string name="kns_domains">KNS Alan Adları</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">KaChat Logosu</string>
-    <string name="kachat_can_t_show_notifications_until">Bu uygulama icin izin vermedikce KaChat bildirim gosteremez.</string>
-    <string name="kachat_needs_to_connect_to_a">KaChat\'in bir duguma baglanmasi gerekiyor. Nasil baglanmak istersiniz?</string>
+    <string name="kachat_can_t_show_notifications_until">Bu uygulama icin izin vermedikce KaPosts bildirim gosteremez.</string>
+    <string name="kachat_needs_to_connect_to_a">KaPosts\'in bir duguma baglanmasi gerekiyor. Nasil baglanmak istersiniz?</string>
     <string name="kaspa">Kaspa</string>
     <string name="kaspa_address_or_kns_domain">Kaspa Adresi veya KNS Alan Adı</string>
     <string name="kaspa_explorer">Kaspa Kesif Motoru</string>
@@ -577,8 +577,8 @@
     <string name="welcome_fund_chatting_body">Başlamak için 50 Kaspa önerilir - bir .kachat adı almaya ve bir süre sohbet etmeye yeter. 5 Kaspa yaklaşık 2500 mesaja yeter.</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">Testnet</string>
-    <string name="testnet_restart_to_testnet">Testnet\'e geçişi tamamlamak için KaChat\'i tamamen kapatıp yeniden aç.</string>
-    <string name="testnet_restart_to_mainnet">Mainnet\'e dönüşü tamamlamak için KaChat\'i tamamen kapatıp yeniden aç.</string>
+    <string name="testnet_restart_to_testnet">Testnet\'e geçişi tamamlamak için KaPosts\'i tamamen kapatıp yeniden aç.</string>
+    <string name="testnet_restart_to_mainnet">Mainnet\'e dönüşü tamamlamak için KaPosts\'i tamamen kapatıp yeniden aç.</string>
     <string name="kaposts_not_on_testnet">KaPosts henüz Testnet\'te kullanılamıyor</string>
     <string name="kaposts_not_on_testnet_sub">Testnet için bir KaPost dizinleyicisi yok. Mainnet\'te okumak ve paylaşmak için Ayarlar > Bağlantı bölümünden Testnet\'i kapatın.</string>
     <string name="nextcloud_off_on_testnet">Testnet açıkken Nextcloud kapalıdır.</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">Bu adın süresinin dolmasına %1$s süreden az kaldı. Yakında yenilemeniz gerekir.</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">Bu bir Testnet adresi. KaChat Mainnet\'te.</string>
-    <string name="address_other_network_mainnet">Bu bir Mainnet adresi. KaChat Testnet\'te.</string>
+    <string name="address_other_network_testnet">Bu bir Testnet adresi. KaPosts Mainnet\'te.</string>
+    <string name="address_other_network_mainnet">Bu bir Mainnet adresi. KaPosts Testnet\'te.</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">Bir işlem en fazla %1$d UTXO harcayabilir, bu yüzden daha fazlası seçilemez.</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1041,7 +1041,7 @@
     <string name="what_is_this">Bu nedir?</string>
     <string name="what_is_a_seed_phrase">Seed phrase nedir?</string>
     <string name="seed_phrase_explainer_master_key">Seed phrase, hesabınızın ana anahtarı olarak çalışan 12 ya da 24 sıradan kelimeden oluşan bir listedir. Cüzdanınız, sohbet adresiniz ve mesajlarınız hep ondan gelir.</string>
-    <string name="seed_phrase_explainer_anyone">Bu kelimelere sahip olan herkes hesabınızdaki her şeyi alabilir. Onları kaybeder ve bu cihazı da kaybederseniz, hesabınızı kimse geri getiremez, KaChat bile.</string>
+    <string name="seed_phrase_explainer_anyone">Bu kelimelere sahip olan herkes hesabınızdaki her şeyi alabilir. Onları kaybeder ve bu cihazı da kaybederseniz, hesabınızı kimse geri getiremez, KaPosts bile.</string>
     <string name="seed_phrase_explainer_paper">Kelimeleri sırasıyla kağıda yazın ve güvenli, özel bir yerde saklayın. Onları asla bir web sitesine yazmayın, sohbette göndermeyin ve ekran görüntüsünde ya da bulut notlarında tutmayın.</string>
     <string name="seed_phrase_explainer_lengths">12 kelime zaten çok güvenlidir. 24 kelime daha da fazla koruma ekler.</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

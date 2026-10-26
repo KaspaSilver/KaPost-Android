@@ -114,8 +114,8 @@
     <string name="kns_domains">نطاقات KNS</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">شعار KaChat</string>
-    <string name="kachat_can_t_show_notifications_until">لا يمكن لـ KaChat عرض الإشعارات حتى تسمح بها لهذا التطبيق.</string>
-    <string name="kachat_needs_to_connect_to_a">يحتاج KaChat إلى الاتصال بعقدة. كيف تريد الاتصال؟</string>
+    <string name="kachat_can_t_show_notifications_until">لا يمكن لـ KaPosts عرض الإشعارات حتى تسمح بها لهذا التطبيق.</string>
+    <string name="kachat_needs_to_connect_to_a">يحتاج KaPosts إلى الاتصال بعقدة. كيف تريد الاتصال؟</string>
     <string name="kaspa">كاسبا</string>
     <string name="kaspa_address_or_kns_domain">عنوان Kaspa أو نطاق KNS</string>
     <string name="kaspa_explorer">مستكشف كاسبا</string>
@@ -577,8 +577,8 @@
     <string name="welcome_fund_chatting_body">يُنصح بـ 50 Kaspa للبدء - ما يكفي للحصول على اسم ‎.kachat والدردشة لفترة. تكفي 5 Kaspa لنحو 2500 رسالة.</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">الشبكة التجريبية</string>
-    <string name="testnet_restart_to_testnet">أغلق KaChat تمامًا ثم افتحه مجددًا لإتمام التبديل إلى الشبكة التجريبية.</string>
-    <string name="testnet_restart_to_mainnet">أغلق KaChat تمامًا ثم افتحه مجددًا لإتمام العودة إلى الشبكة الرئيسية.</string>
+    <string name="testnet_restart_to_testnet">أغلق KaPosts تمامًا ثم افتحه مجددًا لإتمام التبديل إلى الشبكة التجريبية.</string>
+    <string name="testnet_restart_to_mainnet">أغلق KaPosts تمامًا ثم افتحه مجددًا لإتمام العودة إلى الشبكة الرئيسية.</string>
     <string name="kaposts_not_on_testnet">منشورات KaPosts غير متاحة على الشبكة التجريبية بعد</string>
     <string name="kaposts_not_on_testnet_sub">لا يوجد مفهرس KaPost للشبكة التجريبية. أوقف الشبكة التجريبية من الإعدادات > الاتصال للقراءة والنشر على الشبكة الرئيسية.</string>
     <string name="nextcloud_off_on_testnet">Nextcloud متوقف أثناء تشغيل الشبكة التجريبية.</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">يتبقى أقل من %1$s قبل انتهاء صلاحية هذا الاسم. ستحتاج إلى تجديده قريبًا.</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">هذا عنوان على Testnet. يعمل KaChat على Mainnet.</string>
-    <string name="address_other_network_mainnet">هذا عنوان على Mainnet. يعمل KaChat على Testnet.</string>
+    <string name="address_other_network_testnet">هذا عنوان على Testnet. يعمل KaPosts على Mainnet.</string>
+    <string name="address_other_network_mainnet">هذا عنوان على Mainnet. يعمل KaPosts على Testnet.</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">يمكن لمعاملة واحدة أن تنفق %1$d من UTXOs كحد أقصى، لذا لا يمكن تحديد المزيد.</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1041,7 +1041,7 @@
     <string name="what_is_this">ما هذا؟</string>
     <string name="what_is_a_seed_phrase">ما هي seed phrase؟</string>
     <string name="seed_phrase_explainer_master_key">seed phrase هي قائمة من 12 أو 24 كلمة عادية تعمل كمفتاح رئيسي لحسابك. محفظتك وعنوان الدردشة ورسائلك كلها تأتي منها.</string>
-    <string name="seed_phrase_explainer_anyone">أي شخص يملك هذه الكلمات يمكنه أخذ كل ما في حسابك. إذا فقدتها وفقدت هذا الجهاز، فلن يتمكن أحد من استعادة حسابك، ولا حتى KaChat.</string>
+    <string name="seed_phrase_explainer_anyone">أي شخص يملك هذه الكلمات يمكنه أخذ كل ما في حسابك. إذا فقدتها وفقدت هذا الجهاز، فلن يتمكن أحد من استعادة حسابك، ولا حتى KaPosts.</string>
     <string name="seed_phrase_explainer_paper">اكتب الكلمات على ورقة بالترتيب واحفظها في مكان آمن وخاص. لا تكتبها أبدًا في موقع ويب، ولا ترسلها في محادثة، ولا تحفظها في لقطة شاشة أو ملاحظات سحابية.</string>
     <string name="seed_phrase_explainer_lengths">12 كلمة آمنة جدًا بالفعل. 24 كلمة تضيف حماية أكبر.</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

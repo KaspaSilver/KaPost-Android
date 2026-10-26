@@ -29,16 +29,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.core.content.IntentCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.lifecycleScope
-import com.kachat.app.services.CallService
 import com.kachat.app.services.CrashRecorder
-import com.kachat.app.services.IncomingCallNotifier
-import com.kachat.app.ui.screens.CallOverlay
 import com.kachat.app.services.NotificationHelper
-import com.kachat.app.services.PendingShare
-import com.kachat.app.services.ShareIntake
 import com.kachat.app.ui.theme.KaChatTheme
 import com.kachat.app.ui.KaChatApp
 import com.kachat.app.ui.screens.BroadcastDeepLink
@@ -62,18 +56,13 @@ import javax.inject.Inject
  */
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
-    @Inject lateinit var callService: CallService
     @Inject lateinit var onboardingGate: com.kachat.app.services.OnboardingGate
 
     // The KaChat sheet that explains the battery exemption before Android's own dialog. Re-derived
     // on every resume (see refreshBatteryRationale), so it follows the notification answer.
     private var batteryRationaleDue by mutableStateOf(false)
 
-    private var pendingContactId by mutableStateOf<String?>(null)
     private var pendingChannelName by mutableStateOf<String?>(null)
-    private var pendingGroupId by mutableStateOf<String?>(null)
-    // "Open the Group Chats list" — a group notification with no resolvable local group id.
-    private var pendingOpenGroups by mutableStateOf(false)
     // "cold" / "spending" — which wallet screen an address-activity receipt tap opens.
     private var pendingWalletActivityKind by mutableStateOf<String?>(null)
     // The one own address a "Received" receipt named: its History opens in a sheet (iOS 13046ad).
@@ -156,16 +145,14 @@ class MainActivity : AppCompatActivity() {
     private fun guarded(what: String, block: () -> Unit) =
         com.kachat.app.util.StartupSafety.step("MainActivity", what, block)
 
-    /** The launching (or new) Intent's notification target, links, share and call answer. */
+    /** The launching (or new) Intent's notification target and links. */
     private fun handleLaunchIntent(intent: Intent?) {
         if (intent == null) return
         guarded("notification target") { consumeNotificationTarget(intent) }
         guarded("broadcast link") { handleBroadcastDeepLink(intent) }
         guarded("profile link") { handleProfileDeepLink(intent) }
         guarded("payment request link") { handlePaymentRequestDeepLink(intent) }
-        guarded("share") { handleShareIntent(intent) }
         guarded("clear intent payload") { clearConsumedIntentPayload(intent) }
-        guarded("call answer") { consumeCallAnswer(intent) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -188,12 +175,11 @@ class MainActivity : AppCompatActivity() {
         }
         enableEdgeToEdge()
         // Everything up to setContent is a side step - a permission prompt, a notification or
-        // link to route, the call window wiring. Each is guarded on its own: one that throws is
+        // link to route. Each is guarded on its own: one that throws is
         // logged, and the app still opens (KaChatApplication's startup rule).
         guarded("notification permission") { maybeRequestNotificationPermission() }
         guarded("battery rationale") { refreshBatteryRationale() }
         handleLaunchIntent(intent)
-        guarded("call window") { observeCallForLockScreen() }
         setContent {
             val walletViewModel: WalletViewModel = hiltViewModel()
             // Settings > Customization > Appearance: System follows the device, as on iOS.
@@ -205,14 +191,8 @@ class MainActivity : AppCompatActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     KaChatApp(
-                        pendingContactId = pendingContactId,
-                        onPendingContactHandled = { pendingContactId = null },
                         pendingChannelName = pendingChannelName,
                         onPendingChannelHandled = { pendingChannelName = null },
-                        pendingGroupId = pendingGroupId,
-                        onPendingGroupHandled = { pendingGroupId = null },
-                        pendingOpenGroups = pendingOpenGroups,
-                        onPendingOpenGroupsHandled = { pendingOpenGroups = false },
                         pendingWalletActivityKind = pendingWalletActivityKind,
                         onPendingWalletActivityHandled = { pendingWalletActivityKind = null },
                         pendingOwnAddress = pendingOwnAddress,
@@ -220,10 +200,6 @@ class MainActivity : AppCompatActivity() {
                     )
                     CrashNotice()
                     BatteryExemptionRationale(isLoggedIn = isLoggedIn)
-                    // The call screen (ringing in, ringing out, connected) sits over the whole
-                    // app, whichever screen is showing - a call is not a page of the chat it
-                    // started from.
-                    CallOverlay(callService)
                 }
             }
         }
@@ -272,7 +248,7 @@ class MainActivity : AppCompatActivity() {
         if (!show || crashFile == null) return
         com.kachat.app.ui.theme.IosAlertDialog(
             onDismissRequest = { show = false; CrashRecorder.markSeen(this) },
-            title = { Text("KaChat closed unexpectedly") },
+            title = { Text("KaPosts closed unexpectedly") },
             text = { Text("The app did not close normally the last time it ran. A report of what happened was saved. Sharing it with the developer is the quickest way to get it fixed - it contains no messages, keys or addresses.") },
             confirmButton = {
                 TextButton(onClick = {
@@ -292,7 +268,7 @@ class MainActivity : AppCompatActivity() {
             val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
             val send = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, "KaChat crash report")
+                putExtra(Intent.EXTRA_SUBJECT, "KaPosts crash report")
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
@@ -306,90 +282,6 @@ class MainActivity : AppCompatActivity() {
         handleLaunchIntent(intent)
     }
 
-    /**
-     * Answering from the ringing notification. The notification's Answer button opens the app
-     * with the call's id attached; picking up needs the microphone, which only an Activity can
-     * ask for, so the tap lands here. With the permission already granted this is a real
-     * one-tap answer; without it the call screen is on screen anyway and its Accept button asks.
-     *
-     * The id is checked so a stale tap (the call already over, or another one ringing) cannot
-     * answer the wrong call, and stripped so a configuration change does not re-answer.
-     */
-    private fun consumeCallAnswer(intent: Intent) {
-        val callId = intent.getStringExtra(IncomingCallNotifier.EXTRA_ANSWER_CALL_ID) ?: return
-        intent.removeExtra(IncomingCallNotifier.EXTRA_ANSWER_CALL_ID)
-        val call = callService.session.value ?: return
-        if (call.id != callId || call.phase != CallService.Phase.RingingIn) return
-        val needed = buildList {
-            add(Manifest.permission.RECORD_AUDIO)
-            if (call.video) add(Manifest.permission.CAMERA)
-        }.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-        if (needed.isEmpty()) callService.acceptIncoming()
-    }
-
-    /**
-     * Floats a live video call in the system's small window, over KaChat and over other apps -
-     * Android's own version of the call window a phone shows when you leave a video call. Only
-     * a call whose other side is actually sending video is worth floating; anything else keeps
-     * the green return bar instead.
-     */
-    private fun enterCallPictureInPicture(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
-        if (!callService.canFloatVideo) return false
-        return runCatching {
-            val params = android.app.PictureInPictureParams.Builder()
-                .setAspectRatio(android.util.Rational(9, 16))
-                .build()
-            enterPictureInPictureMode(params)
-        }.getOrDefault(false)
-    }
-
-    /** Leaving the app with a video call up floats it, rather than leaving it behind. */
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        if (callService.session.value != null) enterCallPictureInPicture()
-    }
-
-    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        callService.setInPictureInPicture(isInPictureInPictureMode)
-    }
-
-    /**
-     * A ringing or live call shows over the lock screen and wakes the display, the way the
-     * phone's own dialler does - and only then: the flags come straight back off when the call
-     * ends, so the rest of the app stays behind the lock screen where it belongs.
-     */
-    private fun observeCallForLockScreen() {
-        // Tucking a video call away floats it in the system's own window.
-        lifecycleScope.launch {
-            callService.isMinimized.collect { minimized ->
-                if (minimized && !callService.isInPictureInPicture.value) enterCallPictureInPicture()
-            }
-        }
-        lifecycleScope.launch {
-            callService.session.collect { call ->
-                val live = call != null && call.phase !is CallService.Phase.Ended
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                    setShowWhenLocked(live)
-                    setTurnScreenOn(live)
-                } else {
-                    @Suppress("DEPRECATION")
-                    if (live) {
-                        window.addFlags(
-                            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-                        )
-                    } else {
-                        window.clearFlags(
-                            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-                        )
-                    }
-                }
-            }
-        }
-    }
 
     /**
      * Strips the link/share payload once the handlers above have read it.
@@ -441,10 +333,7 @@ class MainActivity : AppCompatActivity() {
      * jumped the user back into whatever conversation the last tapped notification was for.
      */
     private fun consumeNotificationTarget(intent: Intent) {
-        pendingContactId = intent.getStringExtra(NotificationHelper.EXTRA_CONTACT_ID)
         pendingChannelName = intent.getStringExtra(NotificationHelper.EXTRA_CHANNEL_NAME)
-        pendingGroupId = intent.getStringExtra(NotificationHelper.EXTRA_GROUP_ID)
-        pendingOpenGroups = intent.getBooleanExtra(NotificationHelper.EXTRA_OPEN_GROUPS, false)
         pendingWalletActivityKind = intent.getStringExtra(NotificationHelper.EXTRA_WALLET_ACTIVITY_KIND)
         // One address got the Kaspa: open that address's History rather than the wallet tab -
         // the kind is then only the fallback (iOS 13046ad).
@@ -456,8 +345,7 @@ class MainActivity : AppCompatActivity() {
                 com.kachat.app.services.kachatnames.KachatNames.Codec.normalize(it.removeSuffix(".kachat"))
         }
         val ownKaPostTarget = handleKaPostDeepLink(intent)
-        if (!ownKaPostTarget && pendingContactId == null && pendingChannelName == null &&
-            pendingGroupId == null && !pendingOpenGroups && pendingWalletActivityKind == null &&
+        if (!ownKaPostTarget && pendingChannelName == null && pendingWalletActivityKind == null &&
             pendingOwnAddress == null
         ) {
             applyFcmNotificationTarget(intent)
@@ -521,17 +409,17 @@ class MainActivity : AppCompatActivity() {
                 KaPostsDeepLink.pendingOpenNotifications.value = postId == null
                 KaPostsDeepLink.pendingPostTxId.value = replyTxId ?: postId ?: ""
             }
-            "contextual", "payment", "handshake" ->
-                pendingContactId = intent.getStringExtra("sender")?.takeIf { it.isNotBlank() }
-            // Only the blinded per-sender group id travels in a group push, and resolving it to a
-            // local group needs the group secrets — not something this Activity can do. The Group
-            // Chats list is the honest destination.
-            "group_message", "group_control" -> pendingOpenGroups = true
+            // Chats live in KaChat: a 1:1 or group push that reaches KaPosts opens nothing here.
         }
         FCM_KEYS_POST_ID.forEach(intent::removeExtra)
         // Stripped once read, so a configuration change cannot route the same tap twice.
         listOf("channel", "sender", "thread_id", "tx_id", "kaposts_kind", "body").forEach(intent::removeExtra)
     }
+
+    /** kachat:// and KaPosts' own kaposts://, which carry the same targets (iOS KaPosts
+     *  KaChatInternalLink.parse). */
+    private fun isAppLinkScheme(scheme: String?): Boolean =
+        scheme.equals("kachat", ignoreCase = true) || scheme.equals("kaposts", ignoreCase = true)
 
     /**
      * Broadcast room share links: kachat://broadcast/<channel> (the share-text form) and
@@ -553,7 +441,7 @@ class MainActivity : AppCompatActivity() {
         if (intent.action != Intent.ACTION_VIEW) return
         val uri = intent.data ?: return
         val raw = when {
-            uri.scheme.equals("kachat", ignoreCase = true) &&
+            isAppLinkScheme(uri.scheme) &&
                 uri.host.equals("profile", ignoreCase = true) -> uri.lastPathSegment
             uri.scheme.equals("https", ignoreCase = true) &&
                 isKaChatWebHost(uri.host) &&
@@ -571,7 +459,7 @@ class MainActivity : AppCompatActivity() {
         if (intent.action != Intent.ACTION_VIEW) return
         val uri = intent.data ?: return
         val isPayLink = when {
-            uri.scheme.equals("kachat", ignoreCase = true) -> uri.host.equals("pay", ignoreCase = true)
+            isAppLinkScheme(uri.scheme) -> uri.host.equals("pay", ignoreCase = true)
             uri.scheme.equals("https", ignoreCase = true) || uri.scheme.equals("http", ignoreCase = true) ->
                 isKaChatWebHost(uri.host) && uri.pathSegments.firstOrNull() == "pay"
             else -> false
@@ -586,7 +474,7 @@ class MainActivity : AppCompatActivity() {
         if (intent.action != Intent.ACTION_VIEW) return
         val uri = intent.data ?: return
         val rawChannel = when {
-            uri.scheme.equals("kachat", ignoreCase = true) &&
+            isAppLinkScheme(uri.scheme) &&
                 uri.host.equals("broadcast", ignoreCase = true) -> uri.lastPathSegment
             uri.scheme.equals("https", ignoreCase = true) &&
                 isKaChatWebHost(uri.host) &&
@@ -596,88 +484,6 @@ class MainActivity : AppCompatActivity() {
         BroadcastDeepLink.request(rawChannel)
     }
 
-    /**
-     * System share sheet intake (ACTION_SEND / ACTION_SEND_MULTIPLE — text/plain and image MIME types).
-     *
-     * If the user picked a specific conversation on the share sheet (a direct-share shortcut
-     * published by ShareShortcutsManager), the shortcut id — the contact's address — arrives in
-     * [Intent.EXTRA_SHORTCUT_ID] and the share is targeted straight at that chat. Otherwise the
-     * share is untargeted: the Chats list shows a "choose a chat" banner and whichever thread is
-     * opened next consumes it (see ShareIntake).
-     *
-     * Image streams are copied into app cache immediately: the sender's content-URI read grant
-     * is tied to this delivery and can't be relied on later when the user actually hits send.
-     */
-    private fun handleShareIntent(intent: Intent) {
-        val action = intent.action
-        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
-        val type = intent.type ?: return
-        val targetContactId = intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID)
-        val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-        val imageStreams: List<android.net.Uri> = when {
-            action == Intent.ACTION_SEND && type.startsWith("image/") ->
-                listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, android.net.Uri::class.java))
-            action == Intent.ACTION_SEND_MULTIPLE ->
-                IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, android.net.Uri::class.java)
-                    ?.filterNotNull() ?: emptyList()
-            else -> emptyList()
-        }
-        if (text.isNullOrBlank() && imageStreams.isEmpty()) return
-        lifecycleScope.launch {
-            val cachedImages = withContext(Dispatchers.IO) { imageStreams.mapNotNull(::copySharedImageToCache) }
-            if (text.isNullOrBlank() && cachedImages.isEmpty()) return@launch
-            ShareIntake.pending.value = PendingShare(
-                text = text?.takeIf { it.isNotBlank() },
-                imageUris = cachedImages,
-                targetContactId = targetContactId
-            )
-        }
-    }
-
-    /** Copies a shared image stream into app cache, returning a file:// URI readable at any later point (or null on failure). */
-    private fun copySharedImageToCache(uri: android.net.Uri): android.net.Uri? {
-        // Shares arrive as content:// grants. A file:// "share" from another app could name one
-        // of KaChat's own private files, which this process can read and the sender cannot.
-        if (uri.scheme != android.content.ContentResolver.SCHEME_CONTENT) return null
-        return try {
-            val dir = File(cacheDir, "shared_images").apply { mkdirs() }
-            // Stale copies from earlier shares are tiny compared to photo caches, but don't let
-            // them accumulate forever either.
-            dir.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > 24 * 60 * 60_000L }
-                ?.forEach { it.delete() }
-            val extension = when (contentResolver.getType(uri)) {
-                "image/png" -> "png"
-                "image/webp" -> "webp"
-                "image/gif" -> "gif"
-                else -> "jpg"
-            }
-            val file = File(dir, "share_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(8)}.$extension")
-            val copied = contentResolver.openInputStream(uri)?.use { input ->
-                file.outputStream().use { output ->
-                    // Capped: a photo is shrunk to well under 1 MB before sending anyway, and an
-                    // unbounded stream could fill the cache.
-                    val buffer = ByteArray(64 * 1024)
-                    var total = 0L
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        total += read
-                        if (total > MAX_SHARED_IMAGE_BYTES) return@use false
-                        output.write(buffer, 0, read)
-                    }
-                    true
-                }
-            } ?: return null
-            if (!copied) {
-                file.delete()
-                return null
-            }
-            android.net.Uri.fromFile(file)
-        } catch (e: Exception) {
-            android.util.Log.w("MainActivity", "Failed to copy shared image", e)
-            null
-        }
-    }
 
     /**
      * KaPosts share links land here: kachat://kapost/<txid> (the share-text form) and
@@ -706,7 +512,7 @@ class MainActivity : AppCompatActivity() {
         // https/http universal link with or without www.
         val host = uri.host?.lowercase()?.removePrefix("www.")
         val txId = when {
-            uri.scheme.equals("kachat", ignoreCase = true) &&
+            isAppLinkScheme(uri.scheme) &&
                 uri.host.equals("kapost", ignoreCase = true) -> uri.lastPathSegment
             (uri.scheme.equals("https", ignoreCase = true) || uri.scheme.equals("http", ignoreCase = true)) &&
                 isKaChatWebHost(host) &&
@@ -727,6 +533,5 @@ class MainActivity : AppCompatActivity() {
         private const val FCM_KEY_TYPE = "type"
         private val FCM_KEYS_POST_ID = listOf("post_id", "postId", "content_id")
         private val TX_ID_PATTERN = Regex("^[0-9a-fA-F]{64}$")
-        private const val MAX_SHARED_IMAGE_BYTES = 50L * 1024 * 1024
     }
 }

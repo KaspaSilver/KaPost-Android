@@ -703,7 +703,8 @@ fun SenderActionsSheet(
     isOwnMessage: Boolean,
     onDismiss: () -> Unit,
     onViewProfile: () -> Unit,
-    onOpenChat: () -> Unit,
+    /** Null in KaPosts, where chats live in KaChat: no Open Chat row. */
+    onOpenChat: (() -> Unit)?,
     onPayInKaspa: () -> Unit,
     onCopyAddress: () -> Unit,
     onHide: () -> Unit,
@@ -730,18 +731,24 @@ fun SenderActionsSheet(
         ActionSheetRow(
             icon = Icons.Default.Person,
             title = stringResource(R.string.view_profile),
-            subtitle = stringResource(R.string.their_profile_kachat_name_address),
+            subtitle = if (onOpenChat == null) {
+                "Their KaPosts profile: posts, replies and followers."
+            } else {
+                stringResource(R.string.their_profile_kachat_name_address)
+            },
         ) { onDismiss(); onViewProfile() }
         if (!isOwnMessage) {
-            ActionSheetRow(
-                icon = Icons.AutoMirrored.Filled.Chat,
-                title = stringResource(R.string.open_chat),
-                subtitle = "Message them directly, one to one.",
-            ) { onDismiss(); onOpenChat() }
+            if (onOpenChat != null) {
+                ActionSheetRow(
+                    icon = Icons.AutoMirrored.Filled.Chat,
+                    title = stringResource(R.string.open_chat),
+                    subtitle = "Message them directly, one to one.",
+                ) { onDismiss(); onOpenChat() }
+            }
             ActionSheetRow(
                 icon = painterResource(R.drawable.ic_kaspa_logo),
                 title = stringResource(R.string.chats_send_kaspa),
-                subtitle = "Open your chat with them in payment mode.",
+                subtitle = if (onOpenChat == null) "Send Kaspa to their address." else "Open your chat with them in payment mode.",
             ) { onDismiss(); onPayInKaspa() }
         }
         ActionSheetRow(
@@ -771,64 +778,6 @@ fun SenderActionsSheet(
     }
 }
 
-/**
- * The rename half of an [ActionSheetContainer] that renames something in place: a field, a Cancel
- * that walks back to the options, and a Save that commits and closes.
- */
-@Composable
-fun ColumnScope.ActionSheetRenameFields(
-    value: String,
-    onValueChange: (String) -> Unit,
-    onCancel: () -> Unit,
-    onSave: () -> Unit,
-    label: String = stringResource(R.string.name),
-) {
-    val colors = LocalAppColors.current
-    val focusRequester = remember { FocusRequester() }
-    // The keyboard should be up the moment the field appears - the tap that revealed it was
-    // already the decision to type.
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-
-    com.kachat.app.ui.theme.IosTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { if (value.isNotBlank()) onSave() }),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedTextColor = colors.textPrimary,
-            unfocusedTextColor = colors.textPrimary,
-            focusedBorderColor = KaspaTeal,
-            unfocusedBorderColor = colors.textSecondary,
-            focusedLabelColor = KaspaTeal,
-            unfocusedLabelColor = colors.textSecondary,
-        ),
-        modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
-    )
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        OutlinedButton(
-            onClick = onCancel,
-            modifier = Modifier.weight(1f).height(52.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.textPrimary),
-        ) {
-            Text(stringResource(R.string.cancel), fontWeight = FontWeight.SemiBold)
-        }
-        Button(
-            onClick = onSave,
-            enabled = value.isNotBlank(),
-            modifier = Modifier.weight(1f).height(52.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal, contentColor = Color.Black),
-        ) {
-            Text(stringResource(R.string.save), fontWeight = FontWeight.Bold)
-        }
-    }
-}
 
 /**
  * What to do with a transaction you tapped in an address history: look at it, or record it.
@@ -1260,60 +1209,6 @@ fun SentConfirmationSheet(
     }
 }
 
-/**
- * A sheet that iOS draws as a `NavigationStack` holding a `List` or `Form` with an inline title
- * (chat info's ".kachat Names" and "KNS Domains"): the grouped palette, the title centred in the
- * bar, then one 26pt-cornered section of rows - [content] draws the rows, [IosListRowDivider]
- * between them. Opens at half height and drags up to full (`[.medium, .large]`), with the grabber.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun IosInlineListSheet(
-    title: String,
-    onDismiss: () -> Unit,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    val halfScreen = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp / 2).dp
-    com.kachat.app.ui.theme.IosSheetColors(grouped = true) {
-        val colors = LocalAppColors.current
-        // Floats on its height detent, as iOS 26's does, settling onto the edges as it grows.
-        var sheetFloat by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
-        ModalBottomSheet(
-            scrimColor = com.kachat.app.ui.theme.IosSheetScrim,
-            modifier = Modifier.iosFloatingSheet(sheetFloat),
-            shape = iosFloatingSheetShape(sheetFloat),
-            tonalElevation = com.kachat.app.ui.theme.IosSheetTonalElevation,
-            windowInsets = androidx.compose.foundation.layout.WindowInsets.statusBars,
-            onDismissRequest = onDismiss,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = colors.background,
-            dragHandle = null,
-        ) {
-            Column(Modifier.navigationBarsPadding()) {
-                IosSheetDetents(height = halfScreen, largeDetent = true, onFloat = { sheetFloat = it }) {
-                    Column(Modifier.fillMaxSize()) {
-                        IosSheetNavBar(title = title)
-                        Column(
-                            Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp)
-                        ) {
-                            Column(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(26.dp))
-                                    .background(colors.surface),
-                                content = content,
-                            )
-                        }
-                    }
-                    IosSheetGrabber(Modifier.align(Alignment.TopCenter))
-                }
-            }
-        }
-    }
-}
 
 /** The hairline between two rows of an [IosInlineListSheet], inset from the leading edge as
  *  iOS's separator is (past the icon, when the row has one). */

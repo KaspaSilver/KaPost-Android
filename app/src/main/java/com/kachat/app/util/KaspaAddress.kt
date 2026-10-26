@@ -116,12 +116,12 @@ object KaspaAddress {
     /** Why a valid address can't be used here, in English (iOS `otherNetworkReason`) - for the
      *  send paths' errors. The UI shows the localized strings (address_other_network_*). */
     fun otherNetworkReason(address: String): String? = when (otherNetwork(address)) {
-        KaspaNetwork.Type.TESTNET -> "This is a Testnet address. KaChat is on Mainnet."
-        KaspaNetwork.Type.MAINNET -> "This is a Mainnet address. KaChat is on Testnet."
+        KaspaNetwork.Type.TESTNET -> "This is a Testnet address. KaPosts is on Mainnet."
+        KaspaNetwork.Type.MAINNET -> "This is a Mainnet address. KaPosts is on Testnet."
         null -> null
     }
 
-    /** The localized line for [otherNetwork] ("This is a Testnet address. KaChat is on Mainnet."),
+    /** The localized line for [otherNetwork] ("This is a Testnet address. KaPosts is on Mainnet."),
      *  as a string resource; null when the address is not the other network's. */
     fun otherNetworkMessageRes(address: String): Int? = when (otherNetwork(address)) {
         KaspaNetwork.Type.TESTNET -> com.kachat.app.R.string.address_other_network_testnet

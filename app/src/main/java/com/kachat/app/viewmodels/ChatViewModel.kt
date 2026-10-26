@@ -67,10 +67,8 @@ class ChatViewModel @Inject constructor(
     private val voiceRecorderService: VoiceRecorderService,
     private val nextcloudService: NextcloudService,
     private val nextcloudSyncService: com.kachat.app.services.NextcloudSyncService,
-    private val callService: com.kachat.app.services.CallService,
     private val backupRestoreCoordinator: com.kachat.app.services.BackupRestoreCoordinator,
     private val groupRepository: com.kachat.app.repository.GroupRepository,
-    private val shareShortcutsManager: com.kachat.app.services.ShareShortcutsManager,
     private val addressActivityNotifier: com.kachat.app.services.AddressActivityNotifier,
     private val kaPostsService: com.kachat.app.services.KaPostsService,
     private val onboardingGate: com.kachat.app.services.OnboardingGate,
@@ -137,10 +135,6 @@ class ChatViewModel @Inject constructor(
     /** Suppresses a notification for whichever contact's thread is currently open. */
     fun enterContact(contactId: String) {
         notificationHelper.enterContact(contactId)
-        // Opening a chat is one of the two moments the recency order the share sheet shows can
-        // change — keep the direct-share conversation shortcuts current. refresh() diffs against
-        // what's already published, so this is free when nothing changed.
-        shareShortcutsManager.refresh(conversations.value)
         // What arrived while the app was away, straight away rather than on the poll's next
         // tick (iOS 360e5d2).
         viewModelScope.launch {
@@ -223,22 +217,6 @@ class ChatViewModel @Inject constructor(
             chatRepository.addContact(existing.copy(notificationOverride = override?.name))
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Calls (Nextcloud Talk over the 1:1 channel) - see CallService.
-    // -------------------------------------------------------------------------
-
-    /** The live call, if any; the thread hides its call button while one is up. */
-    val callSession: StateFlow<com.kachat.app.services.CallService.ActiveCall?> = callService.session
-
-    val callLastError: StateFlow<String?> = callService.lastError
-
-    /** Why a call from someone did not ring, for their chat to say once (see CallService). */
-    val callChatNotice: StateFlow<com.kachat.app.services.CallService.ChatNotice?> = callService.chatNotice
-
-    fun takeCallChatNotice(contactId: String): String? = callService.takeChatNotice(contactId)
-
-    fun startCall(contact: ContactEntity, video: Boolean) = callService.startCall(contact, video)
 
     /** "Allow calls and video calls" for one contact - Chat Info's switch and the prompt behind
      *  the call button. OFF by default: while off, this contact's invites and requests are
@@ -2452,10 +2430,6 @@ class ChatViewModel @Inject constructor(
         plain: Boolean = false,
     ): Boolean {
         if (text.isEmpty()) return false
-        // Sending bumps this conversation to the top of the recency order the system share sheet
-        // mirrors — promote it explicitly since the conversations flow only reorders after the
-        // pending insert lands. Diffed inside refresh(), so repeat sends to the same top chat are free.
-        shareShortcutsManager.refresh(conversations.value, promoteContactId = contactId)
         // Never a call message: a call_invite / request / end sent while a reply was queued went
         // out as a reply, and the other phone never saw a call (iOS 40b1461). The reply stays
         // queued for the person's next text.

@@ -7,22 +7,15 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.work.Configuration
-import androidx.work.Constraints
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
-import com.kachat.app.repository.GroupRepository
 import com.kachat.app.services.BroadcastScanningService
 import com.kachat.app.services.CrashRecorder
-import com.kachat.app.services.GroupScanningService
 import com.kachat.app.services.KaPostsNotificationPoller
 import com.kachat.app.services.SyncWorker
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 /**
@@ -65,12 +58,6 @@ class KaChatApplication : Application(), Configuration.Provider {
     @Inject
     lateinit var broadcastScanningService: dagger.Lazy<BroadcastScanningService>
 
-    // Same reasoning as broadcastScanningService above - forces GroupScanningService to exist
-    // from app startup so its group-count/pending-invite observers (see its init block) run for
-    // the app's whole lifetime, not just after a group chat screen happens to be opened.
-    @Inject
-    lateinit var groupScanningService: dagger.Lazy<GroupScanningService>
-
     // Same lazy-singleton reasoning again: PushRegistrationManager's init block observes the
     // active account / contact set / broadcast bells / hidden senders / notifications setting and
     // re-registers (or unregisters) the FCM token with the push service whenever any of it
@@ -89,9 +76,6 @@ class KaChatApplication : Application(), Configuration.Provider {
     @Inject
     lateinit var nodePoolManager: dagger.Lazy<com.kachat.app.services.NodePoolManager>
 
-    @Inject
-    lateinit var groupRepository: dagger.Lazy<GroupRepository>
-
     // Foreground-only KaPosts pings (started/stopped by the process lifecycle observer below) —
     // while the app is closed, the push service is the only KaPosts notification source.
     @Inject
@@ -101,15 +85,6 @@ class KaChatApplication : Application(), Configuration.Provider {
     // baseline + diff engine, foreground poll + on-foreground catch-up. See its class doc.
     @Inject
     lateinit var addressActivityNotifier: dagger.Lazy<com.kachat.app.services.AddressActivityNotifier>
-
-    // Continuous automatic Nextcloud sync — same lazy-singleton reasoning as the scanners
-    // above: its init block observes the connected account + Automatic Sync toggle (schedules or
-    // cancels the 6h WorkManager fallback) and the active wallet (silent one-time auto-restore
-    // of the shared backup file). Field-injecting it here guarantees those observers run from
-    // app startup, not only after the Nextcloud storage screen happens to be opened. The
-    // lifecycle triggers below also feed it.
-    @Inject
-    lateinit var nextcloudSyncService: dagger.Lazy<com.kachat.app.services.NextcloudSyncService>
 
     // For mirroring the persisted "Verbose API Logging" toggle into ApiLogging.verbose (a plain
     // volatile flag the OkHttp logging interceptor reads per request) — see onCreate below.
@@ -164,13 +139,6 @@ class KaChatApplication : Application(), Configuration.Provider {
     @Inject
     lateinit var paymentNoticeOutbox: dagger.Lazy<com.kachat.app.services.PaymentNoticeOutbox>
 
-    // Portfolio rows still waiting for a price resume pricing whenever a wallet loads (iOS
-    // PortfolioViewModel.setCurrentWallet, run by WalletManager on every wallet load) - built at
-    // startup so its active-wallet observer runs from launch, not first when a screen with
-    // portfolio numbers opens.
-    @Inject
-    lateinit var portfolioRepository: dagger.Lazy<com.kachat.app.repository.PortfolioRepository>
-
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().setWorkerFactory(workerFactory()).build()
 
@@ -211,14 +179,11 @@ class KaChatApplication : Application(), Configuration.Provider {
         // order), each on its own so one failing cannot take the others - or the app - down.
         // Every one of them is reached again through its Lazy below, and from screens.
         startupStep("broadcast scanning") { broadcastScanningService.get() }
-        startupStep("group scanning") { groupScanningService.get() }
         startupStep("push registration") { pushRegistrationManager.get() }
         startupStep("scheduled KaPosts") { kaPostsScheduledStore.get() }
         startupStep("node pool") { nodePoolManager.get() }
-        startupStep("groups") { groupRepository.get() }
         startupStep("KaPosts notifications") { kaPostsNotificationPoller.get() }
         startupStep("address activity") { addressActivityNotifier.get() }
-        startupStep("Nextcloud sync") { nextcloudSyncService.get() }
         startupStep("settings") { appSettingsRepository.get() }
         startupStep("notifications") { notificationHelper.get() }
         startupStep("KaPost link previews") { kaPostLinkPreviewService.get() }
@@ -253,31 +218,11 @@ class KaChatApplication : Application(), Configuration.Provider {
             }
         }
 
-        // The portfolio's wallet-load price backfill (see the field above): built just after
-        // launch, off the main thread, so its active-wallet observer still runs from the start -
-        // but a portfolio store the Keystore will not open can never keep the app from opening.
-        ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.Default + logOnly) {
-            startupStep("portfolio price backfill") { portfolioRepository.get() }
-        }
-
-        // Background catch-up for GROUP chat only (see SyncWorker's doc comment): groups have no
-        // remote push (the push registration is the LegacyV1 shape with no watched_group_ids), so
-        // this 15-minute WorkManager cadence is their sole closed-app notification path. All
-        // push-covered surfaces (1:1 DMs, broadcasts, KaPosts) are delivered by FCM when the app
-        // is backgrounded or killed. KEEP means re-registering on every app launch doesn't stack
-        // duplicate periodic jobs.
+        // KaChat's group catch-up worker, Nextcloud sync and portfolio backfill are not started:
+        // KaPosts has no groups, backups or portfolio. The group worker an older install may
+        // have enqueued under this package is cancelled.
         startupStep("group sync worker") {
-            WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-                SyncWorker.WORK_NAME,
-                // UPDATE (not KEEP) so the CONNECTED constraint below reaches devices whose job was
-                // enqueued by an older build without it; the schedule itself is unchanged.
-                ExistingPeriodicWorkPolicy.UPDATE,
-                PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
-                    // No network means the indexer catch-up inside can only fail and burn a run
-                    // (WorkManager would still wake the process for it) — wait for connectivity.
-                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                    .build()
-            )
+            WorkManager.getInstance(this).cancelUniqueWork(SyncWorker.WORK_NAME)
         }
 
         // Keep ApiLogging.verbose (read by the OkHttp interceptors in AppModule on every request)
@@ -310,14 +255,6 @@ class KaChatApplication : Application(), Configuration.Provider {
                 // KaPosts while backgrounded/closed.
                 startupStep("KaPosts notifications: stop") { kaPostsNotificationPoller.get().stop() }
                 startupStep("address activity: background") { addressActivityNotifier.get().onAppBackground() }
-                // Backgrounding is the natural "done chatting" moment — run the Nextcloud
-                // automatic sync then: a catch-up when the last upload is an hour old or the
-                // persisted dirty flag says a sync is owed (NEXTCLOUD_SYNC.md §6). autoBackupIfDue
-                // no-ops unless the Automatic Sync toggle is on and an account is connected; it
-                // swallows its own failures (the next trigger or the fallback worker retries).
-                owner.lifecycleScope.launch(Dispatchers.IO + logOnly) {
-                    nextcloudSyncService.get().autoBackupIfDue()
-                }
             }
 
             override fun onStart(owner: LifecycleOwner) {
@@ -357,31 +294,6 @@ class KaChatApplication : Application(), Configuration.Provider {
                             android.util.Log.w("KaChatApplication", ".kachat registry refresh failed", e)
                         }
                     }
-                }
-                // Group invites (gctl_root) otherwise only surface via the 15-min SyncWorker
-                // periodic job or the live block-scan - unlike 1:1 chat, which has its own
-                // always-running poll loop, groups had no on-foreground catch-up at all, so a
-                // brand-new invite could sit unseen well past 15 minutes. Mirrors iOS's
-                // performCatchUpSync() on app foreground (KaChatApp.swift).
-                owner.lifecycleScope.launch(Dispatchers.IO + logOnly) {
-                    // Never let a foreground catch-up take down the app on launch — an uncaught
-                    // throw here (e.g. no active account yet on a cold start) would otherwise crash
-                    // the whole process. Same non-fatal treatment as the FGS start in onStop above.
-                    try {
-                        // Coalesced with the catch-up a group opened from a tapped notification
-                        // runs at the same moment.
-                        groupRepository.get().runGroupCatchUp()
-                    } catch (e: Exception) {
-                        android.util.Log.w("KaChatApplication", "Foreground group catch-up sync failed", e)
-                    }
-                }
-                // Nextcloud sync catch-up on launch/foreground: covers users who never
-                // background the app cleanly (force-kill, crash, days of disuse). The day-long
-                // threshold keeps this from ever competing with the hourly on-background cadence.
-                owner.lifecycleScope.launch(Dispatchers.IO + logOnly) {
-                    nextcloudSyncService.get().autoBackupIfDue(
-                        minIntervalMs = com.kachat.app.services.NextcloudSyncService.AUTO_BACKUP_CATCH_UP_INTERVAL_MS
-                    )
                 }
             }
         }

@@ -170,28 +170,6 @@ private fun CameraQrScanner(modifier: Modifier = Modifier, onResult: (Result) ->
     )
 }
 
-/**
- * Recovers the exact original bytes from a decoded byte-mode QR (a KSPT frame), trying a few
- * fallbacks since ZXing's [Result.getRawBytes] is documented as "if applicable" and isn't
- * reliably populated for every QR byte-mode result:
- * 1. [ResultMetadataType.BYTE_SEGMENTS] — the raw per-segment byte data ZXing decoded, before
- *    any charset interpretation; the most direct source when present.
- * 2. [Result.getRawBytes] itself.
- * 3. Re-encoding [Result.getText] as ISO-8859-1 — since the encoder side
- * ([com.kachat.app.ui.screens.rememberQrBitmapPainter]'s ByteArray overload, and KasSigner's own
- * device firmware) both produce byte-mode QR content that ZXing decodes into a `String` via
- * ISO-8859-1 by default, re-encoding that string as ISO-8859-1 round-trips back to the exact
- * original bytes (1 byte : 1 char : 1 byte).
- */
-private fun extractRawBytes(result: Result): ByteArray? {
-    @Suppress("UNCHECKED_CAST")
-    val segments = result.resultMetadata?.get(ResultMetadataType.BYTE_SEGMENTS) as? List<ByteArray>
-    if (!segments.isNullOrEmpty()) {
-        return segments.reduce { acc, segment -> acc + segment }
-    }
-    result.rawBytes?.let { if (it.isNotEmpty()) return it }
-    return result.text?.toByteArray(Charsets.ISO_8859_1)
-}
 
 // Restricting to QR (this app never scans anything else) both speeds up MultiFormatReader's
 // attempt per frame and avoids it occasionally matching a stray non-QR pattern in the frame.
@@ -275,60 +253,6 @@ fun QrScannerSheet(onScanned: (String) -> Unit, onDismiss: () -> Unit) {
     }
 }
 
-/**
- * Scans a KasSigner animated multi-frame QR sequence (a signed KSPT response, or anything else
- * chunked with [QrFrameChunker]) and reassembles it - iOS's `MultiFrameQRScannerView`, the same
- * sheet as [QrScannerSheet] titled "Scan Signed Transaction": "Point camera at the KasSigner
- * screen" until the first frame, then a dot per frame (the accent once seen) over "3 / 5 frames".
- * Unlike [QrScannerSheet], which takes the first code, this keeps scanning until every frame has
- * been seen, then hands the bytes over and slides down.
- */
-@Composable
-fun MultiFrameQrScannerSheet(
-    isComplete: (ByteArray) -> Boolean,
-    onComplete: (ByteArray) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val latestComplete by androidx.compose.runtime.rememberUpdatedState(onComplete)
-    val accumulator = remember { QrFrameChunker.Accumulator(isComplete) }
-    var progress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    var receivedIndices by remember { mutableStateOf<Set<Int>>(emptySet()) }
-    val done = remember { AtomicBoolean(false) }
-    CameraScannerSheet(
-        title = stringResource(R.string.scan_signed_transaction),
-        deniedMessage = stringResource(R.string.qr_enable_camera_access_signed),
-        onDismiss = onDismiss,
-        onResult = { result, close ->
-            if (done.get()) return@CameraScannerSheet
-            val bytes = extractRawBytes(result) ?: return@CameraScannerSheet
-            val complete = accumulator.addFrame(bytes)
-            if (complete == null) {
-                progress = accumulator.progress
-                receivedIndices = accumulator.receivedFrameIndices
-            } else if (done.compareAndSet(false, true)) {
-                latestComplete(complete)
-                close()
-            }
-        },
-    ) {
-        val (received, total) = progress ?: (0 to 0)
-        if (total > 0) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 8.dp)) {
-                repeat(total) { i ->
-                    Box(
-                        Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(if (i in receivedIndices) KaspaTeal else Color.White.copy(alpha = 0.4f))
-                    )
-                }
-            }
-            ScannerPlate(stringResource(R.string.qr_frames_progress, received, total))
-        } else {
-            ScannerPlate(stringResource(R.string.qr_point_camera_kassigner))
-        }
-    }
-}
 
 /** The white headline on iOS's `.ultraThinMaterial` plate that sits under the scanning frame. */
 @Composable

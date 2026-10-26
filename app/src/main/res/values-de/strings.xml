@@ -114,8 +114,8 @@
     <string name="kns_domains">KNS-Domains</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">KaChat-Logo</string>
-    <string name="kachat_can_t_show_notifications_until">KaChat kann keine Benachrichtigungen anzeigen, bis du sie für diese App zulässt.</string>
-    <string name="kachat_needs_to_connect_to_a">KaChat muss sich mit einem Knoten verbinden. Wie möchtest du dich verbinden?</string>
+    <string name="kachat_can_t_show_notifications_until">KaPosts kann keine Benachrichtigungen anzeigen, bis du sie für diese App zulässt.</string>
+    <string name="kachat_needs_to_connect_to_a">KaPosts muss sich mit einem Knoten verbinden. Wie möchtest du dich verbinden?</string>
     <string name="kaspa">Kaspa</string>
     <string name="kaspa_address_or_kns_domain">Kaspa-Adresse oder KNS-Domain</string>
     <string name="kaspa_explorer">Kaspa Explorer</string>
@@ -577,8 +577,8 @@
     <string name="welcome_fund_chatting_body">Zum Start werden 50 Kaspa empfohlen - genug, um dir einen .kachat-Namen zu sichern und eine Weile zu chatten. 5 Kaspa reichen für etwa 2500 Nachrichten.</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">Testnet</string>
-    <string name="testnet_restart_to_testnet">Schließe KaChat vollständig und öffne es erneut, um den Wechsel zum Testnet abzuschließen.</string>
-    <string name="testnet_restart_to_mainnet">Schließe KaChat vollständig und öffne es erneut, um den Wechsel zurück zum Mainnet abzuschließen.</string>
+    <string name="testnet_restart_to_testnet">Schließe KaPosts vollständig und öffne es erneut, um den Wechsel zum Testnet abzuschließen.</string>
+    <string name="testnet_restart_to_mainnet">Schließe KaPosts vollständig und öffne es erneut, um den Wechsel zurück zum Mainnet abzuschließen.</string>
     <string name="kaposts_not_on_testnet">KaPosts ist im Testnet noch nicht verfügbar</string>
     <string name="kaposts_not_on_testnet_sub">Für das Testnet gibt es keinen KaPost-Indexer. Schalte Testnet unter Einstellungen > Verbindung aus, um im Mainnet zu lesen und zu posten.</string>
     <string name="nextcloud_off_on_testnet">Nextcloud ist aus, solange Testnet an ist.</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">Bis dieser Name abläuft, bleibt weniger als %1$s. Du müsstest ihn bald verlängern.</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">Das ist eine Testnet-Adresse. KaChat läuft im Mainnet.</string>
-    <string name="address_other_network_mainnet">Das ist eine Mainnet-Adresse. KaChat läuft im Testnet.</string>
+    <string name="address_other_network_testnet">Das ist eine Testnet-Adresse. KaPosts läuft im Mainnet.</string>
+    <string name="address_other_network_mainnet">Das ist eine Mainnet-Adresse. KaPosts läuft im Testnet.</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">Eine Transaktion kann höchstens %1$d UTXOs ausgeben, daher können keine weiteren ausgewählt werden.</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1038,7 +1038,7 @@
     <string name="what_is_this">Was ist das?</string>
     <string name="what_is_a_seed_phrase">Was ist eine Seed Phrase?</string>
     <string name="seed_phrase_explainer_master_key">Eine Seed Phrase ist eine Liste aus 12 oder 24 gewöhnlichen Wörtern, die als Hauptschlüssel zu deinem Konto dient. Deine Wallet, deine Chat-Adresse und deine Nachrichten stammen alle davon.</string>
-    <string name="seed_phrase_explainer_anyone">Wer diese Wörter hat, kann alles aus deinem Konto nehmen. Wenn du sie verlierst und auch dieses Gerät, kann niemand dein Konto wiederherstellen, nicht einmal KaChat.</string>
+    <string name="seed_phrase_explainer_anyone">Wer diese Wörter hat, kann alles aus deinem Konto nehmen. Wenn du sie verlierst und auch dieses Gerät, kann niemand dein Konto wiederherstellen, nicht einmal KaPosts.</string>
     <string name="seed_phrase_explainer_paper">Schreibe die Wörter der Reihe nach auf Papier und bewahre sie an einem sicheren, privaten Ort auf. Gib sie nie auf einer Website ein, schick sie nie in einem Chat und speichere sie nicht in einem Screenshot oder in Cloud-Notizen.</string>
     <string name="seed_phrase_explainer_lengths">12 Wörter sind bereits sehr sicher. 24 Wörter bieten noch mehr Schutz.</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

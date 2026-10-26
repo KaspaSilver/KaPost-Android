@@ -256,14 +256,8 @@ fun OnboardingScreen(viewModel: WalletViewModel) {
         composable("app_settings_security") {
             AppSecurityScreen(
                 onBack = { navController.popBackStack() },
-                onNavigateToChildMode = { navController.navigate("app_settings_child_mode") },
                 walletViewModel = viewModel
             )
-        }
-        composable("app_settings_child_mode") {
-            // Fully functional with no account active - the password record and enabled flag
-            // are device-global (ChildModeService's EncryptedSharedPreferences + DataStore).
-            ChildModeSettingsScreen(onBack = { navController.popBackStack() })
         }
         // The same Connection page as in-account Settings (iOS ConnectionHubPage): Connection
         // Settings, the Testnet switch, Kaspa Explorer.
@@ -340,7 +334,7 @@ fun WelcomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    text = stringResource(R.string.kachat),
+                    text = "KaPosts",
                     style = MaterialTheme.typography.headlineLarge.copy(
                         fontWeight = FontWeight.Bold,
                         fontSize = 36.sp
@@ -353,7 +347,7 @@ fun WelcomeScreen(
                     // load - it throws "Only VectorDrawables and rasterized asset types are
                     // supported" and takes the whole welcome screen down with it.
                     painter = painterResource(id = R.drawable.kachat_app_mark),
-                    contentDescription = stringResource(R.string.kachat_logo),
+                    contentDescription = "KaPosts logo",
                     modifier = Modifier.size(40.dp).clip(RoundedCornerShape(9.dp))
                 )
             }
@@ -363,7 +357,7 @@ fun WelcomeScreen(
             // saying what it belongs to.
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = stringResource(R.string.secure_messaging_on_kaspa_blockdag),
+                text = "Posts and public chats on Kaspa BlockDAG",
                 style = MaterialTheme.typography.bodyLarge,
                 color = KaspaSubtext,
                 textAlign = TextAlign.Center
@@ -493,7 +487,7 @@ fun WelcomeScreen(
         // (iOS: 10pt above the safe area), so the height budget that keeps Create and Import on
         // screen is untouched and a 3-button bar never covers it.
         Text(
-            text = "KaChat ${com.kachat.app.util.AppVersion.display}",
+            text = "KaPosts ${com.kachat.app.util.AppVersion.display}",
             fontSize = 11.sp,
             color = LocalAppColors.current.textSecondary,
             modifier = Modifier
@@ -1724,7 +1718,7 @@ private fun PassphraseEntryStep(
                     .background(colors.surface)
                     .padding(14.dp),
             ) {
-                Text("Your chatting address", color = colors.textSecondary, fontSize = 12.sp)
+                Text("Your address", color = colors.textSecondary, fontSize = 12.sp)
                 Spacer(Modifier.height(4.dp))
                 // Every character, wrapped over as many lines as it takes. This is the one place
                 // the address has to be readable in full: truncating it would hide exactly the

@@ -80,7 +80,7 @@ object CrashRecorder {
         val trace = StringWriter().also { throwable.printStackTrace(PrintWriter(it)) }.toString()
         file.writeText(
             buildString {
-                appendLine("KaChat crash report")
+                appendLine("KaPosts crash report")
                 appendLine("time: $stamp")
                 appendLine("app: ${context.packageName} $version")
                 appendLine("device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
@@ -170,7 +170,7 @@ object CrashRecorder {
         }.getOrDefault("unknown")
         file.writeText(
             buildString {
-                appendLine("KaChat process exit report (from the system's exit history)")
+                appendLine("KaPosts process exit report (from the system's exit history)")
                 appendLine("time: $stamp")
                 appendLine("app: ${context.packageName} $version")
                 appendLine("device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")

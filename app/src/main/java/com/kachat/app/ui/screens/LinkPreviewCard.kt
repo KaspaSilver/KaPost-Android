@@ -817,13 +817,13 @@ object KaChatLink {
     // The trailing segment deliberately excludes '/', '?' and '#' so a link can never carry a
     // second path component, a query string or a fragment into the app.
     private val LINK_REGEX = Regex(
-        """(?:kachat://(kapost|broadcast|profile)/|https?://(?:kachat\.app|kachat\.duckdns\.org)/(post|broadcast|u)/)([^\s/?#]+)""",
+        """(?:(?:kachat|kaposts)://(kapost|broadcast|profile)/|https?://(?:kachat\.app|kachat\.duckdns\.org)/(post|broadcast|u)/)([^\s/?#]+)""",
         RegexOption.IGNORE_CASE
     )
     // A payment request carries a query, so it has its own pattern: everything up to whitespace
     // or a quote/angle bracket, as iOS matches it (the memo inside is percent-encoded).
     private val PAY_LINK_REGEX = Regex(
-        """(?:kachat://pay/|https?://(?:www\.)?(?:kachat\.app|kachat\.duckdns\.org)/pay/)([^\s<>"']+)""",
+        """(?:(?:kachat|kaposts)://pay/|https?://(?:www\.)?(?:kachat\.app|kachat\.duckdns\.org)/pay/)([^\s<>"']+)""",
         RegexOption.IGNORE_CASE
     )
     private val TRAILING_PUNCTUATION = setOf('.', ',', '!', '?', ';', ':', '\'', '"', ')', ']', '}', '>')
@@ -1049,7 +1049,7 @@ fun KaChatInternalLinkCard(
             else -> "KaPosts"
         }
         is KaChatLinkRef.BroadcastRoom -> "Public Chat Room"
-        is KaChatLinkRef.Profile -> "KaChat Profile"
+        is KaChatLinkRef.Profile -> "KaPosts Profile"
         is KaChatLinkRef.PaymentRequest -> payEyebrow
     }
     val title = when (ref) {
@@ -1060,17 +1060,17 @@ fun KaChatInternalLinkCard(
     }
     val subtitle = when (ref) {
         is KaChatLinkRef.KaPost -> when {
-            post == null -> "Tap to open this post in KaChat."
+            post == null -> "Tap to open this post in KaPosts."
             // A quote with no added comment is a repost: there is no text to show, so say what
             // it is rather than leaving the card looking half-loaded.
             post.snippet.isBlank() ->
-                if (post.action == "quote") "Reposted a post." else "Tap to open this post in KaChat."
+                if (post.action == "quote") "Reposted a post." else "Tap to open this post in KaPosts."
             else -> post.snippet
         }
         is KaChatLinkRef.BroadcastRoom ->
-            if (roomIsKnown) "Tap to open this KaChat public chat room." else "Tap to join this KaChat public chat room."
+            if (roomIsKnown) "Tap to open this public chat room." else "Tap to join this public chat room."
         is KaChatLinkRef.Profile ->
-            if (profileIsContact) "Tap to open your chat." else "Tap to start a chat on KaChat."
+            if (profileIsContact) "Tap to open your chat." else "Tap to see their KaPosts profile."
         // The memo, the maker as the signature in the link proves - their name, not the payment
         // address - and what a tap does (iOS c6851d6, 7c71a98, 1fe8388).
         is KaChatLinkRef.PaymentRequest -> listOfNotNull(
@@ -1153,10 +1153,10 @@ fun KaChatInternalLinkCard(
     }
 
     if (showMenu) {
-        MessageActionsSheet(title = "KaChat Link", preview = url, onDismiss = { showMenu = false }) {
+        MessageActionsSheet(title = "KaPosts Link", preview = url, onDismiss = { showMenu = false }) {
             ActionSheetRow(
                 icon = Icons.AutoMirrored.Filled.OpenInNew,
-                title = "Open in KaChat",
+                title = "Open in KaPosts",
                 subtitle = "Opens it right here in the app.",
             ) {
                 showMenu = false

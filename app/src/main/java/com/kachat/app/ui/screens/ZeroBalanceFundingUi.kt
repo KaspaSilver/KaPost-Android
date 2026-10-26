@@ -125,7 +125,7 @@ fun Modifier.zeroBalanceComposerGate(active: Boolean): Modifier =
  *  semibold, a 140 QR of the chatting address on a white plate (padded 8, corners 12 - the white
  *  is what keeps it scannable in dark mode), then the address in caption2 monospaced beside a
  *  copy button, 14 between each, padded 16 on glassBackground(cornerRadius: 20). [title] is the
- *  headline; null = "Fund your chatting address to start chatting" (iOS 2b45d6e). */
+ *  headline; null = "Fund your address to start posting" (iOS 2b45d6e). */
 @Composable
 fun ZeroBalanceFundingCard(walletAddress: String?, modifier: Modifier = Modifier, title: String? = null) {
     val clipboard = LocalClipboardManager.current
@@ -140,7 +140,7 @@ fun ZeroBalanceFundingCard(walletAddress: String?, modifier: Modifier = Modifier
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(
-            title ?: "Fund your chatting address to start chatting",
+            title ?: "Fund your address to start posting",
             color = colors.textPrimary,
             fontWeight = FontWeight.SemiBold,
             fontSize = 15.sp,

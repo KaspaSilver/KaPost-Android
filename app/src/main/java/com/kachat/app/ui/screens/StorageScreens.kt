@@ -112,24 +112,6 @@ fun MessageRetentionSetting(chatViewModel: ChatViewModel) {
     )
 }
 
-/**
- * Settings > Storage > Nextcloud — the self-hosted cloud backup, iOS's NextcloudSettingsView: an
- * inset-grouped Form page ([SettingsFormPage]) whose sections (connect form, or the account,
- * start/backup folders, automatic + manual backup, restore and disconnect) are
- * [NextcloudSettingsSection]'s.
- */
-@Composable
-fun NextcloudStorageScreen(
-    onBack: () -> Unit,
-    chatViewModel: ChatViewModel = hiltViewModel()
-) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        SettingsFormPage(title = stringResource(R.string.nextcloud), onBack = onBack) {
-            NextcloudSettingsSection(chatViewModel)
-        }
-        ChatRestoreProgressOverlay(chatViewModel.restoreCoordinator)
-    }
-}
 
 /**
  * The blocking chat-restore modal — the Android port of iOS's `ChatRestoreProgressModal`
