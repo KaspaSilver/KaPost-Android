@@ -1,0 +1,1238 @@
+package com.kachat.app.repository
+
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import com.google.gson.Gson
+import com.kachat.app.models.PendingKnsCommit
+import com.kachat.app.util.KaspaNetwork
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * Typed wrapper around DataStore<Preferences>.
+ * Equivalent to AppSettings in the iOS app.
+ *
+ * Provides reactive Flows for all settings so the UI updates automatically.
+ */
+@Singleton
+class AppSettingsRepository @Inject constructor(
+    private val dataStore: DataStore<Preferences>
+) {
+
+    companion object {
+        // Matches Screens.kt's QUICK_REACTION_EMOJIS / iOS's AppSettings.defaultQuickReactionEmojis.
+        val DEFAULT_QUICK_REACTION_EMOJIS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+
+        // Network
+        val KEY_NETWORK          = stringPreferencesKey("network")           // "mainnet" | "testnet"
+        val KEY_INDEXER_URL      = stringPreferencesKey("indexer_url")
+        // No longer read or written - `knsApiUrl` is pinned to DEFAULT_KNS_API_URL. Any value an
+        // older build left in the DataStore is inert; the key stays declared so it is obvious the
+        // name is taken rather than free to reuse.
+        @Suppress("unused")
+        val KEY_KNS_API_URL      = stringPreferencesKey("kns_api_url")
+        val KEY_KASPA_REST_URL   = stringPreferencesKey("kaspa_rest_url")
+        // K social indexer powering KaPosts feeds (the KaChat-owned fork).
+        val KEY_KAPOST_INDEXER_URL = stringPreferencesKey("kapost_indexer_url")
+        val KEY_TRANSLATION_SERVICE_URL = stringPreferencesKey("translation_service_url")
+        // KaChat broadcast indexer serving #kaspa/#kachat-bugs history (same domain).
+        val KEY_BROADCAST_INDEXER_URL = stringPreferencesKey("broadcast_indexer_url")
+        /** channel -> indexer base URL, for rooms pointed somewhere other than the app-wide one.
+         *  Stored as "channel\u0000url" lines so one preference key holds the whole map. */
+        val KEY_BROADCAST_INDEXER_OVERRIDES = stringPreferencesKey("broadcast_indexer_overrides")
+        // Push-registration host (FCM device registration; mirrors iOS's pushIndexerURL). Same
+        // domain by default, but configurable so push can point at a different indexer.
+        val KEY_PUSH_INDEXER_URL = stringPreferencesKey("push_indexer_url")
+        // A user-pinned "host:port" gRPC node - when non-blank, NodePoolManager stops
+        // discovery (seeds/DNS/peer-gossip) entirely and only ever connects to this address,
+        // Kaspium-style. Empty string = disabled (normal pool discovery).
+        val KEY_TRUSTED_NODE_ADDRESS = stringPreferencesKey("trusted_node_address")
+        // User-saved node addresses for quick copy/paste into the Kaspa Node field above -
+        // Gson-encoded list, same pattern as KEY_PENDING_KNS_COMMIT below.
+        val KEY_SAVED_NODE_ADDRESSES = stringPreferencesKey("saved_node_addresses")
+        // NodePoolManager's persisted last-known-good gRPC nodes (comma-joined "host:port"
+        // list, best-latency first). Written whenever the automatic-discovery pool has Active
+        // nodes; read back on cold start and on a pinned->automatic switch so the pool dials
+        // recently-proven nodes immediately instead of waiting on the hardcoded bootstrap
+        // seeds (which go stale) or a fresh DNS-seed resolution.
+        val KEY_KNOWN_GOOD_NODES = stringPreferencesKey("known_good_node_addresses")
+        /** Testnet's own last-known-good list - one saved node list per network (iOS 8f98312). */
+        val KEY_KNOWN_GOOD_NODES_TESTNET = stringPreferencesKey("known_good_node_addresses.testnet")
+        /** Testnet's own per-room public chat indexer overrides (iOS 421a832). */
+        val KEY_BROADCAST_INDEXER_OVERRIDES_TESTNET = stringPreferencesKey("broadcast_indexer_overrides.testnet")
+        /** The connection settings of the network NOT in use, kept while it is switched away
+         *  from (iOS `AppSettings.connectionProfiles`). Gson [ConnectionProfile]. */
+        fun connectionProfileKey(network: com.kachat.app.util.KaspaNetwork.Type) =
+            stringPreferencesKey("connection_profile_" + network.raw)
+        /** Which network's connection settings KEY_INDEXER_URL ... KEY_SAVED_NODE_ADDRESSES hold
+         *  ("mainnet"/"testnet"). Unset (before the IOS-002 port) = the launch network's. */
+        val KEY_CONNECTION_KEYS_NETWORK = stringPreferencesKey("connection_keys_network")
+
+        // Defaults matching the iOS app
+        const val DEFAULT_NETWORK        = "mainnet"
+        const val DEFAULT_INDEXER_URL    = "https://kachat.duckdns.org"
+        // Superseded defaults, migrated away on read (see `indexerUrl` below): kasia.fyi is offline
+        // and never ran the group-chat REST endpoints; kasia.wtf was the previous community default,
+        // now replaced by KaChat's own indexer (kachat.duckdns.org).
+        const val LEGACY_DEFAULT_INDEXER_URL = "https://indexer.kasia.fyi"
+        const val LEGACY_DEFAULT_INDEXER_URL_KASIA_WTF = "https://indexer.kasia.wtf"
+        const val DEFAULT_KNS_API_URL    = "https://api.knsdomains.org/mainnet/api/v1"
+        const val DEFAULT_KASPA_REST_URL = "https://api.kaspa.org"
+        /** Testnet-10 (Toccata covenants; the node pool's testnet seeds are on 16210). */
+        const val DEFAULT_KASPA_TESTNET_REST_URL = "https://api-tn10.kaspa.org"
+        /** Retired TN11 (503) - migrated forward on read (iOS a67a1c2). */
+        const val LEGACY_DEFAULT_KASPA_TESTNET_REST_URL = "https://api-tn11.kaspa.org"
+        const val DEFAULT_KNS_TESTNET_API_URL = "https://api.knsdomains.org/tn10/api/v1"
+        /** The testnet-10 KaChat indexer (Kaspa-Quick-Start's `kachat-testnet` target): chat,
+         *  push, KaPosts, public chats and `.kachat` names on one name. Port 7443: 443 on that
+         *  address is answered by another proxy (iOS 5463ab7). */
+        const val DEFAULT_TESTNET_INDEXER_URL = "https://tnkachat.duckdns.org:7443"
+
+        fun defaultKaspaRestUrl(network: com.kachat.app.util.KaspaNetwork.Type) =
+            if (network == com.kachat.app.util.KaspaNetwork.Type.MAINNET) DEFAULT_KASPA_REST_URL else DEFAULT_KASPA_TESTNET_REST_URL
+        const val DEFAULT_KAPOST_INDEXER_URL = "https://kachat.duckdns.org"
+        /** Server-side KaPost translation - same box as the KaPosts indexer by default. */
+        const val DEFAULT_TRANSLATION_SERVICE_URL = "https://kachat.duckdns.org"
+        const val DEFAULT_BROADCAST_INDEXER_URL = "https://kachat.duckdns.org"
+        const val DEFAULT_PUSH_INDEXER_URL = "https://kachat.duckdns.org"
+        // KaChat ships pinned to Kaspium's public node out of the box, rather than defaulting
+        // to full seed/DNS/peer-gossip discovery - the "Use Default" button in Connection
+        // Settings resets back to this same address after a user has typed something else.
+        // This is Kaspium's own currently-live default (see their node_settings_notifier.dart's
+        // "temporary Toccata node override" - node.kaspium.io's cert had expired, so Kaspium's
+        // app itself now points here instead) - TLS-secured, hence "grpcs://" (see
+        // KaspadConnection.kt's parseNodeAddress).
+        const val DEFAULT_TRUSTED_NODE_ADDRESS = "grpcs://toccata.kaspium.io"
+
+        // Wallet (just a flag — actual keys live in Keystore)
+        val KEY_HAS_WALLET       = booleanPreferencesKey("has_wallet")
+        val KEY_ACTIVE_ADDRESS   = stringPreferencesKey("active_address")
+        
+        // How hard chat photos get compressed before sending — mirrors iOS's
+        // `chatPhotoQualityPreset` setting. Only affects photos sent, not received.
+        // Which block explorer website "Go to Explorer" links open in.
+        val KEY_KASPA_EXPLORER = stringPreferencesKey("kaspa_explorer")
+        // Flat, chain-wide set of txIds the user has manually revealed a hidden photo for —
+        // mirrors iOS's `PhotoRevealStore`. Not per-wallet: txIds are unique on-chain already.
+        val KEY_REVEALED_PHOTO_TX_IDS = stringSetPreferencesKey("revealed_photo_tx_ids")
+
+        // KaPosts local stores (poster ADDRESSES, chain-wide like revealed photos): who you
+        // follow (mirrored on-chain by kchat:1:follow txs - this set drives instant UI state),
+        // and muted/blocked authors whose content hides everywhere in KaPosts.
+        val KEY_KAPOSTS_FOLLOWING = stringSetPreferencesKey("kaposts_following")
+        val KEY_KAPOSTS_MUTED     = stringSetPreferencesKey("kaposts_muted")
+        val KEY_KAPOSTS_BLOCKED   = stringSetPreferencesKey("kaposts_blocked")
+
+        // Per-group hidden/muted member sets - each entry is "{groupId}|{address}", flattened
+        // into one Set<String> rather than a nested map since DataStore preferences only have
+        // flat native collection types. Mirrors iOS's GroupChatService.groupHiddenMembers/
+        // groupMutedMembers (there, a real [String: Set<String>] via UserDefaults-JSON).
+        val KEY_GROUP_HIDDEN_MEMBERS = stringSetPreferencesKey("group_hidden_members")
+        val KEY_GROUP_MUTED_MEMBERS  = stringSetPreferencesKey("group_muted_members")
+        // Group ids with "Only Notify if I'm Mentioned" on - mirrors iOS's
+        // GroupChatService.groupMentionsOnlyNotifications.
+        val KEY_GROUP_MENTIONS_ONLY  = stringSetPreferencesKey("group_mentions_only")
+        val KEY_GROUP_SILENT         = stringSetPreferencesKey("group_silent")
+
+        // Notifications — mirrors iOS's notificationMode/sound/vibration settings, minus
+        // the remote-push mode (there's no FCM/APNs-equivalent registration wired up yet,
+        // see NotificationHelper — only local notifications while the app process is alive).
+        val KEY_NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
+        val KEY_NOTIFICATION_SOUND    = booleanPreferencesKey("notification_sound_enabled")
+        val KEY_NOTIFICATION_VIBRATION = booleanPreferencesKey("notification_vibration_enabled")
+
+        // Settings > Notifications > Wallet. Local notifications when any of your spending or
+        // cold storage addresses receives Kaspa from an external source — see
+        // AddressActivityNotifier. Default ON, mirrors iOS's addressActivityNotificationsEnabled.
+        val KEY_ADDRESS_ACTIVITY_NOTIFICATIONS = booleanPreferencesKey("address_activity_notifications_enabled")
+        /** Receive notifications for the wallet's own spending addresses (Manage Addresses) -
+         *  the counterpart of a cold account's `notifyOnReceive`. Default on (iOS ba352a2). */
+        val KEY_SPENDING_RECEIVE_NOTIFICATIONS = booleanPreferencesKey("spending_receive_notifications_enabled")
+        /** Which pair the portfolio charts flip to on a tap of the price: bitcoin, VOO, gold,
+         *  silver - or "" for none. Absent means bitcoin, the default (iOS 39adefe). */
+        val KEY_CHART_PAIR = stringPreferencesKey("portfolio_chart_pair")
+
+        // Settings > Notifications > KaPosts. Which KaPosts activity kinds post a notification —
+        // filtered at the poll source (KaPostsNotificationPoller), all default ON, mirroring
+        // iOS's kaPostsNotify* settings and its shouldNotifyKaPostsAction mapping.
+        val KEY_KAPOSTS_NOTIFY_LIKES = booleanPreferencesKey("kaposts_notify_likes")
+        val KEY_KAPOSTS_NOTIFY_REPOSTS = booleanPreferencesKey("kaposts_notify_reposts")
+        val KEY_KAPOSTS_NOTIFY_FOLLOWS = booleanPreferencesKey("kaposts_notify_follows")
+        val KEY_KAPOSTS_NOTIFY_DISLIKES = booleanPreferencesKey("kaposts_notify_dislikes")
+        val KEY_KAPOSTS_NOTIFY_COMMENTS = booleanPreferencesKey("kaposts_notify_comments")
+        val KEY_KAPOSTS_NOTIFY_MENTIONS = booleanPreferencesKey("kaposts_notify_mentions")
+        /** The amount a tap on Tip sends straight away, in sompi. Unset (or 0) means the amount
+         *  screen opens instead, which is the default. */
+        val KEY_KAPOSTS_DEFAULT_TIP_SOMPI = longPreferencesKey("kaposts_default_tip_sompi")
+        /** Portfolio's eye button: every amount on that screen reads as dots. */
+        val KEY_PORTFOLIO_VALUES_HIDDEN = booleanPreferencesKey("portfolio_values_hidden")
+
+        // System contacts sync — matches iOS's "Sync system contacts"/"Autocreate system contacts".
+
+        val KEY_SHOW_FEE_ESTIMATE = booleanPreferencesKey("show_fee_estimate")
+        // Settings > Chats > Require approval for photos from new contacts (iOS
+        // AppSettings.requirePhotoApprovalForNewContacts). On by default: photos from a contact
+        // you never added or wrote to stay behind "Show Photo" unless their Chat Info says
+        // otherwise. Off shows every contact's photos unless that contact is set to Always Hide.
+        val KEY_REQUIRE_PHOTO_APPROVAL = booleanPreferencesKey("require_photo_approval_for_new_contacts")
+        // Settings > Chats > Higher quality photos (iOS AppSettings.higherQualityPhotos, off by
+        // default): 1:1 on-chain photos use ImagePrep.HIGH_QUALITY_CHAT_TARGET_BYTES, the largest
+        // one transaction carries, instead of the default, for a higher fee.
+        val KEY_HIGHER_QUALITY_PHOTOS = booleanPreferencesKey("higher_quality_photos")
+
+        // Customizable double-tap quick-reaction set - see QUICK_REACTION_EMOJIS's default and
+        // QuickReactionBar (Screens.kt) / QuickReactionBarView (iOS) for where this is read.
+        val KEY_QUICK_REACTION_EMOJIS = stringPreferencesKey("quick_reaction_emojis")
+
+        // A single in-flight KNS commit awaiting its reveal — see PendingKnsCommit.
+        val KEY_PENDING_KNS_COMMIT = stringPreferencesKey("pending_kns_commit")
+
+        // Device-level message retention (Forever / 30 / 90 days / 1 year) - see BackupRetention.
+        val KEY_BACKUP_RETENTION = stringPreferencesKey("backup_retention")
+
+        // Broadcasts — whether the "Popular" tab (curated rooms, see FeaturedBroadcastChannels)
+        // shows at all, toggled from the gear icon next to Broadcasts' join button.
+        val KEY_BROADCAST_POPULAR_ENABLED = booleanPreferencesKey("broadcast_popular_enabled")
+        // Whether senders' KNS profile pictures render in broadcast rooms and are looked up at
+        // all, or every sender just shows fallback initials instead (and no lookup happens) —
+        // toggled from the gear icon next to Broadcasts' join button. A KNS profile's avatarUrl
+        // is an arbitrary attacker-controlled string written via a permissionless on-chain
+        // inscription (see updateKnsProfileField), and since the fetch fires just from a message
+        // rendering on screen with no tap or other user action, an attacker could otherwise use
+        // it as a tracking pixel to learn a viewer's IP/timing/fingerprint just from them opening
+        // a channel — this toggle is what gates that.
+        val KEY_BROADCAST_SHOW_KNS_AVATARS = booleanPreferencesKey("broadcast_show_kns_avatars")
+        // User's custom bottom-tab order (press-and-hold to drag/reorder), comma-joined route
+        // strings e.g. "portfolio,chats,swap,profile" — a stringSetPreferencesKey can't
+        // be used here since Set has no defined iteration order, and order is the entire point.
+        val KEY_TAB_ORDER = stringPreferencesKey("tab_order")
+        // Kept in sync with KaChatApp.kt's bottomNavItems default order. "settings" is deliberately
+        // absent - it isn't a tab (matches iOS), it's reached one tap in from Profile's gear icon.
+        val DEFAULT_TAB_ORDER = listOf("kaspa_hub", "portfolio", "chats", "kaposts", "profile", "cold_storage", "address_book", "kachat_names", "kachat_stats", "kachat_bots", "swap", "broadcasts", "kaspa_websites", "chess")
+        // Placement, not visibility: every tab is in the dock or in Kaspa Hub, always exactly one
+        // of them. Replaces the old on/off + "first five of an order" rule, under which a tab
+        // could be pushed past the cap and simply vanish with nothing saying so.
+        val KEY_DOCK_TABS = stringPreferencesKey("dock_tabs")
+        val KEY_HUB_TABS = stringPreferencesKey("hub_tabs")
+        // What a fresh install starts with (owner's order, iOS 7b39caf defaultDock). Everything
+        // else starts in Kaspa Hub. A saved arrangement is the person's and is never reset to this.
+        val DEFAULT_DOCK_TABS = listOf("kaspa_hub", "portfolio", "chats", "kaposts", "profile")
+        // .kachat and KaChat Stats first on a fresh install (iOS b064468, f38cac2); existing
+        // users get them appended (kaspaHubSections adds any eligible tab the list lacks).
+        // Address Book first on a fresh install (iOS 00767a4 defaultHub); existing users get it
+        // appended like any tab their stored list lacks.
+        // KaChat Bots after KaChat Stats (iOS 82ab31d defaultHub).
+        // Cold Storage first, KaPosts moved to the dock (iOS 7b39caf defaultHub).
+        val DEFAULT_HUB_TABS = listOf("cold_storage", "address_book", "kachat_names", "kachat_stats", "kachat_bots", "broadcasts", "swap")
+        // One-time derivation of a placement from what an existing user could already SEE.
+        val KEY_PLACEMENT_APPLIED = booleanPreferencesKey("dock_placement_applied")
+        // Which bottom-tab routes the user has hidden from the nav bar (Settings > Customization >
+        // Menu) — "chats"/"profile" are never allowed in here, only "portfolio"/"cold_storage"/
+        // "swap". A route absent from this set is visible.
+        val KEY_HIDDEN_TABS = stringSetPreferencesKey("hidden_tabs")
+        // One-time 4.0 seeding marker for KEY_HIDDEN_TABS - see applyKaPostsTabDefaultsIfNeeded.
+        val KEY_TAB_DEFAULTS_40_APPLIED = booleanPreferencesKey("tab_defaults_40_applied")
+        // v3 (final 4.0 rules): existing users get KaPosts/Broadcasts/+More force-ENABLED - a
+        // full dock sends KaPosts/Broadcasts to the Chats-slot cycle, a free slot gets "+More";
+        // brand-new installs get a Chats/Profile/+More dock with everything else off until
+        // enabled through Customize Menu. Also scrubs v1's kaposts-hide.
+        val KEY_TAB_DEFAULTS_40_V3_APPLIED = booleanPreferencesKey("tab_defaults_40_v3_applied")
+        // The 4.0 dock wizard has been dismissed (shown once per install).
+        // Settings > Customization > Dark Mode. True (dark) is the default so existing installs'
+        // appearance is unchanged — every screen was designed dark-only until this toggle existed.
+        val KEY_DARK_MODE_ENABLED = booleanPreferencesKey("dark_mode_enabled")
+        // Settings > Customization > Appearance (iOS AppAppearance): System / Light / Dark, stored
+        // as the enum's name. Replaces the Dark Mode switch above: until this is first written, a
+        // switch someone set still decides (on = Dark, off = Light); with neither, System.
+        val KEY_APPEARANCE = stringPreferencesKey("appearance")
+        // Settings > Security. Both on by default — the seed phrase and account login were gated
+        // behind device authentication unconditionally before these toggles existed.
+        val KEY_BIOMETRIC_SEED_PHRASE_ENABLED = booleanPreferencesKey("biometric_seed_phrase_enabled")
+        val KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED = booleanPreferencesKey("biometric_account_login_enabled")
+        val KEY_BIOMETRIC_SPENDING_KEY_ENABLED = booleanPreferencesKey("biometric_spending_key_enabled")
+        // One-time ChangeNOW terms/liability disclaimer shown the first time Swap is opened.
+        val KEY_SWAP_DISCLAIMER_AGREED = booleanPreferencesKey("swap_disclaimer_agreed")
+        // Settings > Connection Settings > Diagnostics. Default OFF: at the 2s sync-loop cadence,
+        // per-request success logging is pure logcat noise, so only failures and slow requests are
+        // logged unconditionally (see AppModule.provideOkHttpClient). This opt-in turns the full
+        // per-request HttpLoggingInterceptor back on for debugging. Matches the iOS toggle.
+        val KEY_VERBOSE_API_LOGGING = booleanPreferencesKey("verbose_api_logging")
+        // Settings > Customization > Currency. Fiat currency for Portfolio's live KAS price/value
+        // display - lowercase ISO 4217 code, doubling as the literal CoinGecko `vs_currency` value
+        // (see CoinGeckoApi). Global, not per-account, matching darkModeEnabled/hiddenTabs.
+        val KEY_CURRENCY = stringPreferencesKey("currency")
+        // Settings > Security > Child Mode. Global, not per-account (matches iOS's device-level
+        // AppSettings.childModeEnabled). Turning it OFF from any UI flow is only ever done after
+        // the password verifies against ChildModeService's EncryptedSharedPreferences record —
+        // and NOTHING in the app wholesale-clears this DataStore, so a Danger Zone account wipe
+        // never silently drops the flag while that record survives.
+        val KEY_CHILD_MODE_ENABLED = booleanPreferencesKey("child_mode_enabled")
+        // Welcome Guide "Who will use KaChat?" tri-state marker (mirrors iOS's
+        // kachat_user_type_choice_state UserDefaults key):
+        //   null      - legacy install that predates the step (never forced through it)
+        //   "pending" - first-run guide was presented but the choice not yet answered
+        //   "chosen"  - answered (Adult, or Child with password set) - never downgraded
+        val KEY_USER_TYPE_CHOICE_STATE = stringPreferencesKey("user_type_choice_state")
+        const val USER_TYPE_PENDING = "pending"
+        const val USER_TYPE_CHOSEN = "chosen"
+        // An onboarding wizard run (auto-presented after create/import) is in progress and hasn't
+        // reached Finish yet — killing the app mid-wizard re-presents the FULL guide at next
+        // launch. Set when the guide auto-presents, cleared ONLY by its Finish button. Mirrors
+        // iOS's "kachat_onboarding_wizard_pending" marker. Distinct from USER_TYPE_PENDING (which
+        // only re-presents the Adult/Child step for devices that answered it before).
+        val KEY_ONBOARDING_WIZARD_PENDING = booleanPreferencesKey("onboarding_wizard_pending")
+    }
+
+    // -------------------------------------------------------------------------
+    // Reactive flows (collect in ViewModel with .stateIn)
+    // -------------------------------------------------------------------------
+
+    /** The selected network, "mainnet" or "testnet" - Settings > Connection's Testnet switch
+     *  (iOS bdae4b7). Its own store (KaspaNetwork): it must be known before any service starts. */
+    val network: Flow<String> = com.kachat.app.util.KaspaNetwork.selected.map { it.raw }
+
+    // MARK: - Connection settings: running vs selected network (iOS e6f664f, IOS-002 / AND-003)
+    //
+    // The Testnet switch takes effect at the next launch, all at once. Flipping it swaps the
+    // connection settings in the DataStore (switchNetwork), so the editable keys hold the CHOSEN
+    // network's values - Connection Settings shows and edits those - while the running network's
+    // values are set aside in its own profile. Everything the running app connects with (the
+    // indexer, REST, push, KaPosts and public chat clients, the node pool, .kachat) reads the
+    // flows below that resolve against [KaspaNetwork.launch], so nothing moves until the restart.
+    // Connection Settings reads the `selected*` flows instead.
+
+    private val gson = Gson()
+
+    /** The network whose values the editable connection keys hold. */
+    private fun liveKeysNetwork(prefs: Preferences): KaspaNetwork.Type =
+        prefs[KEY_CONNECTION_KEYS_NETWORK]?.let { KaspaNetwork.Type.fromRaw(it) } ?: KaspaNetwork.launch
+
+    private fun liveKeysProfile(prefs: Preferences) = ConnectionProfile(
+        indexerUrl = prefs[KEY_INDEXER_URL],
+        kapostIndexerUrl = prefs[KEY_KAPOST_INDEXER_URL],
+        broadcastIndexerUrl = prefs[KEY_BROADCAST_INDEXER_URL],
+        pushIndexerUrl = prefs[KEY_PUSH_INDEXER_URL],
+        translationServiceUrl = prefs[KEY_TRANSLATION_SERVICE_URL],
+        kaspaRestUrl = prefs[KEY_KASPA_REST_URL],
+        trustedNodeAddress = prefs[KEY_TRUSTED_NODE_ADDRESS],
+        savedNodeAddresses = prefs[KEY_SAVED_NODE_ADDRESSES],
+    )
+
+    /** [network]'s set-aside profile; null when there is none, or when it was written by a
+     *  release build that renamed its fields (ConnectionProfile.decode) - the network's defaults
+     *  then apply, and [switchNetwork] drops the record (audit AND-001). */
+    private fun storedProfile(prefs: Preferences, network: KaspaNetwork.Type): ConnectionProfile? =
+        prefs[connectionProfileKey(network)]?.let { ConnectionProfile.decode(it) }
+
+    /** [network]'s connection settings: the editable keys when they hold that network's, else the
+     *  profile they were set aside in, else the network's defaults. */
+    private fun connectionProfile(prefs: Preferences, network: KaspaNetwork.Type): ConnectionProfile =
+        if (liveKeysNetwork(prefs) == network) liveKeysProfile(prefs)
+        else storedProfile(prefs, network) ?: ConnectionProfile.defaults(network)
+
+    /** The running network's settings - what every live client uses until the next launch. */
+    private val runningConnection: Flow<Pair<ConnectionProfile, KaspaNetwork.Type>> =
+        dataStore.data.map { connectionProfile(it, KaspaNetwork.launch) to KaspaNetwork.launch }
+
+    /** The Testnet switch's network's settings - what Connection Settings shows and edits. */
+    private val selectedConnection: Flow<Pair<ConnectionProfile, KaspaNetwork.Type>> =
+        combine(dataStore.data, KaspaNetwork.selected) { prefs, network -> connectionProfile(prefs, network) to network }
+
+    private fun Flow<Pair<ConnectionProfile, KaspaNetwork.Type>>.resolve(
+        value: (ConnectionProfile, KaspaNetwork.Type) -> String,
+    ): Flow<String> = map { (profile, network) -> value(profile, network) }.distinctUntilChanged()
+
+    /** A blank field means the network's own default: the mainnet host on mainnet, the testnet-10
+     *  indexer on testnet - so a blank left from before testnet had an indexer becomes it, and a
+     *  custom URL is kept (iOS 5463ab7). */
+    private fun indexerOrDefault(stored: String?, default: String, network: KaspaNetwork.Type): String {
+        val value = stored?.takeIf { it.isNotBlank() }
+        return value ?: if (network == KaspaNetwork.Type.TESTNET) DEFAULT_TESTNET_INDEXER_URL else default
+    }
+
+    // Transforms away superseded default indexers on read (rather than a one-time write-back
+    // migration) - anyone who saved settings on an old default (kasia.fyi, or the previous
+    // community default kasia.wtf) is moved to the current default (kachat.duckdns.org). Custom
+    // indexers the user typed are kept as-is.
+    private fun resolveIndexerUrl(profile: ConnectionProfile, network: KaspaNetwork.Type): String {
+        val stored = profile.indexerUrl?.takeIf { url -> url.isNotBlank() }
+        if (network == KaspaNetwork.Type.TESTNET) return stored ?: DEFAULT_TESTNET_INDEXER_URL
+        return if (stored == null || stored == LEGACY_DEFAULT_INDEXER_URL || stored == LEGACY_DEFAULT_INDEXER_URL_KASIA_WTF) DEFAULT_INDEXER_URL else stored
+    }
+
+    /**
+     * Always the shipped endpoint. Deliberately NOT overridable: it is display-only in Connection
+     * Settings, has no setter, and any value already in the DataStore is ignored.
+     *
+     * On iOS this was an editable field with no empty-string fallback, so clearing it wrote "" and
+     * every KNS call then failed with an unsupported-URL error - there was nothing to point at the
+     * setting that caused it. There is no reason for this endpoint to vary per install, so on both
+     * platforms it is now pinned rather than merely defaulted.
+     */
+    private fun knsApiUrlFor(network: KaspaNetwork.Type): String =
+        if (network == KaspaNetwork.Type.MAINNET) DEFAULT_KNS_API_URL else DEFAULT_KNS_TESTNET_API_URL
+
+    // The rest stay overridable, but a BLANK stored value is treated as unset rather than passed
+    // through - an empty base URL builds a request no HTTP client will send.
+    private fun resolveKaspaRestUrl(profile: ConnectionProfile, network: KaspaNetwork.Type): String {
+        val stored = profile.kaspaRestUrl?.takeIf { url -> url.isNotBlank() }
+            // TN11's API is retired; its old default moves to TN10 (a custom URL is left alone).
+            ?.let { url -> if (url == LEGACY_DEFAULT_KASPA_TESTNET_REST_URL) DEFAULT_KASPA_TESTNET_REST_URL else url }
+        return stored ?: defaultKaspaRestUrl(network)
+    }
+
+    /**
+     * Server-side KaPost translation (see the iOS repo's TRANSLATION_SERVICE.md). Its own setting rather than
+     * riding on [kapostIndexerUrl], so someone running their own translator does not have to run
+     * their own KaPosts indexer as well - and the reverse. Blank falls back to the default: an
+     * empty base URL builds a request that fails and reads as the server being down.
+     */
+    // Translating a post has nothing to do with which chain the app is on: blank means the
+    // shipped service on both networks (iOS 2ca41aa).
+    private fun resolveTranslationServiceUrl(profile: ConnectionProfile): String =
+        profile.translationServiceUrl?.takeIf { url -> url.isNotBlank() } ?: DEFAULT_TRANSLATION_SERVICE_URL
+
+    // Falls back to DEFAULT_TRUSTED_NODE_ADDRESS only when the key has never been written at
+    // all (a fresh install) - once the user explicitly saves "" (clearing it via the Kaspa Node
+    // field), that's a real stored value distinct from "never touched", so it correctly stays
+    // empty (normal discovery) instead of snapping back to the default on every read.
+    private fun resolveTrustedNodeAddress(profile: ConnectionProfile): String =
+        profile.trustedNodeAddress ?: DEFAULT_TRUSTED_NODE_ADDRESS
+
+    private fun resolveSavedNodeAddresses(profile: ConnectionProfile): List<com.kachat.app.models.SavedNodeAddress> =
+        profile.savedNodeAddresses?.let { json ->
+            try {
+                gson.fromJson(json, Array<com.kachat.app.models.SavedNodeAddress>::class.java).toList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+        } ?: emptyList()
+
+    // The running network's endpoints - every live client.
+    val indexerUrl: Flow<String> = runningConnection.resolve(::resolveIndexerUrl)
+    val knsApiUrl: Flow<String> = flow { emit(knsApiUrlFor(KaspaNetwork.launch)) }
+    val kaspaRestUrl: Flow<String> = runningConnection.resolve(::resolveKaspaRestUrl)
+    val kapostIndexerUrl: Flow<String> = runningConnection.resolve { p, n -> indexerOrDefault(p.kapostIndexerUrl, DEFAULT_KAPOST_INDEXER_URL, n) }
+    val translationServiceUrl: Flow<String> = runningConnection.resolve { p, _ -> resolveTranslationServiceUrl(p) }
+    val broadcastIndexerUrl: Flow<String> = runningConnection.resolve { p, n -> indexerOrDefault(p.broadcastIndexerUrl, DEFAULT_BROADCAST_INDEXER_URL, n) }
+    val pushIndexerUrl: Flow<String> = runningConnection.resolve { p, n -> indexerOrDefault(p.pushIndexerUrl, DEFAULT_PUSH_INDEXER_URL, n) }
+    val trustedNodeAddress: Flow<String> = runningConnection.resolve { p, _ -> resolveTrustedNodeAddress(p) }
+    val savedNodeAddresses: Flow<List<com.kachat.app.models.SavedNodeAddress>> =
+        runningConnection.map { (p, _) -> resolveSavedNodeAddresses(p) }.distinctUntilChanged()
+
+    // The Testnet switch's network's values, for Connection Settings: after a switch they are the
+    // chosen network's, which the app connects with from the next launch.
+    val selectedIndexerUrl: Flow<String> = selectedConnection.resolve(::resolveIndexerUrl)
+    val selectedKnsApiUrl: Flow<String> = KaspaNetwork.selected.map { knsApiUrlFor(it) }
+    val selectedKaspaRestUrl: Flow<String> = selectedConnection.resolve(::resolveKaspaRestUrl)
+    val selectedKapostIndexerUrl: Flow<String> = selectedConnection.resolve { p, n -> indexerOrDefault(p.kapostIndexerUrl, DEFAULT_KAPOST_INDEXER_URL, n) }
+    val selectedTranslationServiceUrl: Flow<String> = selectedConnection.resolve { p, _ -> resolveTranslationServiceUrl(p) }
+    val selectedBroadcastIndexerUrl: Flow<String> = selectedConnection.resolve { p, n -> indexerOrDefault(p.broadcastIndexerUrl, DEFAULT_BROADCAST_INDEXER_URL, n) }
+    val selectedPushIndexerUrl: Flow<String> = selectedConnection.resolve { p, n -> indexerOrDefault(p.pushIndexerUrl, DEFAULT_PUSH_INDEXER_URL, n) }
+    val selectedTrustedNodeAddress: Flow<String> = selectedConnection.resolve { p, _ -> resolveTrustedNodeAddress(p) }
+    val selectedSavedNodeAddresses: Flow<List<com.kachat.app.models.SavedNodeAddress>> =
+        selectedConnection.map { (p, _) -> resolveSavedNodeAddresses(p) }.distinctUntilChanged()
+
+    /** Per-room overrides are kept per network (iOS 421a832) - a mainnet room's indexer is not
+     *  asked on testnet. */
+    private val broadcastOverridesKey
+        get() = if (com.kachat.app.util.KaspaNetwork.isTestnet) KEY_BROADCAST_INDEXER_OVERRIDES_TESTNET else KEY_BROADCAST_INDEXER_OVERRIDES
+
+    /** Per-room indexer overrides. A room absent from the map follows [broadcastIndexerUrl]. */
+    val broadcastIndexerOverrides: Flow<Map<String, String>> = dataStore.data.map { prefs ->
+        prefs[broadcastOverridesKey].orEmpty()
+            .split('\n')
+            .mapNotNull { line ->
+                val parts = line.split('\u0000')
+                if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
+                    parts[0] to parts[1]
+                } else null
+            }
+            .toMap()
+    }
+
+    /** Points one room at its own indexer. A blank [url] clears the override. */
+    suspend fun setBroadcastIndexerOverride(channel: String, url: String) {
+        val key = channel.trim().lowercase()
+        val trimmed = url.trim()
+        dataStore.edit { prefs ->
+            val current = prefs[broadcastOverridesKey].orEmpty()
+                .split('\n')
+                .mapNotNull { line ->
+                    val parts = line.split('\u0000')
+                    if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
+                        parts[0] to parts[1]
+                    } else null
+                }
+                .toMap()
+                .toMutableMap()
+            if (trimmed.isEmpty()) current.remove(key) else current[key] = trimmed
+            prefs[broadcastOverridesKey] =
+                current.entries.joinToString("\n") { "${it.key}\u0000${it.value}" }
+        }
+    }
+
+    /**
+     * KaPosts follow set, scoped PER WALLET ADDRESS (same pattern as the poller's per-wallet
+     * last-seen key). The old KEY_KAPOSTS_FOLLOWING was one global set, so one account's
+     * follows leaked into every other account on the device - a brand-new account started out
+     * already "following" the previous account's people.
+     */
+    private fun kapostsFollowingKey(walletAddress: String) =
+        stringSetPreferencesKey("kaposts_following_$walletAddress")
+
+    fun kapostsFollowing(walletAddress: String): Flow<Set<String>> =
+        dataStore.data.map { it[kapostsFollowingKey(walletAddress)] ?: emptySet() }
+
+    /**
+     * Mute and block lists, per account like the follow set - who you mute is a decision of one
+     * identity, not of the device; every saved account is a different identity on KaPosts, and
+     * one shared list opened a brand-new account already muting the first account's people.
+     * Same legacy rule as iOS: the pre-scoping lists go to the account when it is the only one
+     * saved (it is the owner by construction); with more they are unassignable and left alone.
+     * See [migrateLegacyKapostsModeration].
+     */
+    private fun kapostsMutedKey(walletAddress: String) = stringSetPreferencesKey("kaposts_muted_$walletAddress")
+    private fun kapostsBlockedKey(walletAddress: String) = stringSetPreferencesKey("kaposts_blocked_$walletAddress")
+
+    fun kapostsMuted(walletAddress: String): Flow<Set<String>> =
+        dataStore.data.map { it[kapostsMutedKey(walletAddress)] ?: emptySet() }
+    fun kapostsBlocked(walletAddress: String): Flow<Set<String>> =
+        dataStore.data.map { it[kapostsBlockedKey(walletAddress)] ?: emptySet() }
+
+    /**
+     * The group chats and public rooms pinned to the front of the Chats circles row, newest pin
+     * first - ids "g:<groupId>" / "r:<room>", saved per wallet like iOS's
+     * `kachat_chat_circle_pins_<address>` (a062577). Order matters, so it is one newline-joined
+     * string rather than a string set; neither a group id nor a room name can hold a newline.
+     */
+    private fun chatCirclePinsKey(walletAddress: String) =
+        stringPreferencesKey("kachat_chat_circle_pins_${walletAddress.lowercase()}")
+
+    fun chatCirclePins(walletAddress: String): Flow<List<String>> =
+        dataStore.data.map { prefs ->
+            prefs[chatCirclePinsKey(walletAddress)]?.split('\n')?.filter { it.isNotEmpty() } ?: emptyList()
+        }
+
+    suspend fun setChatCirclePins(walletAddress: String, pins: List<String>) =
+        dataStore.edit { it[chatCirclePinsKey(walletAddress)] = pins.joinToString("\n") }
+
+    /** Adopts the pre-scoping mute/block lists for [walletAddress] when this device has only
+     *  that one account and no scoped lists exist yet; otherwise leaves everything as it is.
+     *  Idempotent: the legacy keys are removed once adopted. */
+    suspend fun migrateLegacyKapostsModeration(walletAddress: String, singleAccount: Boolean) {
+        dataStore.edit { prefs ->
+            val hasLegacy = prefs.contains(KEY_KAPOSTS_MUTED) || prefs.contains(KEY_KAPOSTS_BLOCKED)
+            if (!hasLegacy) return@edit
+            val hasScoped = prefs.contains(kapostsMutedKey(walletAddress)) || prefs.contains(kapostsBlockedKey(walletAddress))
+            if (hasScoped || !singleAccount) return@edit
+            prefs[kapostsMutedKey(walletAddress)] = prefs[KEY_KAPOSTS_MUTED] ?: emptySet()
+            prefs[kapostsBlockedKey(walletAddress)] = prefs[KEY_KAPOSTS_BLOCKED] ?: emptySet()
+            prefs.remove(KEY_KAPOSTS_MUTED)
+            prefs.remove(KEY_KAPOSTS_BLOCKED)
+        }
+    }
+
+
+    // Last-known-good automatic-discovery nodes — see KEY_KNOWN_GOOD_NODES.
+    val knownGoodNodeAddresses: Flow<List<String>> = dataStore.data.map { prefs ->
+        prefs[knownGoodNodesKey]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+    }
+
+    val hasWallet: Flow<Boolean> = dataStore.data.map {
+        it[KEY_HAS_WALLET] ?: false
+    }
+
+    val activeAddress: Flow<String?> = dataStore.data.map {
+        it[KEY_ACTIVE_ADDRESS]
+    }
+
+
+    val kaspaExplorer: Flow<com.kachat.app.models.KaspaExplorer> = dataStore.data.map {
+        com.kachat.app.models.KaspaExplorer.fromName(it[KEY_KASPA_EXPLORER])
+    }
+
+    val revealedPhotoTxIds: Flow<Set<String>> = dataStore.data.map {
+        it[KEY_REVEALED_PHOTO_TX_IDS] ?: emptySet()
+    }
+
+    val broadcastPopularEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_BROADCAST_POPULAR_ENABLED] ?: true
+    }
+
+    val broadcastShowKnsAvatars: Flow<Boolean> = dataStore.data.map {
+        it[KEY_BROADCAST_SHOW_KNS_AVATARS] ?: true
+    }
+
+    // The dock is PER ACCOUNT: each account gets its own order/visibility keys once it diverges;
+    // until then it inherits the legacy global keys (which the 4.0 seeding below also targets),
+    // so the account that existed before this feature keeps its arrangement and new accounts
+    // start from a sensible base. KEY_ACTIVE_ADDRESS is mirrored from WalletManager's active
+    // account by WalletViewModel, so these transactional reads always see the right account.
+    private fun tabOrderKeyFor(address: String) = stringPreferencesKey("tab_order_$address")
+    private fun hiddenTabsKeyFor(address: String) = stringSetPreferencesKey("hidden_tabs_$address")
+
+    /** Route strings, in display order — per-account, falling back to the legacy global key, then the app's default tab order. */
+    val tabOrder: Flow<List<String>> = dataStore.data.map { prefs ->
+        val address = prefs[KEY_ACTIVE_ADDRESS]
+        val raw = address?.let { prefs[tabOrderKeyFor(it)] } ?: prefs[KEY_TAB_ORDER]
+        raw?.split(",")?.filter { it.isNotBlank() } ?: DEFAULT_TAB_ORDER
+    }
+
+    private fun dockTabsKeyFor(address: String) = stringPreferencesKey("dock_tabs_$address")
+    private fun hubTabsKeyFor(address: String) = stringPreferencesKey("hub_tabs_$address")
+
+    /** Routes in the dock, in order — per-account, falling back to the global key, then defaults. */
+    val dockTabs: Flow<List<String>> = dataStore.data.map { prefs ->
+        val address = prefs[KEY_ACTIVE_ADDRESS]
+        val raw = address?.let { prefs[dockTabsKeyFor(it)] } ?: prefs[KEY_DOCK_TABS]
+        raw?.split(",")?.filter { it.isNotBlank() } ?: DEFAULT_DOCK_TABS
+    }
+
+    /** Routes in Kaspa Hub, in the order its grid shows them. */
+    val hubTabs: Flow<List<String>> = dataStore.data.map { prefs ->
+        val address = prefs[KEY_ACTIVE_ADDRESS]
+        val raw = address?.let { prefs[hubTabsKeyFor(it)] } ?: prefs[KEY_HUB_TABS]
+        raw?.split(",")?.filter { it.isNotBlank() } ?: DEFAULT_HUB_TABS
+    }
+
+    val hiddenTabs: Flow<Set<String>> = dataStore.data.map { prefs ->
+        val address = prefs[KEY_ACTIVE_ADDRESS]
+        (address?.let { prefs[hiddenTabsKeyFor(it)] }) ?: prefs[KEY_HIDDEN_TABS] ?: emptySet()
+    }
+
+    /** See KEY_APPEARANCE: the stored choice, else the old Dark Mode switch's, else System. */
+    val appearance: Flow<com.kachat.app.models.AppAppearance> = dataStore.data.map { prefs ->
+        com.kachat.app.models.AppAppearance.fromName(prefs[KEY_APPEARANCE])
+            ?: when (prefs[KEY_DARK_MODE_ENABLED]) {
+                true -> com.kachat.app.models.AppAppearance.DARK
+                false -> com.kachat.app.models.AppAppearance.LIGHT
+                null -> com.kachat.app.models.AppAppearance.SYSTEM
+            }
+    }
+
+    /** Lowercase ISO 4217 code (e.g. "usd", "eur") - see KEY_CURRENCY. */
+    val currency: Flow<String> = dataStore.data.map { it[KEY_CURRENCY] ?: "usd" }
+
+    val biometricSeedPhraseEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BIOMETRIC_SEED_PHRASE_ENABLED] ?: true }
+    // Account-login biometrics are opt-in (off by default) on every platform.
+    val biometricAccountLoginEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] ?: false }
+    /** Gates the "Export" button on a spending address's own screen - separate from
+     *  [biometricSeedPhraseEnabled] since revealing one address's own derived key is lower-stakes
+     *  than the wallet's whole seed phrase, but still sensitive enough to gate independently. */
+    val biometricSpendingKeyEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BIOMETRIC_SPENDING_KEY_ENABLED] ?: true }
+    /** Settings > Security > Child Mode — see [KEY_CHILD_MODE_ENABLED]. */
+    val childModeEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_CHILD_MODE_ENABLED] ?: false }
+    /** [USER_TYPE_PENDING], [USER_TYPE_CHOSEN], or null (legacy install predating the wizard step). */
+    val userTypeChoiceState: Flow<String?> = dataStore.data.map { it[KEY_USER_TYPE_CHOICE_STATE] }
+    /** True while an auto-presented onboarding wizard run hasn't reached Finish — see [KEY_ONBOARDING_WIZARD_PENDING]. */
+    val onboardingWizardPending: Flow<Boolean> = dataStore.data.map { it[KEY_ONBOARDING_WIZARD_PENDING] ?: false }
+    val swapDisclaimerAgreed: Flow<Boolean> = dataStore.data.map { it[KEY_SWAP_DISCLAIMER_AGREED] ?: false }
+    /** Opt-in per-request HTTP logging, default OFF — see [KEY_VERBOSE_API_LOGGING]. */
+    val verboseApiLogging: Flow<Boolean> = dataStore.data.map { it[KEY_VERBOSE_API_LOGGING] ?: false }
+
+    val notificationsEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_NOTIFICATIONS_ENABLED] ?: true
+    }
+
+    val notificationSoundEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_NOTIFICATION_SOUND] ?: true
+    }
+
+    val notificationVibrationEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_NOTIFICATION_VIBRATION] ?: true
+    }
+
+    val addressActivityNotificationsEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_ADDRESS_ACTIVITY_NOTIFICATIONS] ?: true
+    }
+
+    /** See [KEY_SPENDING_RECEIVE_NOTIFICATIONS]. */
+    val spendingReceiveNotifications: Flow<Boolean> = dataStore.data.map {
+        it[KEY_SPENDING_RECEIVE_NOTIFICATIONS] ?: true
+    }
+
+    /** See [KEY_CHART_PAIR]: null means no comparison, absent means bitcoin. */
+    val chartPair: Flow<com.kachat.app.services.ChartPair?> = dataStore.data.map { prefs ->
+        val raw = prefs[KEY_CHART_PAIR] ?: return@map com.kachat.app.services.ChartPair.BITCOIN
+        com.kachat.app.services.ChartPair.fromId(raw)
+    }
+
+    val kaPostsNotifyLikes: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_NOTIFY_LIKES] ?: true }
+    val kaPostsNotifyReposts: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_NOTIFY_REPOSTS] ?: true }
+    val kaPostsNotifyFollows: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_NOTIFY_FOLLOWS] ?: true }
+    val kaPostsNotifyDislikes: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_NOTIFY_DISLIKES] ?: true }
+    val kaPostsNotifyComments: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_NOTIFY_COMMENTS] ?: true }
+    /** Defaults ON, and an install with no such key reads ON - a switch appearing for the first
+     *  time must not silently mute anything. */
+    val kaPostsNotifyMentions: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_NOTIFY_MENTIONS] ?: true }
+
+    /** See [KEY_PORTFOLIO_VALUES_HIDDEN]. */
+    val portfolioValuesHidden: Flow<Boolean> = dataStore.data.map { it[KEY_PORTFOLIO_VALUES_HIDDEN] ?: false }
+
+    /** See [KEY_KAPOSTS_DEFAULT_TIP_SOMPI]. Null while tipping asks for an amount every time. */
+    val kaPostsDefaultTipSompi: Flow<Long?> = dataStore.data.map {
+        it[KEY_KAPOSTS_DEFAULT_TIP_SOMPI]?.takeIf { sompi -> sompi > 0 }
+    }
+
+    /**
+     * Whether a KaPosts notification event should post, per the K API's contentType/voteType
+     * mapping — mirrors iOS's `AppSettings.shouldNotifyKaPostsAction` exactly: `vote` +
+     * `downvote` = dislike, `vote` + anything else = like, `reply` = comment, `quote` = repost
+     * (K's repost mechanism covers bare reposts and quotes-with-text), `follow` = follow.
+     * Unknown kinds always notify rather than silently vanishing.
+     */
+    suspend fun shouldNotifyKaPostsAction(contentType: String?, voteType: String?): Boolean {
+        val prefs = dataStore.data.first()
+        return when (contentType) {
+            "vote" -> if (voteType == "downvote") prefs[KEY_KAPOSTS_NOTIFY_DISLIKES] ?: true
+                      else prefs[KEY_KAPOSTS_NOTIFY_LIKES] ?: true
+            "reply" -> prefs[KEY_KAPOSTS_NOTIFY_COMMENTS] ?: true
+            "quote" -> prefs[KEY_KAPOSTS_NOTIFY_REPOSTS] ?: true
+            "follow" -> prefs[KEY_KAPOSTS_NOTIFY_FOLLOWS] ?: true
+            // Being named used to be unswitchable, on the theory that a mention is always about
+            // you. It is - but a busy account can be mentioned constantly, and "always about you"
+            // is a reason to offer the choice, not to make it for them.
+            "mention" -> prefs[KEY_KAPOSTS_NOTIFY_MENTIONS] ?: true
+            else -> true
+        }
+    }
+
+    /**
+     * The push twin of [shouldNotifyKaPostsAction], for a KaPosts push whose kind the server did
+     * not label.
+     *
+     * The server pushes every kind to any device registered with a `kaposts_pubkey` - it has no
+     * idea what the reader switched off, because nothing ever told it (see the iOS repo's PUSH_EXTENSIONS.md
+     * §3, where per-kind registration is now specified as the proper fix). Until it does, the
+     * filtering has to happen here or the five switches only govern the local poller.
+     *
+     * `kaposts_kind` is the field the server should send. Failing that, the body is matched
+     * against the exact English phrases the contract specifies - they are server-generated and
+     * not localized, so this is a fixed set, not a guess about wording.
+     */
+    suspend fun shouldNotifyKaPostsPush(kind: String?, body: String): Boolean {
+        val (contentType, voteType) = when (kind) {
+            "vote_up" -> "vote" to "upvote"
+            "vote_down" -> "vote" to "downvote"
+            "reply" -> "reply" to null
+            "quote", "repost" -> "quote" to null
+            "follow" -> "follow" to null
+            null -> {
+                val lowered = body.lowercase()
+                when {
+                    lowered.contains("disliked your") -> "vote" to "downvote"
+                    lowered.contains("liked your") -> "vote" to "upvote"
+                    lowered.contains("replied to your") -> "reply" to null
+                    lowered.contains("quoted your") || lowered.contains("reposted your") -> "quote" to null
+                    lowered.contains("followed you") -> "follow" to null
+                    // A mention, or wording we do not recognise: notify rather than swallow.
+                    else -> return true
+                }
+            }
+            else -> return true
+        }
+        return shouldNotifyKaPostsAction(contentType, voteType)
+    }
+
+    val showFeeEstimate: Flow<Boolean> = dataStore.data.map {
+        it[KEY_SHOW_FEE_ESTIMATE] ?: true
+    }
+
+    val requirePhotoApprovalForNewContacts: Flow<Boolean> = dataStore.data.map {
+        it[KEY_REQUIRE_PHOTO_APPROVAL] ?: true
+    }
+
+    val higherQualityPhotos: Flow<Boolean> = dataStore.data.map {
+        it[KEY_HIGHER_QUALITY_PHOTOS] ?: false
+    }
+
+    /** Falls back to [DEFAULT_QUICK_REACTION_EMOJIS] (matches the default in `Screens.kt`'s
+     *  `QUICK_REACTION_EMOJIS` / iOS's `AppSettings.defaultQuickReactionEmojis`) if never
+     *  customized, or if a stored value somehow isn't exactly 6 entries. */
+    val quickReactionEmojis: Flow<List<String>> = dataStore.data.map { prefs ->
+        val stored = prefs[KEY_QUICK_REACTION_EMOJIS]?.let { json ->
+            try {
+                Gson().fromJson(json, Array<String>::class.java).toList()
+            } catch (e: Exception) {
+                null
+            }
+        }
+        stored?.takeIf { it.size == 6 } ?: DEFAULT_QUICK_REACTION_EMOJIS
+    }
+
+    val groupHiddenMembers: Flow<Set<String>> = dataStore.data.map { it[KEY_GROUP_HIDDEN_MEMBERS] ?: emptySet() }
+    val groupMutedMembers: Flow<Set<String>> = dataStore.data.map { it[KEY_GROUP_MUTED_MEMBERS] ?: emptySet() }
+    val groupMentionsOnly: Flow<Set<String>> = dataStore.data.map { it[KEY_GROUP_MENTIONS_ONLY] ?: emptySet() }
+
+    /** [groupMentionsOnly] as notifications apply it: empty while mentions are off
+     *  (MentionsFeature) - nobody can mention you then, so "only if mentioned" would silence the
+     *  group. The stored choice is left alone for when mentions return (iOS 08dd836). */
+    val groupMentionsOnlyApplied: Flow<Set<String>> =
+        if (com.kachat.app.util.MentionsFeature.ENABLED) groupMentionsOnly else kotlinx.coroutines.flow.flowOf(emptySet())
+
+    /**
+     * Groups muted outright - no banner ever, mentioned or not. Sits ABOVE [groupMentionsOnly]:
+     * silent wins, and it is checked before the fallback that fires when a push cannot be
+     * ingested.
+     */
+    val groupSilent: Flow<Set<String>> = dataStore.data.map { it[KEY_GROUP_SILENT] ?: emptySet() }
+
+    suspend fun hideGroupMember(groupId: String, address: String) = dataStore.edit {
+        it[KEY_GROUP_HIDDEN_MEMBERS] = (it[KEY_GROUP_HIDDEN_MEMBERS] ?: emptySet()) + "$groupId|$address"
+    }
+
+    suspend fun unhideGroupMember(groupId: String, address: String) = dataStore.edit {
+        it[KEY_GROUP_HIDDEN_MEMBERS] = (it[KEY_GROUP_HIDDEN_MEMBERS] ?: emptySet()) - "$groupId|$address"
+    }
+
+    suspend fun muteGroupMember(groupId: String, address: String) = dataStore.edit {
+        it[KEY_GROUP_MUTED_MEMBERS] = (it[KEY_GROUP_MUTED_MEMBERS] ?: emptySet()) + "$groupId|$address"
+    }
+
+    suspend fun unmuteGroupMember(groupId: String, address: String) = dataStore.edit {
+        it[KEY_GROUP_MUTED_MEMBERS] = (it[KEY_GROUP_MUTED_MEMBERS] ?: emptySet()) - "$groupId|$address"
+    }
+
+    suspend fun setGroupMentionsOnly(groupId: String, enabled: Boolean) = dataStore.edit {
+        val current = it[KEY_GROUP_MENTIONS_ONLY] ?: emptySet()
+        it[KEY_GROUP_MENTIONS_ONLY] = if (enabled) current + groupId else current - groupId
+    }
+
+    suspend fun setGroupSilent(groupId: String, enabled: Boolean) = dataStore.edit {
+        val current = it[KEY_GROUP_SILENT] ?: emptySet()
+        it[KEY_GROUP_SILENT] = if (enabled) current + groupId else current - groupId
+    }
+
+    /** Off by default — the user must explicitly turn this on, unlike iOS's iCloud sync. */
+    val backupRetention: Flow<com.kachat.app.models.BackupRetention> = dataStore.data.map {
+        com.kachat.app.models.BackupRetention.fromName(it[KEY_BACKUP_RETENTION])
+    }
+
+    val pendingKnsCommit: Flow<PendingKnsCommit?> = dataStore.data.map { prefs ->
+        prefs[KEY_PENDING_KNS_COMMIT]?.let { json ->
+            try {
+                Gson().fromJson(json, PendingKnsCommit::class.java)
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    /**
+     * Whether the payment sync has read this wallet address's WHOLE transaction history once on
+     * this device (back to the message-retention cutoff), as iOS's first payment phase does after
+     * an import (`fetchNewMessages` with `lastPollTime == 0` -> `fetchFullTransactionsPaginated`
+     * from block time 0). Until it has, the next full sync pages through all of it, so a fresh
+     * import gets back its payment chats: payments it sent (a chat with each destination) and
+     * payments it received (the payer's chat, or the self-chat for a stranger). Set only once a
+     * scan fetched every page; cleared by a wipe so the re-sync reads it all again. Keyed
+     * per-address since a device can hold multiple saved accounts.
+     *
+     * This replaced `payment_sync_baseline_<address>`, a first-run floor below which every
+     * payment was dropped - a fresh import restored none of its payment history (iOS restores
+     * all of it). That key is no longer read.
+     */
+    fun paymentHistoryScanned(address: String): Flow<Boolean> = dataStore.data.map {
+        it[paymentHistoryScannedKey(address)] ?: false
+    }
+
+    /**
+     * Per-account "live" baseline: the first moment this account ever synced on THIS device —
+     * which is exactly the import/restore moment for a freshly imported account. Anything
+     * on-chain OLDER than it is history being backfilled: inserted as already-read and never
+     * notified, so importing an account doesn't replay every past 1:1/group message as a fresh
+     * unread notification. Anything newer is live traffic and behaves normally. Get-or-init:
+     * the first caller stamps "now".
+     */
+    suspend fun liveNotificationBaseline(address: String): Long {
+        val key = liveNotificationBaselineKey(address)
+        dataStore.data.first()[key]?.let { return it }
+        val now = System.currentTimeMillis()
+        dataStore.edit { it[key] = now }
+        return now
+    }
+
+    /** Removes the baseline so the NEXT sync stamps a fresh "now" — used when an account's local
+     *  data is wiped, so a later re-import treats the whole history as silent read backfill. */
+    suspend fun clearLiveNotificationBaseline(address: String) {
+        dataStore.edit { it.remove(liveNotificationBaselineKey(address)) }
+    }
+
+    /**
+     * How far into the `handshakes/by-receiver` stream this wallet has already synced — the
+     * indexer's `block_time` cursor, so a sync only asks for what's genuinely new since last time
+     * instead of re-fetching the same recent window every cycle. Keyed per-address like
+     * [paymentHistoryScanned]. Unlike contextual messages (per-contact-per-alias, so tracked in Room
+     * — see [com.kachat.app.models.MessageSyncCursorEntity]), handshakes-by-receiver is a single
+     * stream for the whole wallet, so a DataStore value is enough.
+     */
+    fun handshakeSyncCursor(address: String): Flow<Long?> = dataStore.data.map {
+        it[handshakeSyncCursorKey(address)]
+    }
+
+    /**
+     * Per-account toggle for whether the "Setup Guide" re-entry points (the Profile screen's
+     * "Welcome Guide" row and the "Edit KNS Profile" screen's "Setup Guide" section) are shown.
+     * Keyed per-address like [paymentHistoryScanned] so switching accounts on the same device
+     * doesn't carry the choice over. Defaults to `true` (unset key) to match pre-existing
+     * behavior for anyone who had these guides visible before this toggle existed.
+     */
+    fun showSetupGuides(address: String): Flow<Boolean> = dataStore.data.map {
+        it[showSetupGuidesKey(address)] ?: true
+    }
+
+    // -------------------------------------------------------------------------
+    // Write helpers (suspend — call from coroutine / ViewModel)
+    // -------------------------------------------------------------------------
+
+    suspend fun setIndexerUrl(value: String) = dataStore.edit { it[KEY_INDEXER_URL] = value }
+    suspend fun setKaspaRestUrl(value: String) = dataStore.edit { it[KEY_KASPA_REST_URL] = value }
+    suspend fun setKapostIndexerUrl(value: String) = dataStore.edit { it[KEY_KAPOST_INDEXER_URL] = value }
+    suspend fun setTranslationServiceUrl(value: String) = dataStore.edit { it[KEY_TRANSLATION_SERVICE_URL] = value }
+    suspend fun setBroadcastIndexerUrl(value: String) = dataStore.edit { it[KEY_BROADCAST_INDEXER_URL] = value }
+    suspend fun setPushIndexerUrl(value: String) = dataStore.edit { it[KEY_PUSH_INDEXER_URL] = value }
+    suspend fun setKapostsFollowing(walletAddress: String, value: Set<String>) =
+        dataStore.edit { it[kapostsFollowingKey(walletAddress)] = value }
+
+    /**
+     * Deletes the legacy GLOBAL follow set (the cross-account leak source). Deliberately not
+     * migrated into any scoped key: assigning it to whichever account happens to be active
+     * would re-create the exact leak for every other account, and the per-session on-chain
+     * follow sync rebuilds each account's real follow set from the chain anyway.
+     */
+    suspend fun clearLegacyKapostsFollowing() = dataStore.edit { it.remove(KEY_KAPOSTS_FOLLOWING) }
+    suspend fun setKapostsMuted(walletAddress: String, value: Set<String>) =
+        dataStore.edit { it[kapostsMutedKey(walletAddress)] = value }
+    suspend fun setKapostsBlocked(walletAddress: String, value: Set<String>) =
+        dataStore.edit { it[kapostsBlockedKey(walletAddress)] = value }
+    suspend fun setTrustedNodeAddress(value: String) = dataStore.edit { it[KEY_TRUSTED_NODE_ADDRESS] = value }
+    suspend fun setKnownGoodNodeAddresses(addresses: List<String>) = dataStore.edit {
+        it[knownGoodNodesKey] = addresses.joinToString(",")
+    }
+
+    /** The node pool runs on the launch network, and keeps that network's own list. */
+    private val knownGoodNodesKey
+        get() = if (com.kachat.app.util.KaspaNetwork.isTestnet) KEY_KNOWN_GOOD_NODES_TESTNET else KEY_KNOWN_GOOD_NODES
+
+    /**
+     * Settings > Connection > Testnet (iOS `SettingsViewModel.switchNetwork(to:)`, e6f664f). Only
+     * records the choice: the running app stays on [KaspaNetwork.launch] - wallet address, node
+     * pool, indexer, REST, push - and the whole switch happens at the next launch
+     * ([KaspaNetwork.init] starts on the chosen network). Choosing the running network again
+     * cancels it.
+     *
+     * Each network keeps its own connection settings (iOS `AppSettings.switchNetwork(to:)`): the
+     * editable keys take the chosen network's (or its defaults, the first time), so Connection
+     * Settings shows and edits what the app will use after the restart, and the values they held
+     * are set aside in their network's profile - where the live clients keep reading the running
+     * network's from until then (see runningConnection).
+     */
+    suspend fun switchNetwork(to: com.kachat.app.util.KaspaNetwork.Type) {
+        dataStore.edit { prefs ->
+            val current = liveKeysNetwork(prefs)
+            if (to != current) {
+                prefs[connectionProfileKey(current)] = ConnectionProfile.encode(liveKeysProfile(prefs))
+                // A record an obfuscated build wrote is reset here, once: the chosen network
+                // starts from its defaults instead of misreading it (audit AND-001).
+                prefs[connectionProfileKey(to)]?.takeIf { ConnectionProfile.isForeignRecord(it) }?.let {
+                    android.util.Log.w("AppSettings", "Dropped an unreadable ${to.raw} connection profile")
+                    prefs.remove(connectionProfileKey(to))
+                }
+                val next = storedProfile(prefs, to) ?: ConnectionProfile.defaults(to)
+                fun put(key: androidx.datastore.preferences.core.Preferences.Key<String>, value: String?) {
+                    if (value == null) prefs.remove(key) else prefs[key] = value
+                }
+                put(KEY_INDEXER_URL, next.indexerUrl)
+                put(KEY_KAPOST_INDEXER_URL, next.kapostIndexerUrl)
+                put(KEY_BROADCAST_INDEXER_URL, next.broadcastIndexerUrl)
+                put(KEY_PUSH_INDEXER_URL, next.pushIndexerUrl)
+                put(KEY_TRANSLATION_SERVICE_URL, next.translationServiceUrl)
+                put(KEY_KASPA_REST_URL, next.kaspaRestUrl)
+                put(KEY_TRUSTED_NODE_ADDRESS, next.trustedNodeAddress)
+                put(KEY_SAVED_NODE_ADDRESSES, next.savedNodeAddresses)
+                prefs[KEY_CONNECTION_KEYS_NETWORK] = to.raw
+            }
+            // The choice for the next launch, recorded inside the edit so the settings and the
+            // switch are written together.
+            com.kachat.app.util.KaspaNetwork.select(to)
+        }
+    }
+    suspend fun addSavedNodeAddress(entry: com.kachat.app.models.SavedNodeAddress) = dataStore.edit { prefs ->
+        val current = prefs[KEY_SAVED_NODE_ADDRESSES]?.let { json ->
+            try {
+                Gson().fromJson(json, Array<com.kachat.app.models.SavedNodeAddress>::class.java).toList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+        } ?: emptyList()
+        prefs[KEY_SAVED_NODE_ADDRESSES] = Gson().toJson(current + entry)
+    }
+    suspend fun removeSavedNodeAddress(id: String) = dataStore.edit { prefs ->
+        val current = prefs[KEY_SAVED_NODE_ADDRESSES]?.let { json ->
+            try {
+                Gson().fromJson(json, Array<com.kachat.app.models.SavedNodeAddress>::class.java).toList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+        } ?: emptyList()
+        prefs[KEY_SAVED_NODE_ADDRESSES] = Gson().toJson(current.filterNot { it.id == id })
+    }
+    suspend fun setHasWallet(value: Boolean) = dataStore.edit { it[KEY_HAS_WALLET] = value }
+    suspend fun setActiveAddress(value: String) = dataStore.edit { it[KEY_ACTIVE_ADDRESS] = value }
+    suspend fun setKaspaExplorer(value: com.kachat.app.models.KaspaExplorer) = dataStore.edit { it[KEY_KASPA_EXPLORER] = value.name }
+    suspend fun revealPhoto(txId: String) = dataStore.edit {
+        it[KEY_REVEALED_PHOTO_TX_IDS] = (it[KEY_REVEALED_PHOTO_TX_IDS] ?: emptySet()) + txId
+    }
+    suspend fun setBroadcastPopularEnabled(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_POPULAR_ENABLED] = value }
+    suspend fun setVerboseApiLogging(value: Boolean) = dataStore.edit { it[KEY_VERBOSE_API_LOGGING] = value }
+    suspend fun setBroadcastShowKnsAvatars(value: Boolean) = dataStore.edit { it[KEY_BROADCAST_SHOW_KNS_AVATARS] = value }
+    suspend fun setTabOrder(routes: List<String>) = dataStore.edit { prefs ->
+        val address = prefs[KEY_ACTIVE_ADDRESS]
+        val encoded = routes.joinToString(",")
+        if (address != null) prefs[tabOrderKeyFor(address)] = encoded else prefs[KEY_TAB_ORDER] = encoded
+    }
+    /**
+     * Written together, always: a tab must never be missing from both lists or present in both.
+     */
+    suspend fun setPlacement(dock: List<String>, hub: List<String>) = dataStore.edit { prefs ->
+        val address = prefs[KEY_ACTIVE_ADDRESS]
+        val encodedDock = dock.joinToString(",")
+        val encodedHub = hub.joinToString(",")
+        if (address != null) {
+            prefs[dockTabsKeyFor(address)] = encodedDock
+            prefs[hubTabsKeyFor(address)] = encodedHub
+        } else {
+            prefs[KEY_DOCK_TABS] = encodedDock
+            prefs[KEY_HUB_TABS] = encodedHub
+        }
+    }
+
+    /**
+     * One-time placement migration: derives a dock from what the user could already SEE rather
+     * than resetting them to the default, so an arrangement they built survives - with the pinned
+     * tabs guaranteed their slots.
+     */
+    suspend fun applyPlacementDefaultsIfNeeded(
+        resolveVisible: (List<String>, Set<String>) -> List<String>,
+        pinned: List<String>,
+        assignable: List<String>,
+        maxDock: Int,
+    ) = dataStore.edit { prefs ->
+        if (prefs[KEY_PLACEMENT_APPLIED] == true) return@edit
+        val address = prefs[KEY_ACTIVE_ADDRESS]
+        val order = (address?.let { prefs[tabOrderKeyFor(it)] } ?: prefs[KEY_TAB_ORDER])
+            ?.split(",")?.filter { it.isNotBlank() } ?: DEFAULT_TAB_ORDER
+        val hidden = (address?.let { prefs[hiddenTabsKeyFor(it)] } ?: prefs[KEY_HIDDEN_TABS]) ?: emptySet()
+
+        val dock = resolveVisible(order, hidden).toMutableList()
+        for (route in pinned) {
+            if (route !in dock) {
+                val position = DEFAULT_DOCK_TABS.indexOf(route).takeIf { it >= 0 } ?: dock.size
+                dock.add(minOf(position, dock.size), route)
+            }
+        }
+        val placedDock = dock.take(maxDock)
+        val placedHub = DEFAULT_TAB_ORDER.filter { it in assignable && it !in placedDock }
+
+        if (address != null) {
+            prefs[dockTabsKeyFor(address)] = placedDock.joinToString(",")
+            prefs[hubTabsKeyFor(address)] = placedHub.joinToString(",")
+        } else {
+            prefs[KEY_DOCK_TABS] = placedDock.joinToString(",")
+            prefs[KEY_HUB_TABS] = placedHub.joinToString(",")
+        }
+        prefs[KEY_PLACEMENT_APPLIED] = true
+    }
+
+    suspend fun setTabHidden(route: String, hidden: Boolean) = dataStore.edit { prefs ->
+        val address = prefs[KEY_ACTIVE_ADDRESS]
+        val readKey = if (address != null) hiddenTabsKeyFor(address) else KEY_HIDDEN_TABS
+        // First divergence for an account starts from what it currently inherits (legacy global).
+        val current = prefs[readKey] ?: prefs[KEY_HIDDEN_TABS] ?: emptySet()
+        prefs[readKey] = if (hidden) current + route else current - route
+    }
+
+    /**
+     * One-time 4.0 dock seeding, run at app start (WalletViewModel init).
+     * - EXISTING users (has_wallet set): force-enable the tabs new in 4.0 ("kaposts"/
+     *   "broadcasts") but otherwise leave their explicit hide/show choices untouched.
+     * - FRESH installs (no wallet yet): EVERYTHING enabled - all tabs default to ON (the old
+     *   minimal Chats/Profile/"+ More" seed is gone; hidden_tabs polarity means "leave the set
+     *   empty" = all on). The 5-item dock cap then shows Portfolio/Storage/Chats/Swap/Profile,
+     *   with KaPosts/Broadcasts riding the Chats-slot cycle (matches iOS).
+     * The sentinel guarantees this never re-runs, so later user choices are never overwritten.
+     */
+    suspend fun applyKaPostsTabDefaultsIfNeeded() = dataStore.edit { prefs ->
+        if (prefs[KEY_TAB_DEFAULTS_40_V3_APPLIED] == true) return@edit
+        val hasWallet = prefs[KEY_HAS_WALLET] ?: false
+        val current = prefs[KEY_HIDDEN_TABS] ?: emptySet()
+        prefs[KEY_HIDDEN_TABS] = if (hasWallet) {
+            // EXISTING users: the 4.0-new tabs get ENABLED; anything the user explicitly hid
+            // before (portfolio/cold_storage/swap) stays hidden. "more" is scrubbed too - the
+            // "+ More" pseudo-tab no longer exists.
+            current - "kaposts" - "broadcasts" - "more"
+        } else {
+            // BRAND-NEW installs: all tabs ON. Scrub every known route so no stale v1/v2
+            // seeding survives - an empty set means everything visible.
+            current - "portfolio" - "cold_storage" - "swap" - "kaposts" - "broadcasts" - "more"
+        }
+        prefs[KEY_TAB_DEFAULTS_40_V3_APPLIED] = true
+        prefs[KEY_TAB_DEFAULTS_40_APPLIED] = true
+    }
+    suspend fun setAppearance(value: com.kachat.app.models.AppAppearance) = dataStore.edit { it[KEY_APPEARANCE] = value.name }
+    suspend fun setCurrency(value: String) = dataStore.edit { it[KEY_CURRENCY] = value }
+    suspend fun setBiometricSeedPhraseEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_SEED_PHRASE_ENABLED] = value }
+    suspend fun setBiometricAccountLoginEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] = value }
+    suspend fun setBiometricSpendingKeyEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_SPENDING_KEY_ENABLED] = value }
+    suspend fun setChildModeEnabled(value: Boolean) = dataStore.edit { it[KEY_CHILD_MODE_ENABLED] = value }
+    /** Called right before the first-run guide auto-presents. Never downgrades an already-made
+     *  choice (a second account created later re-shows the guide, but the device-level Adult/Child
+     *  answer stands and Skip stays available). */
+    suspend fun markUserTypePending() = dataStore.edit {
+        if (it[KEY_USER_TYPE_CHOICE_STATE] != USER_TYPE_CHOSEN) it[KEY_USER_TYPE_CHOICE_STATE] = USER_TYPE_PENDING
+    }
+    suspend fun markUserTypeChosen() = dataStore.edit { it[KEY_USER_TYPE_CHOICE_STATE] = USER_TYPE_CHOSEN }
+    /** The onboarding wizard auto-presented — an unfinished run must re-present at next launch. */
+    suspend fun markOnboardingWizardPending() = dataStore.edit { it[KEY_ONBOARDING_WIZARD_PENDING] = true }
+    /** Only the wizard's Finish button clears this. */
+    suspend fun clearOnboardingWizardPending() = dataStore.edit { it[KEY_ONBOARDING_WIZARD_PENDING] = false }
+    suspend fun setSwapDisclaimerAgreed(value: Boolean) = dataStore.edit { it[KEY_SWAP_DISCLAIMER_AGREED] = value }
+    suspend fun setNotificationsEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATIONS_ENABLED] = value }
+    suspend fun setShowFeeEstimate(value: Boolean) = dataStore.edit { it[KEY_SHOW_FEE_ESTIMATE] = value }
+    suspend fun setRequirePhotoApprovalForNewContacts(value: Boolean) = dataStore.edit { it[KEY_REQUIRE_PHOTO_APPROVAL] = value }
+    suspend fun setHigherQualityPhotos(value: Boolean) = dataStore.edit { it[KEY_HIGHER_QUALITY_PHOTOS] = value }
+    suspend fun setQuickReactionEmojis(value: List<String>) = dataStore.edit { it[KEY_QUICK_REACTION_EMOJIS] = Gson().toJson(value) }
+    suspend fun setNotificationSoundEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_SOUND] = value }
+    suspend fun setNotificationVibrationEnabled(value: Boolean) = dataStore.edit { it[KEY_NOTIFICATION_VIBRATION] = value }
+    suspend fun setAddressActivityNotificationsEnabled(value: Boolean) = dataStore.edit { it[KEY_ADDRESS_ACTIVITY_NOTIFICATIONS] = value }
+    suspend fun setSpendingReceiveNotifications(value: Boolean) = dataStore.edit { it[KEY_SPENDING_RECEIVE_NOTIFICATIONS] = value }
+    suspend fun setChartPair(value: com.kachat.app.services.ChartPair?) = dataStore.edit {
+        it[KEY_CHART_PAIR] = value?.id ?: ""
+    }
+    suspend fun setKaPostsNotifyLikes(value: Boolean) = dataStore.edit { it[KEY_KAPOSTS_NOTIFY_LIKES] = value }
+    suspend fun setKaPostsNotifyReposts(value: Boolean) = dataStore.edit { it[KEY_KAPOSTS_NOTIFY_REPOSTS] = value }
+    suspend fun setKaPostsNotifyFollows(value: Boolean) = dataStore.edit { it[KEY_KAPOSTS_NOTIFY_FOLLOWS] = value }
+    suspend fun setKaPostsNotifyDislikes(value: Boolean) = dataStore.edit { it[KEY_KAPOSTS_NOTIFY_DISLIKES] = value }
+    suspend fun setKaPostsNotifyComments(value: Boolean) = dataStore.edit { it[KEY_KAPOSTS_NOTIFY_COMMENTS] = value }
+    suspend fun setKaPostsNotifyMentions(value: Boolean) = dataStore.edit { it[KEY_KAPOSTS_NOTIFY_MENTIONS] = value }
+
+    suspend fun setPortfolioValuesHidden(value: Boolean) = dataStore.edit { it[KEY_PORTFOLIO_VALUES_HIDDEN] = value }
+
+    suspend fun setKaPostsDefaultTipSompi(value: Long?) = dataStore.edit {
+        if (value != null && value > 0) it[KEY_KAPOSTS_DEFAULT_TIP_SOMPI] = value
+        else it.remove(KEY_KAPOSTS_DEFAULT_TIP_SOMPI)
+    }
+    suspend fun setBackupRetention(value: com.kachat.app.models.BackupRetention) = dataStore.edit { it[KEY_BACKUP_RETENTION] = value.name }
+    suspend fun setPendingKnsCommit(commit: PendingKnsCommit) = dataStore.edit { it[KEY_PENDING_KNS_COMMIT] = Gson().toJson(commit) }
+    suspend fun clearPendingKnsCommit() = dataStore.edit { it.remove(KEY_PENDING_KNS_COMMIT) }
+    suspend fun setPaymentHistoryScanned(address: String, value: Boolean) = dataStore.edit { it[paymentHistoryScannedKey(address)] = value }
+
+    /**
+     * Received payments whose signatures couldn't be checked yet, for [wallet] (iOS 5806362
+     * `kachat_held_payments_<wallet>`): txid (lowercased) -> when it was first held (epoch ms).
+     * The payment sync re-reads and checks them on every sync for up to 7 days
+     * ([com.kachat.app.repository.ChatRepository.heldPaymentsDue]); never shown unverified.
+     */
+    suspend fun heldPayments(wallet: String): Map<String, Long> {
+        val raw = dataStore.data.first()[heldPaymentsKey(wallet)] ?: return emptyMap()
+        return runCatching {
+            @Suppress("UNCHECKED_CAST")
+            (Gson().fromJson(raw, Map::class.java) as Map<String, Any?>)
+                .mapNotNull { (txId, at) -> (at as? Number)?.toLong()?.let { txId to it } }
+                .toMap()
+        }.getOrDefault(emptyMap())
+    }
+
+    suspend fun setHeldPayments(wallet: String, held: Map<String, Long>) = dataStore.edit {
+        if (held.isEmpty()) it.remove(heldPaymentsKey(wallet)) else it[heldPaymentsKey(wallet)] = Gson().toJson(held)
+    }
+    suspend fun setHandshakeSyncCursor(address: String, value: Long) = dataStore.edit { it[handshakeSyncCursorKey(address)] = value }
+
+    /** Cursor for the OUTGOING handshakes/by-sender restore pass — separate stream, separate cursor. */
+    fun handshakeOutSyncCursor(address: String): Flow<Long?> = dataStore.data.map {
+        it[handshakeOutSyncCursorKey(address)]
+    }
+
+    suspend fun setHandshakeOutSyncCursor(address: String, value: Long) = dataStore.edit { it[handshakeOutSyncCursorKey(address)] = value }
+    suspend fun setShowSetupGuides(address: String, value: Boolean) = dataStore.edit { it[showSetupGuidesKey(address)] = value }
+
+    private fun paymentHistoryScannedKey(address: String) = booleanPreferencesKey("payment_history_scanned_$address")
+    private fun heldPaymentsKey(wallet: String) = stringPreferencesKey("kachat_held_payments_${wallet.lowercase()}")
+    private fun liveNotificationBaselineKey(address: String) = longPreferencesKey("live_notification_baseline_$address")
+    private fun handshakeSyncCursorKey(address: String) = longPreferencesKey("handshake_sync_cursor_$address")
+    private fun handshakeOutSyncCursorKey(address: String) = longPreferencesKey("handshake_out_sync_cursor_$address")
+    private fun showSetupGuidesKey(address: String) = booleanPreferencesKey("show_setup_guides_$address")
+}
+
+/**
+ * One network's connection settings - see [AppSettingsRepository.switchNetwork] (iOS
+ * `ConnectionProfile`). Stored raw: null is "never set" (the network's default), "" is "none".
+ */
+data class ConnectionProfile(
+    val indexerUrl: String? = null,
+    val kapostIndexerUrl: String? = null,
+    val broadcastIndexerUrl: String? = null,
+    val pushIndexerUrl: String? = null,
+    val translationServiceUrl: String? = null,
+    val kaspaRestUrl: String? = null,
+    val trustedNodeAddress: String? = null,
+    /** Gson list of SavedNodeAddress, as stored under KEY_SAVED_NODE_ADDRESSES. */
+    val savedNodeAddresses: String? = null,
+) {
+    companion object {
+        /** Every field name above, as Gson writes them. app/proguard-rules.pro keeps these names
+         *  in release builds; ConnectionProfileStoreTest checks the set against the class. */
+        internal val FIELDS = setOf(
+            "indexerUrl", "kapostIndexerUrl", "broadcastIndexerUrl", "pushIndexerUrl",
+            "translationServiceUrl", "kaspaRestUrl", "trustedNodeAddress", "savedNodeAddresses",
+        )
+
+        private val gson = com.google.gson.Gson()
+
+        fun encode(profile: ConnectionProfile): String = gson.toJson(profile)
+
+        /** A record written with renamed fields (a release build without the keep rule). */
+        fun isForeignRecord(json: String): Boolean = com.kachat.app.util.PersistedJson.hasForeignFields(json, FIELDS)
+
+        /** The stored profile; null when it does not parse or [isForeignRecord] - never a
+         *  profile read out of a record that is not one. */
+        fun decode(json: String): ConnectionProfile? {
+            if (isForeignRecord(json)) return null
+            return try { gson.fromJson(json, ConnectionProfile::class.java) } catch (e: Exception) { null }
+        }
+
+        /** What a network starts with. Testnet: the public testnet-10 REST API, automatic node
+         *  discovery, and KaChat's testnet-10 indexer (unset = the network's default) for chat,
+         *  push, KaPosts and public chats (iOS 5463ab7). */
+        fun defaults(network: com.kachat.app.util.KaspaNetwork.Type): ConnectionProfile =
+            if (network == com.kachat.app.util.KaspaNetwork.Type.MAINNET) {
+                ConnectionProfile()
+            } else {
+                ConnectionProfile(
+                    indexerUrl = null,
+                    kapostIndexerUrl = null,
+                    broadcastIndexerUrl = null,
+                    pushIndexerUrl = null,
+                    // Translation is the same service on both networks (iOS 2ca41aa).
+                    translationServiceUrl = null,
+                    kaspaRestUrl = AppSettingsRepository.DEFAULT_KASPA_TESTNET_REST_URL,
+                    // "" = Automatic Scan: the shipped default node is a mainnet node.
+                    trustedNodeAddress = "",
+                    savedNodeAddresses = "[]",
+                )
+            }
+    }
+}

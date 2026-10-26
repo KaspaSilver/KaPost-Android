@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base theme — Compose handles all visual styling; this just sets the window background.
+         Must descend from a Theme.AppCompat theme: MainActivity extends AppCompatActivity (for
+         AppCompatDelegate.setApplicationLocales' per-app language backport), which throws at
+         setContentView if the activity theme isn't an AppCompat theme or descendant. -->
+    <style name="Theme.KaChat" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

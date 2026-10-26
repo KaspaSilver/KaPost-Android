@@ -1,0 +1,153 @@
+package com.kachat.app.viewmodels
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.kachat.app.repository.AppSettingsRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+/**
+ * ViewModel for the Settings screen.
+ * Reads/writes app settings via AppSettingsRepository.
+ */
+@HiltViewModel
+class SettingsViewModel @Inject constructor(
+    private val settings: AppSettingsRepository,
+    pushState: com.kachat.app.services.PushState,
+    private val childModeService: com.kachat.app.services.ChildModeService,
+) : ViewModel() {
+
+    /** Read-only push diagnostics for Settings > Notifications (see PushState.PushDiagnostics). */
+    val pushActive = pushState.pushActive
+    val pushDiagnostics = pushState.diagnostics
+
+    val network = settings.network
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettingsRepository.DEFAULT_NETWORK)
+
+    val indexerUrl = settings.indexerUrl
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettingsRepository.DEFAULT_INDEXER_URL)
+
+    val knsApiUrl = settings.knsApiUrl
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettingsRepository.DEFAULT_KNS_API_URL)
+
+    val kaspaRestUrl = settings.kaspaRestUrl
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettingsRepository.DEFAULT_KASPA_REST_URL)
+
+    val notificationsEnabled = settings.notificationsEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val notificationSoundEnabled = settings.notificationSoundEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val notificationVibrationEnabled = settings.notificationVibrationEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val showFeeEstimate = settings.showFeeEstimate
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    /** Settings > Chats > Require approval for photos from new contacts (iOS, on by default). */
+    val requirePhotoApprovalForNewContacts = settings.requirePhotoApprovalForNewContacts
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    /** Settings > Chats > Higher quality photos (iOS, off by default). */
+    val higherQualityPhotos = settings.higherQualityPhotos
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val quickReactionEmojis = settings.quickReactionEmojis
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettingsRepository.DEFAULT_QUICK_REACTION_EMOJIS)
+
+    fun saveIndexerUrl(value: String) = viewModelScope.launch { settings.setIndexerUrl(value) }
+    fun saveKaspaRestUrl(value: String) = viewModelScope.launch { settings.setKaspaRestUrl(value) }
+    fun setNotificationsEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationsEnabled(value) }
+    fun setNotificationSoundEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationSoundEnabled(value) }
+    fun setNotificationVibrationEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationVibrationEnabled(value) }
+    fun setShowFeeEstimate(value: Boolean) = viewModelScope.launch { settings.setShowFeeEstimate(value) }
+    fun setRequirePhotoApprovalForNewContacts(value: Boolean) = viewModelScope.launch { settings.setRequirePhotoApprovalForNewContacts(value) }
+    fun setHigherQualityPhotos(value: Boolean) = viewModelScope.launch { settings.setHigherQualityPhotos(value) }
+    fun setQuickReactionEmojis(value: List<String>) = viewModelScope.launch { settings.setQuickReactionEmojis(value) }
+
+    // ------------------------------------------------------------------
+    // Notifications hub subpages (Settings > Notifications)
+    // ------------------------------------------------------------------
+
+    val addressActivityNotificationsEnabled = settings.addressActivityNotificationsEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val kaPostsNotifyLikes = settings.kaPostsNotifyLikes
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val kaPostsNotifyReposts = settings.kaPostsNotifyReposts
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val kaPostsNotifyFollows = settings.kaPostsNotifyFollows
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val kaPostsNotifyDislikes = settings.kaPostsNotifyDislikes
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val kaPostsNotifyComments = settings.kaPostsNotifyComments
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val kaPostsNotifyMentions = settings.kaPostsNotifyMentions
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    /** Receive notifications for the wallet's own spending addresses - a cold-storage account
+     *  has its own switch in its menu (iOS ba352a2). */
+    val spendingReceiveNotifications = settings.spendingReceiveNotifications
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setSpendingReceiveNotifications(enabled: Boolean) {
+        viewModelScope.launch { settings.setSpendingReceiveNotifications(enabled) }
+    }
+
+    /** The amount a tap on Tip sends at once, in sompi; null while it asks every time. */
+    val kaPostsDefaultTipSompi = settings.kaPostsDefaultTipSompi
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun setAddressActivityNotificationsEnabled(value: Boolean) = viewModelScope.launch { settings.setAddressActivityNotificationsEnabled(value) }
+    fun setKaPostsNotifyLikes(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyLikes(value) }
+    fun setKaPostsNotifyReposts(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyReposts(value) }
+    fun setKaPostsNotifyFollows(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyFollows(value) }
+    fun setKaPostsNotifyDislikes(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyDislikes(value) }
+    fun setKaPostsNotifyComments(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyComments(value) }
+    fun setKaPostsNotifyMentions(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyMentions(value) }
+    fun setKaPostsDefaultTipSompi(value: Long?) = viewModelScope.launch { settings.setKaPostsDefaultTipSompi(value) }
+
+    // ------------------------------------------------------------------
+    // Simple Mode (Settings > Security > Simple Mode + the Welcome Guide's
+    // "Who will use KaChat?" step). NEVER biometrics anywhere in these
+    // flows — only the password counts. See ChildModeService.
+    // ------------------------------------------------------------------
+
+    val childModeEnabled = settings.childModeEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** Synchronous (EncryptedSharedPreferences-backed) — safe to call from composition. Every
+     *  call below that touches the password itself suspends instead: PBKDF2 is deliberately slow. */
+    fun hasChildModePassword(): Boolean = childModeService.hasPassword()
+
+    suspend fun verifyChildModePassword(password: String): Boolean = childModeService.verifyPassword(password)
+
+    /** Seconds still to wait after too many wrong answers, null while attempts are open. */
+    fun childModeLockoutSeconds(): Int? = childModeService.lockoutRemainingSeconds()
+
+    /** Stores the salted hash. Returns false if storing failed (degenerate empty password / crypto error). */
+    suspend fun setChildModePassword(password: String): Boolean =
+        runCatching { childModeService.setPassword(password) }.isSuccess
+
+    /** Wrong current password → false, nothing changes. */
+    suspend fun changeChildModePassword(current: String, newPassword: String): Boolean =
+        runCatching { childModeService.changePassword(current, newPassword) }.getOrDefault(false)
+
+    /** Turning ON with a password already set needs no password; turning OFF must go through
+     *  [turnOffChildMode] so the flag can never be flipped off without the password verifying. */
+    fun enableChildMode() = viewModelScope.launch { settings.setChildModeEnabled(true) }
+
+    /** Verifies first; only then flips the persisted flag off. Wrong password → false, stays on. */
+    suspend fun turnOffChildMode(password: String): Boolean {
+        if (!childModeService.verifyPassword(password)) return false
+        settings.setChildModeEnabled(false)
+        return true
+    }
+
+    /** Full reset to never-configured: deletes the stored record and turns Simple Mode off.
+     *  Wrong password → false, nothing changes. */
+    suspend fun clearChildModeConfiguration(password: String): Boolean =
+        runCatching { childModeService.clearConfiguration(password) }.getOrDefault(false)
+
+    /** The wizard's Adult/Child step was answered — persist the marker so relaunches stop
+     *  re-presenting the guide. */
+    fun markUserTypeChosen() = viewModelScope.launch { settings.markUserTypeChosen() }
+}

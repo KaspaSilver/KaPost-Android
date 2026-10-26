@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Phones lock to portrait; overridden by values-sw600dp (tablets) for free rotation,
+         mirroring iOS (iPhone portrait-only, iPad any orientation). -->
+    <bool name="lock_portrait">true</bool>
+</resources>

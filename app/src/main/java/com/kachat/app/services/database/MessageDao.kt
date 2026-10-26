@@ -1,0 +1,416 @@
+package com.kachat.app.services.database
+
+import androidx.room.*
+import com.kachat.app.models.MessageEntity
+import com.kachat.app.models.MessageSyncCursorEntity
+import com.kachat.app.models.UnreadCount
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface MessageDao {
+    @Query("SELECT * FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress ORDER BY blockTimestamp ASC")
+    fun getMessagesForContact(contactId: String, walletAddress: String): Flow<List<MessageEntity>>
+
+    /**
+     * The window of a conversation the open thread keeps live: the newest [limit] rows, plus
+     * every handshake and the newest [unsentLimit] rows not marked sent - the set iOS's
+     * `fetchConversationWindows` produces and its trim keeps, so the handshake banners and
+     * pending sends never fall out of view however old they are. Handshakes stay sticky
+     * without a cap (protocol state, a handful per contact); unsent rows are capped because each
+     * failed photo send carries ~20KB of base64 and a conversation that keeps failing would
+     * otherwise pin them all. Older history is paged in through [getMessagesForContactBefore].
+     * Re-emits on any change to the table, like the full query.
+     */
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE contactId = :contactId AND walletAddress = :walletAddress
+          AND (
+            type = 'handshake'
+            OR id IN (
+                SELECT id FROM messages
+                WHERE contactId = :contactId AND walletAddress = :walletAddress
+                  AND type != 'handshake' AND deliveryStatus != 'sent'
+                ORDER BY blockTimestamp DESC, id DESC
+                LIMIT :unsentLimit
+            )
+            OR id IN (
+                SELECT id FROM messages
+                WHERE contactId = :contactId AND walletAddress = :walletAddress
+                ORDER BY blockTimestamp DESC, id DESC
+                LIMIT :limit
+            )
+          )
+        ORDER BY blockTimestamp ASC, id ASC
+        """
+    )
+    fun getMessageWindowForContact(
+        contactId: String,
+        walletAddress: String,
+        limit: Int,
+        unsentLimit: Int,
+    ): Flow<List<MessageEntity>>
+
+    /**
+     * One page of history OLDER than the (blockTimestamp, id) cursor, newest first - a keyset
+     * page, never an offset, so rows arriving meanwhile cannot shift it (iOS
+     * `fetchMessagesPageAsync`).
+     */
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE contactId = :contactId AND walletAddress = :walletAddress
+          AND (blockTimestamp < :beforeTimestamp OR (blockTimestamp = :beforeTimestamp AND id < :beforeId))
+        ORDER BY blockTimestamp DESC, id DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getMessagesForContactBefore(
+        contactId: String,
+        walletAddress: String,
+        beforeTimestamp: Long,
+        beforeId: String,
+        limit: Int,
+    ): List<MessageEntity>
+
+    /** Each decrypted message's text with its chat, for this wallet - what the Chats search reads
+     *  (iOS matches a chat by any of its messages); only the two columns it needs. */
+    @Query("SELECT contactId, plaintextBody FROM messages WHERE walletAddress = :walletAddress AND plaintextBody IS NOT NULL")
+    suspend fun getMessageBodiesForWallet(walletAddress: String): List<ContactMessageBody>
+
+    /** Every message for this wallet, across all contacts — used by chat-history export, not the live UI. */
+    @Query("SELECT * FROM messages WHERE walletAddress = :walletAddress ORDER BY blockTimestamp ASC")
+    suspend fun getAllMessagesForWallet(walletAddress: String): List<MessageEntity>
+
+    /**
+     * One row per contactId (within this wallet) — whichever message has the most recent
+     * blockTimestamp.
+     *
+     * Joins each contact's max timestamp back to its own row. The previous form matched on
+     * `blockTimestamp IN (SELECT MAX(...) GROUP BY contactId)`, which could not use an index and
+     * also returned extra rows whenever two different contacts' newest messages happened to
+     * share a timestamp. The trailing GROUP BY collapses a genuine tie within one contact to a
+     * single row.
+     */
+    /*
+     * [hidden] ([MessageEntity.HIDDEN_PLACEHOLDERS]) are bodies never shown: a chat whose newest
+     * row is one previews its newest real message instead, or nothing (iOS
+     * Conversation.newestRealMessage).
+     */
+    @Query(
+        """
+        SELECT m.* FROM messages m
+        JOIN (
+            SELECT contactId, MAX(blockTimestamp) AS maxTs FROM messages
+            WHERE walletAddress = :walletAddress
+              AND (plaintextBody IS NULL OR plaintextBody NOT IN (:hidden))
+            GROUP BY contactId
+        ) newest ON m.contactId = newest.contactId AND m.blockTimestamp = newest.maxTs
+        WHERE m.walletAddress = :walletAddress
+          AND (m.plaintextBody IS NULL OR m.plaintextBody NOT IN (:hidden))
+        GROUP BY m.contactId
+        """
+    )
+    fun getLatestMessagePerContact(walletAddress: String, hidden: List<String>): Flow<List<MessageEntity>>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE id = :id AND walletAddress = :walletAddress)")
+    suspend fun exists(id: String, walletAddress: String): Boolean
+
+    /** [exists], except a stored hidden placeholder ([hidden], e.g. "[Encrypted message]") does
+     *  not count: a later successful decrypt still replaces it. */
+    @Query(
+        """
+        SELECT EXISTS(SELECT 1 FROM messages WHERE id = :id AND walletAddress = :walletAddress
+            AND (plaintextBody IS NULL OR plaintextBody NOT IN (:hidden)))
+        """
+    )
+    suspend fun existsShown(id: String, walletAddress: String, hidden: List<String>): Boolean
+
+    /** Per contact: when its first message was and whether you ever sent anything - what
+     *  Message Requests decides from (ChatRequestStore.isMessageRequest). */
+    @Query(
+        """
+        SELECT contactId, MIN(blockTimestamp) AS firstAt,
+               MAX(CASE WHEN direction = 'sent' THEN 1 ELSE 0 END) AS anySent
+        FROM messages WHERE walletAddress = :walletAddress GROUP BY contactId
+        """
+    )
+    fun getContactMessageStats(walletAddress: String): Flow<List<ContactMessageStats>>
+
+    @Query("SELECT * FROM messages WHERE walletAddress = :walletAddress AND contactId = :contactId ORDER BY blockTimestamp ASC LIMIT 1")
+    suspend fun getFirstMessageForContact(contactId: String, walletAddress: String): MessageEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE walletAddress = :walletAddress AND contactId = :contactId AND direction = 'sent')")
+    suspend fun hasSentToContact(contactId: String, walletAddress: String): Boolean
+
+    /** Anything they sent us we can see - a message, payment or handshake. */
+    /** Whether they have sent us a MESSAGE in this conversation - a payment from them doesn't
+     *  count (iOS 1eb4708) - whatever the case its address was stored in (audit IOS-008).
+     *  [contactIdLowercase] must already be lowercased; Kaspa addresses are ASCII, so SQLite's
+     *  LOWER folds them fully. */
+    @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE walletAddress = :walletAddress AND LOWER(contactId) = :contactIdLowercase AND direction = 'received' AND type != 'pay')")
+    suspend fun hasMessageFromContactIgnoringCase(contactIdLowercase: String, walletAddress: String): Boolean
+
+    @Query("SELECT * FROM messages WHERE id = :id AND walletAddress = :walletAddress")
+    suspend fun getById(id: String, walletAddress: String): MessageEntity?
+
+    /**
+     * Every outgoing row still carrying a provisional local id ("pending_<uuid>", the optimistic
+     * placeholder the send flow inserts before the broadcast returns) for this conversation —
+     * pending AND failed, since a timed-out broadcast marks the row failed even when the tx
+     * actually landed on-chain. Ordered oldest first so an archive row upgrades the earliest
+     * matching placeholder. See ChatRepository.findProvisionalOutgoingMatch.
+     */
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE contactId = :contactId AND walletAddress = :walletAddress
+          AND direction = 'sent' AND id LIKE 'pending\_%' ESCAPE '\'
+        ORDER BY blockTimestamp ASC
+        """
+    )
+    suspend fun getProvisionalOutgoingForContact(contactId: String, walletAddress: String): List<MessageEntity>
+
+    /** Wallet-wide variant of [getProvisionalOutgoingForContact] — the one-time stuck-pair repair sweep. */
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE walletAddress = :walletAddress
+          AND direction = 'sent' AND id LIKE 'pending\_%' ESCAPE '\'
+        ORDER BY blockTimestamp ASC
+        """
+    )
+    suspend fun getProvisionalOutgoingForWallet(walletAddress: String): List<MessageEntity>
+
+    /**
+     * Whether a DELIVERED copy of the same logical outgoing message already exists in this
+     * conversation: same trimmed content (pass [body] pre-trimmed), real (non-provisional) id,
+     * delivery status "sent", and a blockTimestamp within [windowMs] of the provisional row's —
+     * the send and its confirmed sibling are minutes apart in the same clock domain, so the
+     * window keeps an old identical text from being mistaken for the pair. Backs the
+     * stuck-provisional repair sweep.
+     */
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM messages
+            WHERE contactId = :contactId AND walletAddress = :walletAddress
+              AND direction = 'sent' AND deliveryStatus = 'sent'
+              AND TRIM(plaintextBody) = :body
+              AND id NOT LIKE 'pending\_%' ESCAPE '\'
+              AND ABS(blockTimestamp - :nearTimestamp) <= :windowMs
+        )
+        """
+    )
+    suspend fun hasDeliveredDuplicate(
+        contactId: String,
+        walletAddress: String,
+        body: String,
+        nearTimestamp: Long,
+        windowMs: Long
+    ): Boolean
+
+    /** Whether any message with [direction] ("sent"/"received") exists in this conversation —
+     *  backs the payment pool feature's established-conversation check (one of each required). */
+    /** The handshakes a contact sent us, payload kept - each names an alias they send under. */
+    @Query("SELECT * FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress AND type = 'handshake' AND direction = 'received'")
+    suspend fun getReceivedHandshakes(contactId: String, walletAddress: String): List<MessageEntity>
+
+    /** Whether this conversation ever had a handshake, either way - see ContactNoteService. */
+    @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress AND type = 'handshake')")
+    suspend fun hasHandshake(contactId: String, walletAddress: String): Boolean
+
+    /** Every conversation you have a delivered message in - see ContactNoteService's backfill. */
+    @Query("SELECT DISTINCT contactId FROM messages WHERE walletAddress = :walletAddress AND direction = 'sent' AND deliveryStatus = 'sent'")
+    suspend fun contactsWithDeliveredSends(walletAddress: String): List<String>
+
+    /** Received payment bubbles an older build filed from contract (P2SH) transactions - the
+     *  .kachat commit, bond and offer refunds - in a conversation with a script address (iOS
+     *  32fdaa4, purgeContractAddressPaymentChats). Not the self-chat's "From: kaspa:p..."
+     *  payments, as iOS's purge never touched those either: since KIP-22 a script address can
+     *  be someone's quantum-safe spending address, and those are real payments (iOS 0b4e27e). */
+    @Query(
+        """
+        DELETE FROM messages WHERE walletAddress = :walletAddress AND type = 'pay' AND (
+            contactId LIKE 'kaspa:p%' OR contactId LIKE 'kaspatest:p%'
+        )
+        """
+    )
+    suspend fun deleteContractAddressPayments(walletAddress: String): Int
+
+    /** A hidden placeholder ([hidden]) is never unread: a badge nobody could clear (iOS c130dc1). */
+    @Query(
+        """
+        SELECT contactId, COUNT(*) as count FROM messages
+        WHERE isRead = 0 AND direction = 'received' AND walletAddress = :walletAddress
+          AND (plaintextBody IS NULL OR plaintextBody NOT IN (:hidden))
+        GROUP BY contactId
+        """
+    )
+    fun getUnreadCounts(walletAddress: String, hidden: List<String>): Flow<List<UnreadCount>>
+
+    @Query("UPDATE messages SET isRead = 1 WHERE contactId = :contactId AND walletAddress = :walletAddress AND isRead = 0")
+    suspend fun markAllAsRead(contactId: String, walletAddress: String)
+
+    /** Chat-list "mark as unread" (swipe/bulk action) — flips just the single latest received
+     * message back to unread, which is enough to make the contact reappear with a nonzero badge
+     * in [getUnreadCounts] (a derived COUNT), without needing a separate stored unread flag. */
+    @Query(
+        """
+        UPDATE messages SET isRead = 0 WHERE id = (
+            SELECT id FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress AND direction = 'received'
+            ORDER BY blockTimestamp DESC LIMIT 1
+        )
+        """
+    )
+    suspend fun markLatestAsUnread(contactId: String, walletAddress: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(messages: List<MessageEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(message: MessageEntity)
+
+    /** Adds [message] only when no row has its id yet - never replaces one. -1 when one exists.
+     *  A payment_notice files its bubble with this, so it can never overwrite a row (IOS-083). */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfAbsent(message: MessageEntity): Long
+
+    /**
+     * Moves a payment out of the self-chat into the chat a checked payment_notice names
+     * (IOS-083): only an incoming payment row that still sits in the self-chat ([selfChatId]) is
+     * ever changed, so the first notice to claim it wins and no other row - another chat's
+     * payment, a message, anything sent - can be moved or overwritten. Returns the rows moved.
+     */
+    @Query(
+        "UPDATE messages SET contactId = :contactId, plaintextBody = :body, amountSompi = :amountSompi, " +
+            "blockTimestamp = :blockTimestamp, isRead = :isRead, deliveryStatus = 'sent' " +
+            "WHERE id = :id AND walletAddress = :walletAddress AND contactId = :selfChatId " +
+            "AND type = 'pay' AND direction = 'received'"
+    )
+    suspend fun claimSelfChatPayment(
+        id: String,
+        walletAddress: String,
+        selfChatId: String,
+        contactId: String,
+        body: String,
+        amountSompi: Long,
+        blockTimestamp: Long,
+        isRead: Boolean,
+    ): Int
+
+    /** A payment_notice bubble filed unverified (no chain answer) that the chain has now
+     *  confirmed: shown as verified. Touches only that incoming payment row in [contactId]'s chat. */
+    @Query(
+        "UPDATE messages SET deliveryStatus = 'sent', plaintextBody = :body, amountSompi = :amountSompi " +
+            "WHERE id = :id AND walletAddress = :walletAddress AND contactId = :contactId " +
+            "AND type = 'pay' AND direction = 'received' AND deliveryStatus = 'warning'"
+    )
+    suspend fun confirmUnverifiedPayment(id: String, walletAddress: String, contactId: String, body: String, amountSompi: Long): Int
+
+    /** A payment_notice bubble filed unverified whose re-check says the claim is false: removed,
+     *  but only while it is still that incoming unverified payment row in [contactId]'s chat
+     *  (IOS-083 run 11). Returns the rows removed. */
+    @Query(
+        "DELETE FROM messages WHERE id = :id AND walletAddress = :walletAddress AND contactId = :contactId " +
+            "AND type = 'pay' AND direction = 'received' AND deliveryStatus = 'warning'"
+    )
+    suspend fun deleteUnverifiedPayment(id: String, walletAddress: String, contactId: String): Int
+
+    @Query("UPDATE messages SET deliveryStatus = :status WHERE id = :id AND walletAddress = :walletAddress")
+    suspend fun updateStatus(id: String, walletAddress: String, status: String)
+
+    @Query("DELETE FROM messages WHERE id = :id AND walletAddress = :walletAddress")
+    suspend fun deleteById(id: String, walletAddress: String)
+
+    /** "Wipe and re-sync incoming messages" — sent messages, contacts, and the wallet itself are untouched. */
+    @Query("DELETE FROM messages WHERE walletAddress = :walletAddress AND direction = 'received'")
+    suspend fun deleteReceivedForWallet(walletAddress: String)
+
+    /** Scoped variant of [deleteReceivedForWallet] — only the selected conversations' received messages. */
+    @Query("DELETE FROM messages WHERE walletAddress = :walletAddress AND direction = 'received' AND contactId IN (:contactIds)")
+    suspend fun deleteReceivedForContacts(walletAddress: String, contactIds: List<String>)
+
+    /** Post-resync count for the success summary ("Re-synced N messages"). */
+    @Query("SELECT COUNT(*) FROM messages WHERE walletAddress = :walletAddress AND direction = 'received'")
+    suspend fun countReceivedForWallet(walletAddress: String): Int
+
+    /** Scoped variant of [countReceivedForWallet] for a chat-scoped resync. */
+    @Query("SELECT COUNT(*) FROM messages WHERE walletAddress = :walletAddress AND direction = 'received' AND contactId IN (:contactIds)")
+    suspend fun countReceivedForContacts(walletAddress: String, contactIds: List<String>): Int
+
+    /** Every message with one specific contact, gone — used by ChatRepository.deleteChat's full-removal flow. */
+    @Query("DELETE FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress")
+    suspend fun deleteAllForContact(contactId: String, walletAddress: String)
+
+    /**
+     * The latest blockTimestamp already seen for this contact, if any — read by ChatRepository.deleteChat
+     * BEFORE deleting their messages, so the resulting tombstone's cutoff lives in the indexer's
+     * block_time clock domain rather than the device's wall clock. See DeletedContactEntity's doc comment.
+     */
+    @Query("SELECT MAX(blockTimestamp) FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress")
+    suspend fun getMaxBlockTimestampForContact(contactId: String, walletAddress: String): Long?
+
+    /**
+     * Every message id sharing this contact's exact latest blockTimestamp — read alongside
+     * [getMaxBlockTimestampForContact] by ChatRepository.deleteChat to build the tombstone's
+     * [com.kachat.app.models.DeletedContactEntity.deletedAtTxIds] tie-breaker set. See that field's
+     * doc comment for why an exact-timestamp match alone isn't a safe "this is the old tx" signal.
+     */
+    @Query("SELECT id FROM messages WHERE contactId = :contactId AND walletAddress = :walletAddress AND blockTimestamp = :blockTimestamp")
+    suspend fun getMessageIdsAtBlockTimestamp(contactId: String, walletAddress: String, blockTimestamp: Long): List<String>
+
+    /** Every message for this wallet, gone — used when wiping an entire account. */
+    @Query("DELETE FROM messages WHERE walletAddress = :walletAddress")
+    suspend fun deleteAllForWallet(walletAddress: String)
+
+    /** Backup retention pruning — permanently deletes messages older than [cutoffMillis] for this wallet. */
+    @Query("DELETE FROM messages WHERE walletAddress = :walletAddress AND blockTimestamp < :cutoffMillis")
+    suspend fun deleteOlderThan(walletAddress: String, cutoffMillis: Long)
+
+    @Query("DELETE FROM messages")
+    suspend fun clearAll()
+
+    /** How far into this (contact, alias) message stream we've already synced — see [MessageSyncCursorEntity]. */
+    @Query("SELECT lastBlockTime FROM message_sync_cursors WHERE contactId = :contactId AND walletAddress = :walletAddress AND aliasHex = :aliasHex")
+    suspend fun getMessageSyncCursor(contactId: String, walletAddress: String, aliasHex: String): Long?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun setMessageSyncCursor(cursor: MessageSyncCursorEntity)
+
+    /** Pulls every cursor of one contact (both alias streams) back to [floor], so the next fetch
+     *  re-covers a window the normal rewind has already left behind. The only way a cursor ever
+     *  moves backwards - see ChatRepository.recoverMissingReplyOriginal. */
+    @Query(
+        """
+        UPDATE message_sync_cursors SET lastBlockTime = :floor
+        WHERE contactId = :contactId AND walletAddress = :walletAddress AND lastBlockTime > :floor
+        """
+    )
+    suspend fun rewindMessageSyncCursors(contactId: String, walletAddress: String, floor: Long): Int
+
+    /** Resets every per-contact sync cursor for this wallet — used by "wipe and re-sync" so it actually re-fetches full history again instead of picking up where the (now-deleted) cache left off. */
+    @Query("DELETE FROM message_sync_cursors WHERE walletAddress = :walletAddress")
+    suspend fun deleteSyncCursorsForWallet(walletAddress: String)
+
+    /** Clears this one contact's sync cursors — used by ChatRepository.deleteChat so a later re-handshake with the same address starts its indexer sync clean instead of resuming from a stale cursor left over from before the deletion. */
+    @Query("DELETE FROM message_sync_cursors WHERE contactId = :contactId AND walletAddress = :walletAddress")
+    suspend fun deleteSyncCursorsForContact(contactId: String, walletAddress: String)
+
+    /** Multi-contact variant of [deleteSyncCursorsForContact] — a chat-scoped "wipe and re-sync" resets only the selected conversations' cursors so only their history re-fetches. */
+    @Query("DELETE FROM message_sync_cursors WHERE walletAddress = :walletAddress AND contactId IN (:contactIds)")
+    suspend fun deleteSyncCursorsForContacts(walletAddress: String, contactIds: List<String>)
+}
+
+/** Row of [MessageDao.getMessageBodiesForWallet]. */
+data class ContactMessageBody(
+    val contactId: String,
+    val plaintextBody: String?,
+)
+
+/** Row of [MessageDao.getContactMessageStats]. */
+data class ContactMessageStats(
+    val contactId: String,
+    val firstAt: Long?,
+    val anySent: Int,
+)

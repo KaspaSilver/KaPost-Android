@@ -1,0 +1,1203 @@
+package com.kachat.app.ui.screens
+
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.outlined.ArrowCircleUp
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.ui.res.stringResource
+import com.kachat.app.R
+import kotlinx.coroutines.flow.first
+import androidx.hilt.navigation.compose.hiltViewModel
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import android.content.Intent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.NoteAlt
+import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
+import com.kachat.app.models.KaspaExplorer
+import com.kachat.app.services.LinkPreviewData
+import com.kachat.app.services.KaPostLinkPreviewService
+import com.kachat.app.services.LinkPreviewService
+import com.kachat.app.ui.theme.KaspaTeal
+import com.kachat.app.ui.theme.LocalAppColors
+import com.kachat.app.util.MessageProtocol
+
+private val VIDEO_HOSTS = setOf("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com")
+
+/** Rich link-preview card shown below a chat bubble's text when the message contains a link -
+ *  mirrors iMessage. Renders nothing while the fetch is in flight, rather than a placeholder that
+ *  could flash or look broken. If no preview data is found (a bare/broken link, or a site with no
+ *  Open Graph tags), falls back to [fallbackText] if given, else renders nothing. Used by
+ *  [MessageBubble], `GroupMessageBubble`, and broadcast rooms' message rows.
+ *
+ *  [txId] is the owning message's transaction id, for the "View in Explorer" long-press action -
+ *  matches every other bubble type's identical action ([MessageBubble]'s
+ *  `kaspaExplorer.txUrl(message.id)` call site). */
+@Composable
+fun LinkPreviewCard(
+    url: String,
+    txId: String,
+    kaspaExplorer: KaspaExplorer = KaspaExplorer.default,
+    /** Non-null only when this card is standing in for the *entire* message (nothing but a bare
+     *  link, no separate text bubble shown alongside it) - shown as a plain tappable-link bubble
+     *  if the fetch finds no preview data, so the message doesn't render as nothing at all. Null
+     *  when used alongside a real text bubble, where showing nothing on failure is correct since
+     *  the message's own text is already visible. Mirrors iOS's `LinkPreviewCardView.fallbackText`. */
+    fallbackText: String? = null,
+    /** Enters the chat's message multi-select mode with this message pre-selected - null disables
+     *  the "Select" long-press menu option entirely. Mirrors [MessageBubble]'s onSelect. */
+    onSelect: (() -> Unit)? = null,
+    /** Double-tapping the preview opens the owning message's quick-reaction menu (reactions +
+     *  reply), exactly like double-tapping a normal message bubble. Null disables it. Single tap
+     *  still opens the link. Mirrors iOS's `LinkPreviewCardView.onDoubleTap`. */
+    onDoubleTap: (() -> Unit)? = null,
+    /** Whether the owning message is ours - only the inline Nextcloud voice-note bubble cares
+     *  (it takes the sent/received colours like an on-chain voice note); the cards are neutral. */
+    isOutgoing: Boolean = false,
+    /** Privacy gate (2026-08 audit, decision 5A, matching iOS): rendering a preview fetches the
+     *  stranger-controlled URL from THIS device, revealing the reader's IP and that the message
+     *  was seen. True (the default) fetches on render — for accepted/handshaken 1:1 contacts,
+     *  group messages, and the user's own sent messages. False renders a "Tap to load preview"
+     *  placeholder instead and only fetches after an explicit tap — for non-accepted 1:1
+     *  senders and ALL broadcast messages (broadcast senders are always strangers). */
+    autoFetch: Boolean = true
+) {
+    // An in-app KaChat link (a shared KaPosts post or broadcast room) is previewed LOCALLY: no
+    // metadata fetch, and therefore no stranger tap-to-load gate either. Handled here rather than
+    // only at the call sites so every bubble type that already renders a preview card - 1:1,
+    // group and broadcast alike - picks up the https form of the contract for free.
+    val internalRef = remember(url) { KaChatLink.parse(url) }
+    if (internalRef != null) {
+        KaChatInternalLinkCard(
+            ref = internalRef,
+            url = url,
+            txId = txId,
+            kaspaExplorer = kaspaExplorer,
+            onSelect = onSelect,
+            onDoubleTap = onDoubleTap
+        )
+        return
+    }
+
+    var fetchApproved by remember(url, autoFetch) { mutableStateOf(autoFetch) }
+    var preview by remember(url) { mutableStateOf<LinkPreviewData?>(null) }
+    var hasFinishedLoading by remember(url) { mutableStateOf(false) }
+
+    if (!fetchApproved) {
+        TapToLoadPreviewBubble(
+            url = url,
+            txId = txId,
+            kaspaExplorer = kaspaExplorer,
+            onLoad = { fetchApproved = true },
+            onSelect = onSelect,
+            onDoubleTap = onDoubleTap
+        )
+        return
+    }
+
+    LaunchedEffect(url, fetchApproved) {
+        hasFinishedLoading = false
+        preview = LinkPreviewService.fetchPreview(url)
+        hasFinishedLoading = true
+    }
+
+    if (hasFinishedLoading && preview != null) {
+        val data = preview!!
+        if (data.nextcloudShareRevoked) {
+            // The server says this share is gone. Showing the dead URL would leave the sender's
+            // server address in the transcript for a link nobody can open, which is the opposite
+            // of why they shared through their own cloud - so the row says only that it is gone.
+            RevokedShareTile(txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDoubleTap = onDoubleTap)
+        } else if (data.nextcloudMedia == "image" || data.nextcloudMedia == "video") {
+            // Nextcloud media renders as a bare photo/video bubble (like a sent photo), not a
+            // titled link card — the media IS the message. Mirrors iOS's nextcloudMediaBubble.
+            NextcloudMediaBubble(data = data, url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDoubleTap = onDoubleTap)
+        } else if (data.nextcloudMedia == "audio" && data.mediaDownloadUrl != null) {
+            // A voice note sent through Nextcloud plays right here, like an on-chain one - no
+            // file card, no separate player. Mirrors iOS's NextcloudAudioBubble.
+            NextcloudAudioBubble(data = data, url = url, txId = txId, kaspaExplorer = kaspaExplorer, isOutgoing = isOutgoing, onSelect = onSelect, onDoubleTap = onDoubleTap)
+        } else if (data.nextcloudMedia != null) {
+            // PDF/generic files get an attachment card: icon + filename + kind/size caption.
+            NextcloudAttachmentCard(data = data, url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDoubleTap = onDoubleTap)
+        } else {
+            LinkPreviewCardContent(data = data, url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDoubleTap = onDoubleTap)
+        }
+    } else if (hasFinishedLoading && fallbackText != null) {
+        LinkPreviewFallbackBubble(text = fallbackText, url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDoubleTap = onDoubleTap)
+    }
+}
+
+/**
+ * A voice note that was sent through Nextcloud: the same play button, duration and colours as an
+ * on-chain voice note, downloaded once from the share's `/download` endpoint and kept for the
+ * bubble's life, with a loading state and tap-to-retry. Long-press offers what every message
+ * does here - no Copy Link, since a share link is the address of someone's file.
+ */
+@Composable
+private fun NextcloudAudioBubble(
+    data: LinkPreviewData,
+    url: String,
+    txId: String,
+    kaspaExplorer: KaspaExplorer,
+    isOutgoing: Boolean,
+    onSelect: (() -> Unit)?,
+    onDoubleTap: (() -> Unit)?,
+) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val download = data.mediaDownloadUrl ?: return
+    var file by remember(download) { mutableStateOf<java.io.File?>(null) }
+    var failed by remember(download) { mutableStateOf(false) }
+    var attempt by remember(download) { mutableStateOf(0) }
+    var showMenu by remember { mutableStateOf(false) }
+
+    LaunchedEffect(download, attempt) {
+        if (file != null) return@LaunchedEffect
+        failed = false
+        val fetched = LinkPreviewService.downloadToCacheFile(context, download, maxBytes = 30_000_000L)
+        if (fetched != null && fetched.length() > 0) file = fetched else failed = true
+    }
+
+    Box {
+        val ready = file
+        if (ready != null) {
+            AudioFileBubble(
+                file = ready,
+                isSent = isOutgoing,
+                onLongPress = { showMenu = true },
+                onDoubleClick = { onDoubleTap?.invoke() },
+            )
+        } else {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(if (isOutgoing) LocalAppColors.current.surfaceVariant else LocalAppColors.current.surface)
+                    .pointerInput(failed) {
+                        detectTapGestures(
+                            onTap = { if (failed) attempt++ },
+                            onLongPress = { showMenu = true },
+                            onDoubleTap = { onDoubleTap?.invoke() },
+                        )
+                    }
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .widthIn(min = 150.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (failed) {
+                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = LocalAppColors.current.textSecondary, modifier = Modifier.size(28.dp))
+                } else {
+                    com.kachat.app.ui.theme.IosActivityIndicator(modifier = Modifier.size(22.dp), color = KaspaTeal, strokeWidth = 2.dp)
+                }
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(if (failed) "Voice message unavailable" else "Voice message", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyMedium)
+                    Text(if (failed) "Tap to retry" else "Loading…", color = LocalAppColors.current.textSecondary, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+
+    if (showMenu) {
+        LinkMessageActions(url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDismiss = { showMenu = false })
+    }
+}
+
+/**
+ * Stand-in for a Nextcloud share the server no longer serves. Deliberately carries no URL and no
+ * host, and a tap does nothing; a long press offers what is left - View in Explorer and Select -
+ * under iOS's "Shared File", never Copy Link. Mirrors iOS's `revokedShareTile`.
+ */
+@Composable
+private fun RevokedShareTile(
+    txId: String,
+    kaspaExplorer: KaspaExplorer,
+    onSelect: (() -> Unit)?,
+    onDoubleTap: (() -> Unit)?,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            // iOS: Color.primary at 5% - a faint tint of the text colour, not a card.
+            .background(LocalAppColors.current.textPrimary.copy(alpha = 0.05f))
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onLongPress = { showMenu = true },
+                    onDoubleTap = { onDoubleTap?.invoke() },
+                )
+            }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.VisibilityOff,
+            contentDescription = null,
+            tint = LocalAppColors.current.textSecondary,
+            modifier = Modifier.size(17.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "This file is no longer shared",
+            color = LocalAppColors.current.textSecondary,
+            fontSize = 12.sp,
+        )
+    }
+    if (showMenu) {
+        LinkMessageActions(
+            url = null,
+            txId = txId,
+            kaspaExplorer = kaspaExplorer,
+            onSelect = onSelect,
+            onDismiss = { showMenu = false },
+            title = stringResource(R.string.shared_file_menu_title),
+        )
+    }
+}
+
+/**
+ * A link's long-press menu - iOS's message actions sheet (tiles) titled "Link" with the address
+ * under it: Copy Link, View in Explorer and Select. Copy Link is never offered for a Nextcloud
+ * share, revoked or not: the link is the address of someone's photo or file, and the preview
+ * exists so the recipient can SEE it - a long-press that hands out the URL to forward defeats the
+ * sender's choice to share it in one place. Decided here from the URL, with the classifier the
+ * preview pipeline uses, so it holds in every card state - the tap-to-load placeholder included.
+ * A null [url] is the revoked share's menu: no address shown, no Copy Link. Mirrors iOS's
+ * `LinkPreviewCardView.menuActions` behind `.messageActions(title: "Link", preview:)`.
+ */
+@Composable
+private fun LinkMessageActions(
+    url: String?,
+    txId: String,
+    kaspaExplorer: KaspaExplorer,
+    onSelect: (() -> Unit)?,
+    onDismiss: () -> Unit,
+    title: String = stringResource(R.string.link_menu_title),
+) {
+    val uriHandler = LocalUriHandler.current
+    val clipboardManager = LocalClipboardManager.current
+    MessageActionsSheet(title = title, preview = url, onDismiss = onDismiss) {
+        if (url != null && LinkPreviewService.nextcloudShareEndpoints(url) == null) {
+            ActionSheetRow(
+                icon = Icons.Default.Link,
+                title = stringResource(R.string.copy_link),
+                subtitle = stringResource(R.string.copy_link_subtitle),
+            ) {
+                clipboardManager.setText(AnnotatedString(url))
+                onDismiss()
+            }
+        }
+        ActionSheetRow(
+            icon = Icons.Default.Public,
+            title = stringResource(R.string.view_in_explorer),
+            subtitle = stringResource(R.string.payment_explorer_subtitle),
+        ) {
+            uriHandler.openUri(kaspaExplorer.txUrl(txId))
+            onDismiss()
+        }
+        if (onSelect != null) {
+            ActionSheetRow(
+                icon = Icons.Default.CheckCircle,
+                title = stringResource(R.string.message_action_select),
+                subtitle = stringResource(R.string.message_action_select_subtitle),
+            ) {
+                onSelect()
+                onDismiss()
+            }
+        }
+    }
+}
+
+/**
+ * Placeholder shown instead of an auto-fetched preview when [LinkPreviewCard]'s `autoFetch` gate
+ * is off (non-accepted 1:1 senders, all broadcast messages): iOS's neutral card - a link glyph,
+ * "Tap to load preview" and the link's host - fetched only on tap. Until then no request of any
+ * kind leaves the device for this URL. The long-press menu still offers Copy Link / View in
+ * Explorer / Select, so the message stays fully usable. Mirrors iOS's `tapToLoadCard`.
+ */
+@Composable
+private fun TapToLoadPreviewBubble(
+    url: String,
+    txId: String,
+    kaspaExplorer: KaspaExplorer,
+    onLoad: () -> Unit,
+    onSelect: (() -> Unit)? = null,
+    onDoubleTap: (() -> Unit)? = null
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    val host = remember(url) { runCatching { android.net.Uri.parse(url).host }.getOrNull() }
+
+    Row(
+        modifier = Modifier
+            .widthIn(max = 260.dp)
+            .sendKaspaGlass(14.dp)
+            .pointerInput(url) {
+                detectTapGestures(
+                    onLongPress = { showMenu = true },
+                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onTap = { onLoad() }
+                )
+            }
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.Link,
+            contentDescription = null,
+            tint = LocalAppColors.current.textSecondary,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                stringResource(R.string.tap_to_load_preview),
+                color = LocalAppColors.current.textPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            if (!host.isNullOrEmpty()) {
+                MiddleEllipsisText(
+                    host,
+                    color = LocalAppColors.current.textSecondary,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+
+    if (showMenu) {
+        LinkMessageActions(url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDismiss = { showMenu = false })
+    }
+}
+
+@Composable
+private fun LinkPreviewFallbackBubble(text: String, url: String, txId: String, kaspaExplorer: KaspaExplorer, onSelect: (() -> Unit)? = null, onDoubleTap: (() -> Unit)? = null) {
+    val uriHandler = LocalUriHandler.current
+    val clipboardManager = LocalClipboardManager.current
+    var showMenu by remember { mutableStateOf(false) }
+
+    Text(
+        text,
+        color = LocalAppColors.current.textPrimary,
+        modifier = Modifier
+            .widthIn(max = 280.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(LocalAppColors.current.incomingBubble) // iOS systemGray5
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .pointerInput(url) {
+                detectTapGestures(
+                    onLongPress = { showMenu = true },
+                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onTap = { uriHandler.openUri(url) }
+                )
+            }
+    )
+
+    if (showMenu) {
+        LinkMessageActions(url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDismiss = { showMenu = false })
+    }
+}
+
+/**
+ * Bare media bubble for a Nextcloud public-share link — just the poster image at its real aspect
+ * ratio (no title/description/site chrome), centered play badge for videos. Tap: photos open the
+ * in-app full-screen viewer; videos hand the `/download` URL (streams via range requests) to the
+ * system player via ACTION_VIEW — the app deliberately has no bundled media player dependency.
+ * Long-press menu matches every other link preview's.
+ */
+@Composable
+private fun NextcloudMediaBubble(data: LinkPreviewData, url: String, txId: String, kaspaExplorer: KaspaExplorer, onSelect: (() -> Unit)? = null, onDoubleTap: (() -> Unit)? = null) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val clipboardManager = LocalClipboardManager.current
+    val isVideo = data.nextcloudMedia == "video"
+
+    var showMenu by remember { mutableStateOf(false) }
+    var showPhotoViewer by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(18.dp))
+            .pointerInput(url) {
+                detectTapGestures(
+                    onLongPress = { showMenu = true },
+                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onTap = {
+                        val download = data.mediaDownloadUrl
+                        when {
+                            download == null -> uriHandler.openUri(url)
+                            isVideo -> {
+                                // No media3/ExoPlayer in this app — the system player streams it.
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(android.net.Uri.parse(download), "video/*")
+                                    })
+                                } catch (e: Exception) {
+                                    uriHandler.openUri(url)
+                                }
+                            }
+                            else -> showPhotoViewer = true
+                        }
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        SubcomposeAsyncImage(
+            model = data.imageUrl,
+            contentDescription = data.title,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .widthIn(max = 240.dp)
+                .heightIn(max = 320.dp),
+            loading = {
+                Box(
+                    modifier = Modifier
+                        .size(width = 240.dp, height = 180.dp)
+                        .background(LocalAppColors.current.surface),
+                    contentAlignment = Alignment.Center
+                ) {
+                    com.kachat.app.ui.theme.IosActivityIndicator(color = LocalAppColors.current.textSecondary, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+            },
+            error = {
+                Box(
+                    modifier = Modifier
+                        .size(width = 240.dp, height = 180.dp)
+                        .background(LocalAppColors.current.surface),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        if (isVideo) Icons.Default.Movie else Icons.Default.Photo,
+                        contentDescription = null,
+                        tint = LocalAppColors.current.textSecondary
+                    )
+                }
+            }
+        )
+        if (isVideo) {
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .padding(10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
+            }
+        }
+    }
+
+    if (showMenu) {
+        LinkMessageActions(url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDismiss = { showMenu = false })
+    }
+
+    if (showPhotoViewer && data.mediaDownloadUrl != null) {
+        NextcloudPhotoViewerDialog(
+            downloadUrl = data.mediaDownloadUrl,
+            onDismiss = { showPhotoViewer = false }
+        )
+    }
+}
+
+/**
+ * Attachment card for non-visual Nextcloud shares (audio/pdf/generic file): leading kind icon,
+ * filename, and a "KIND · SIZE" caption. Tap: audio streams via the system player (ACTION_VIEW,
+ * same approach as video); PDFs open the in-app PdfRenderer viewer; everything else opens the
+ * SHARE url in the browser — Nextcloud's web viewer is the only renderer for Office docs.
+ */
+@Composable
+private fun NextcloudAttachmentCard(data: LinkPreviewData, url: String, txId: String, kaspaExplorer: KaspaExplorer, onSelect: (() -> Unit)? = null, onDoubleTap: (() -> Unit)? = null) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val clipboardManager = LocalClipboardManager.current
+    val kind = data.nextcloudMedia ?: "file"
+
+    var showMenu by remember { mutableStateOf(false) }
+    var showPdfViewer by remember { mutableStateOf(false) }
+
+    val icon = when (kind) {
+        "audio" -> Icons.Default.GraphicEq
+        "pdf" -> Icons.Default.PictureAsPdf
+        else -> Icons.Default.Description
+    }
+    val kindLabel = when (kind) {
+        "audio" -> "AUDIO"
+        "pdf" -> "PDF"
+        else -> data.title?.substringAfterLast('.', "")?.takeIf { it.isNotEmpty() }?.uppercase() ?: "FILE"
+    }
+    val sizeText = data.mediaByteSize?.let { com.kachat.app.util.IosByteCount.format(context, it) }
+    val caption = listOfNotNull(kindLabel, sizeText).joinToString(" · ")
+
+    Row(
+        modifier = Modifier
+            .widthIn(max = 260.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(LocalAppColors.current.surface)
+            .pointerInput(url) {
+                detectTapGestures(
+                    onLongPress = { showMenu = true },
+                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onTap = {
+                        val download = data.mediaDownloadUrl
+                        when {
+                            kind == "audio" && download != null -> {
+                                // Same system-player streaming approach as video.
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(android.net.Uri.parse(download), "audio/*")
+                                    })
+                                } catch (e: Exception) {
+                                    uriHandler.openUri(url)
+                                }
+                            }
+                            kind == "pdf" && download != null -> showPdfViewer = true
+                            else -> uriHandler.openUri(url)
+                        }
+                    }
+                )
+            }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = LocalAppColors.current.textSecondary, modifier = Modifier.size(30.dp))
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(
+                data.title ?: "File",
+                color = LocalAppColors.current.textPrimary,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                caption,
+                color = LocalAppColors.current.textSecondary,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+
+    if (showMenu) {
+        LinkMessageActions(url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDismiss = { showMenu = false })
+    }
+
+    if (showPdfViewer && data.mediaDownloadUrl != null) {
+        NextcloudPdfViewerDialog(
+            downloadUrl = data.mediaDownloadUrl,
+            shareUrl = url,
+            onDismiss = { showPdfViewer = false }
+        )
+    }
+}
+
+@Composable
+private fun LinkPreviewCardContent(data: LinkPreviewData, url: String, txId: String, kaspaExplorer: KaspaExplorer, onSelect: (() -> Unit)? = null, onDoubleTap: (() -> Unit)? = null) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val clipboardManager = LocalClipboardManager.current
+    val isVideoLink = remember(url) {
+        runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() in VIDEO_HOSTS
+    }
+
+    var showMenu by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .widthIn(max = 260.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(LocalAppColors.current.surface)
+            .pointerInput(url) {
+                detectTapGestures(
+                    onLongPress = { showMenu = true },
+                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onTap = { uriHandler.openUri(url) }
+                )
+            }
+    ) {
+        if (data.imageUrl != null) {
+            Box {
+                // Load the OG image with a real browser UA + Referer (the page it came from).
+                // Image CDNs like cdninstagram/fbcdn 403 the header-less request Coil sends by
+                // default, which is why Instagram previews showed no picture. Mirrors iOS's
+                // LinkPreviewService.imageData(referer:).
+                val imageRequest = remember(data.imageUrl, data.url) {
+                    ImageRequest.Builder(context)
+                        .data(data.imageUrl)
+                        .addHeader("User-Agent", LinkPreviewService.BROWSER_USER_AGENT)
+                        .addHeader("Referer", data.url)
+                        .crossfade(true)
+                        .build()
+                }
+                // No loading/error slots, so no subcomposition: this card sits in chat bubbles
+                // and the KaPosts feed, where a subcomposition per row costs on every scroll.
+                coil.compose.AsyncImage(
+                    model = imageRequest,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(140.dp)
+                )
+                if (isVideoLink) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.45f))
+                            .padding(10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        Column(modifier = Modifier.padding(10.dp)) {
+            if (!data.title.isNullOrEmpty()) {
+                Text(
+                    data.title,
+                    color = LocalAppColors.current.textPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (!data.description.isNullOrEmpty()) {
+                Text(
+                    data.description,
+                    color = LocalAppColors.current.textSecondary,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (!data.siteName.isNullOrEmpty()) {
+                Text(
+                    data.siteName.uppercase(),
+                    color = LocalAppColors.current.textSecondary,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+
+    if (showMenu) {
+        LinkMessageActions(url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDismiss = { showMenu = false })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// In-app KaChat links (shared with iOS - both platforms emit and accept exactly these forms)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A KaChat link found in message text. These are the ONLY links that never touch the network for
+ * a preview: everything the card shows is built from the link itself plus whatever text it was
+ * pasted with, and tapping one routes inside the app instead of handing the URL to a browser.
+ *
+ * Wire forms (identical on iOS):
+ *   KaPosts post   kachat://kapost/<txid>       https://kachat.app/post/<txid>
+ *   Broadcast room kachat://broadcast/<channel> https://kachat.app/broadcast/<channel>
+ *   Profile        kachat://profile/<address>   https://kachat.app/u/<address>
+ *   Payment req.   kachat://pay/<address>?...   https://kachat.app/pay/<address>?amount=<KAS>&memo=<text>[&chat=1]&by=<address>&sig=<hex>
+ *                  (see [com.kachat.app.models.PaymentRequest], iOS c6851d6 / 7c71a98)
+ *
+ * A profile's `<address>` is a full Kaspa address; in the web form a mainnet address drops its
+ * `kaspa:` prefix (the app writes it without, so the link reads cleanly) and a missing prefix
+ * means mainnet.
+ *
+ * Links written before kachat.app used kachat.duckdns.org. Those are still opened; they are
+ * never written.
+ *
+ * `<channel>` is the normalized channel name with NO leading '#'
+ * (see [MessageProtocol.normalizeChannelName]).
+ */
+sealed class KaChatLinkRef {
+    data class KaPost(val txId: String) : KaChatLinkRef()
+    data class BroadcastRoom(val channel: String) : KaChatLinkRef()
+    /** Someone's KaChat profile: opens their User Info, contact or not (iOS 81df734). Always a
+     *  full, valid address. */
+    data class Profile(val address: String) : KaChatLinkRef()
+    /** A request to be paid: opens Send Kaspa with the address, amount and memo filled in - or,
+     *  your own, shows it to copy or share again (iOS c6851d6, 1fe8388). Every field validated,
+     *  and a signed one only when its signature checks out. */
+    data class PaymentRequest(val request: com.kachat.app.models.PaymentRequest) : KaChatLinkRef()
+}
+
+/** [raw] is the exact link substring as it appears in the message, [range] where it sits in it. */
+data class KaChatLinkMatch(val range: IntRange, val raw: String, val ref: KaChatLinkRef)
+
+object KaChatLink {
+    /** The only host the app ever writes into a share. With KaChat installed the link opens
+     *  the app; without it the site shows the post, or the room invite, with download buttons -
+     *  and it unfurls a preview in every chat app, which a bare kachat:// line does nowhere. */
+    const val WEB_HOST = "kachat.app"
+
+    /** Hosts from before kachat.app: still opened, never written. */
+    val LEGACY_WEB_HOSTS = setOf("kachat.duckdns.org")
+
+    fun kaPostUrl(txId: String) = "kachat://kapost/$txId"
+    fun kaPostWebUrl(txId: String) = "https://$WEB_HOST/post/$txId"
+    fun broadcastUrl(channel: String) = "kachat://broadcast/$channel"
+    fun broadcastWebUrl(channel: String) = "https://$WEB_HOST/broadcast/$channel"
+    fun profileUrl(address: String) = "kachat://profile/$address"
+    /** The one builder both share buttons use - your own Profile and anyone's User Info - so the
+     *  two links cannot drift apart: kachat.app/u/<address>, trimmed and lowercased (iOS 44d5fa4). */
+    fun profileWebUrl(address: String) =
+        "https://$WEB_HOST/u/${address.trim().lowercase().removePrefix("kaspa:")}"
+
+    // The trailing segment deliberately excludes '/', '?' and '#' so a link can never carry a
+    // second path component, a query string or a fragment into the app.
+    private val LINK_REGEX = Regex(
+        """(?:kachat://(kapost|broadcast|profile)/|https?://(?:kachat\.app|kachat\.duckdns\.org)/(post|broadcast|u)/)([^\s/?#]+)""",
+        RegexOption.IGNORE_CASE
+    )
+    // A payment request carries a query, so it has its own pattern: everything up to whitespace
+    // or a quote/angle bracket, as iOS matches it (the memo inside is percent-encoded).
+    private val PAY_LINK_REGEX = Regex(
+        """(?:kachat://pay/|https?://(?:www\.)?(?:kachat\.app|kachat\.duckdns\.org)/pay/)([^\s<>"']+)""",
+        RegexOption.IGNORE_CASE
+    )
+    private val TRAILING_PUNCTUATION = setOf('.', ',', '!', '?', ';', ':', '\'', '"', ')', ']', '}', '>')
+    private val TX_ID_REGEX = Regex("[0-9a-fA-F]{6,64}")
+
+    /** True when [raw] is nothing but one of these links (no surrounding text). */
+    fun parse(raw: String): KaChatLinkRef? {
+        val trimmed = raw.trim()
+        PAY_LINK_REGEX.matchEntire(trimmed)?.let { return paymentRequestRef(it.groupValues[1]) }
+        val match = LINK_REGEX.matchEntire(trimmed) ?: return null
+        return refFor(match)
+    }
+
+    /** The first valid KaChat link in [text], or null. Invalid ones are skipped, not accepted. */
+    fun findFirst(text: String): KaChatLinkMatch? {
+        // Neither form can appear without "kachat" - the cheap bail-out for nearly every message.
+        if (!text.contains("kachat", ignoreCase = true)) return null
+        // Both patterns, in the order the links appear in the text (iOS scans with one).
+        val candidates = (LINK_REGEX.findAll(text) + PAY_LINK_REGEX.findAll(text)).sortedBy { it.range.first }
+        for (match in candidates) {
+            var end = match.range.last
+            while (end >= match.range.first && text[end] in TRAILING_PUNCTUATION) end--
+            if (end < match.range.first) continue
+            val range = match.range.first..end
+            val raw = text.substring(range.first, range.last + 1)
+            val ref = parse(raw) ?: continue
+            return KaChatLinkMatch(range, raw, ref)
+        }
+        return null
+    }
+
+    /**
+     * Normalizes an incoming broadcast channel name from an UNTRUSTED source (a pasted link, an
+     * inbound intent), returning null when it is malformed or hostile rather than joining it.
+     *
+     * [MessageProtocol.isValidChannelName] is the protocol gate (non-blank, no whitespace, no
+     * colons, within the length cap); on top of it a link-borne name must also survive being put
+     * in a navigation route and rendered as a room title, so anything that could re-encode as
+     * another URL, split the route, or hide characters in the title is rejected too.
+     */
+    fun sanitizeChannelName(raw: String): String? {
+        val name = MessageProtocol.normalizeChannelName(raw.trim().removePrefix("#"))
+        if (!MessageProtocol.isValidChannelName(name)) return null
+        if (name.any { it in "/?#%&\\" || it.isISOControl() }) return null
+        return name
+    }
+
+    private fun refFor(match: MatchResult): KaChatLinkRef? {
+        val kind = match.groupValues[1].ifEmpty { match.groupValues[2] }.lowercase()
+        // Percent-decoding only (NOT URLDecoder, which would turn a legal '+' in a channel name
+        // into a space).
+        val segment = try {
+            android.net.Uri.decode(match.groupValues[3])
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        return when (kind) {
+            "kapost", "post" ->
+                segment.takeIf { TX_ID_REGEX.matches(it) }?.lowercase()?.let(KaChatLinkRef::KaPost)
+            "broadcast" ->
+                sanitizeChannelName(segment)?.let(KaChatLinkRef::BroadcastRoom)
+            "profile", "u" -> profileAddress(segment)?.let(KaChatLinkRef::Profile)
+            else -> null
+        }
+    }
+
+    /** A payment request's path tail (`<address>?<query>`, any `#fragment` ignored): exactly one
+     *  address segment, then [com.kachat.app.models.PaymentRequest.fromLink] checks the rest. */
+    private fun paymentRequestRef(tail: String): KaChatLinkRef? {
+        val withoutFragment = tail.substringBefore('#')
+        val path = withoutFragment.substringBefore('?')
+        val query = if ('?' in withoutFragment) withoutFragment.substringAfter('?') else null
+        if (path.isEmpty() || '/' in path) return null
+        val address = runCatching { android.net.Uri.decode(path) }.getOrNull() ?: return null
+        return com.kachat.app.models.PaymentRequest.fromLink(address, query)?.let(KaChatLinkRef::PaymentRequest)
+    }
+
+    /** A linked address is attacker-controlled like everything else in a link: it has to be a
+     *  valid Kaspa address, checksum and all, or the link is not ours. It opens on the network the
+     *  app runs on: a link without a prefix (or shared from the other network) names the same
+     *  key, so it becomes that key's address here - a `kaspa:` contact on testnet could never be
+     *  reached (iOS ce20e87, IOS-003). */
+    fun profileAddress(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.length > 100) return null
+        return runCatching { com.kachat.app.util.KaspaAddress.onActiveNetwork(trimmed) }.getOrNull()
+    }
+}
+
+/**
+ * Hands an in-app link to the app's own routing instead of the browser. Both paths land in the
+ * same deep-link holders a notification tap uses, so Child Mode is enforced in exactly one place
+ * (MainShell's deep-link effects) for taps, notifications and system intents alike.
+ */
+fun openKaChatLink(ref: KaChatLinkRef) {
+    when (ref) {
+        is KaChatLinkRef.KaPost -> {
+            // Focus first, post id second - the post id is what KaPostsScreen keys on.
+            KaPostsDeepLink.pendingFocusReplyTxId.value = null
+            KaPostsDeepLink.pendingPostTxId.value = ref.txId
+        }
+        is KaChatLinkRef.BroadcastRoom -> BroadcastDeepLink.request(ref.channel)
+        is KaChatLinkRef.Profile -> ProfileDeepLink.request(ref.address)
+        // Someone else's opens Send Kaspa filled in, your own shows it (MainShell presents both).
+        is KaChatLinkRef.PaymentRequest -> PaymentRequestRouter.open(ref.request)
+    }
+}
+
+/**
+ * A profile link waiting to be opened - from a tapped card, a system intent or a kachat.app link.
+ * MainShell routes it: your own link lands on the chat list, anyone else's opens their User Info
+ * (iOS 81df734). The address is always one [KaChatLink.profileAddress] already validated.
+ */
+object ProfileDeepLink {
+    private val _pendingAddress = MutableStateFlow<String?>(null)
+    val pendingAddress: StateFlow<String?> = _pendingAddress.asStateFlow()
+
+    fun request(address: String) {
+        _pendingAddress.value = KaChatLink.profileAddress(address) ?: return
+    }
+
+    fun consumePending() {
+        _pendingAddress.value = null
+    }
+}
+
+/**
+ * The rich preview for an in-app KaChat link (iOS `KaChatInternalLinkCardView`): the link's own
+ * identity (KaPosts post / public chat room / KaChat profile), and for a post the author and text
+ * themselves, resolved from the chain by [KaPostLinkPreviewService] - a shared post previews AS
+ * the post rather than as a URL.
+ *
+ * iOS's layout: the author's avatar or the link's glyph in an accent tile, then an accent
+ * uppercase eyebrow ABOVE the title, the title, the line under it, and a chevron - on the same
+ * glass card as the Send Kaspa pieces, up to 280 wide.
+ *
+ * The only request that leaves the device is that one, to Kaspa's own REST API with a transaction
+ * id. The link's host is never contacted, so there is no "tap to load" gate: a stranger's KaChat
+ * link is as safe to render as your own.
+ *
+ * Long-press opens iOS's "KaChat Link" message menu: Open in KaChat, Copy Link, View in Explorer,
+ * Select.
+ */
+@Composable
+fun KaChatInternalLinkCard(
+    ref: KaChatLinkRef,
+    url: String,
+    txId: String,
+    kaspaExplorer: KaspaExplorer = KaspaExplorer.default,
+    onSelect: (() -> Unit)? = null,
+    onDoubleTap: (() -> Unit)? = null
+) {
+    val uriHandler = LocalUriHandler.current
+    val clipboardManager = LocalClipboardManager.current
+    val colors = LocalAppColors.current
+    var showMenu by remember { mutableStateOf(false) }
+
+    val postId = (ref as? KaChatLinkRef.KaPost)?.txId
+    val previews by KaPostLinkPreviewService.previews.collectAsState()
+    val post = postId?.let { previews[it] }
+    // Idempotent - the service drops a repeat call, an in-flight one and a known-bad id.
+    LaunchedEffect(postId) { postId?.let { KaPostLinkPreviewService.load(it) } }
+
+    // A profile card names the person the way iOS does - their KNS name, else what you saved
+    // them as - and says whether a tap opens your chat or starts one.
+    val profileAddress = (ref as? KaChatLinkRef.Profile)?.address
+    var profileName by remember(profileAddress) { mutableStateOf<String?>(null) }
+    var profileIsContact by remember(profileAddress) { mutableStateOf(false) }
+    if (profileAddress != null) {
+        val resolver: AddressResolutionViewModel = hiltViewModel()
+        LaunchedEffect(profileAddress) {
+            val contact = resolver.contactFor(profileAddress)
+            profileIsContact = contact != null
+            profileName = resolver.profileFor(profileAddress)?.first
+                ?: contact?.alias?.takeIf { it.isNotBlank() }
+        }
+    }
+
+    // A curated room, or one already in your list, just opens; anything else is joined on tap,
+    // so the card says which before you tap (iOS).
+    val roomChannel = (ref as? KaChatLinkRef.BroadcastRoom)?.channel
+    var roomIsKnown by remember(roomChannel) {
+        mutableStateOf(roomChannel != null && roomChannel in com.kachat.app.models.FeaturedBroadcastChannels.CURATED_NAMES)
+    }
+    if (roomChannel != null && !roomIsKnown) {
+        val rooms: KaChatLinkCardViewModel = hiltViewModel()
+        LaunchedEffect(roomChannel) { roomIsKnown = rooms.hasJoinedRoom(roomChannel) }
+    }
+
+    // A payment request: whether it is yours (worked out off the main thread - the wallet's
+    // addresses may need deriving once) and, for someone else's signed one, the maker's name.
+    val payRequest = (ref as? KaChatLinkRef.PaymentRequest)?.request
+    val payIsOwn by androidx.compose.runtime.produceState(initialValue = false, payRequest) {
+        value = payRequest != null && kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { payRequest.isOwn }
+    }
+    val payCreator = payRequest?.creator
+    var payCreatorName by remember(payCreator) {
+        mutableStateOf(payCreator?.let { com.kachat.app.models.addressDisplayName(it) })
+    }
+    if (payCreator != null) {
+        val resolver: AddressResolutionViewModel = hiltViewModel()
+        LaunchedEffect(payCreator) {
+            val contact = resolver.contactFor(payCreator)
+            payCreatorName = com.kachat.app.models.addressDisplayName(payCreator, contact?.alias)
+        }
+    }
+    val payEyebrow = stringResource(R.string.pr_payment_request)
+    val payFrom = payCreatorName?.let { stringResource(R.string.pr_from_name, it) }
+    val payAction = stringResource(if (payIsOwn) R.string.pr_your_request_tap_to_view else R.string.pr_tap_to_pay)
+
+    val icon = when (ref) {
+        is KaChatLinkRef.KaPost -> Icons.Default.NoteAlt
+        is KaChatLinkRef.BroadcastRoom -> Icons.Default.Sensors
+        is KaChatLinkRef.Profile -> Icons.Default.AccountCircle
+        is KaChatLinkRef.PaymentRequest -> Icons.Outlined.ArrowCircleUp
+    }
+    val eyebrow = when (ref) {
+        // A reply or a quote is still a KaPosts post, but saying which one it is explains why
+        // the text may read as half a conversation.
+        is KaChatLinkRef.KaPost -> when (post?.action) {
+            "reply" -> "KaPosts reply"
+            "quote" -> "KaPosts quote"
+            else -> "KaPosts"
+        }
+        is KaChatLinkRef.BroadcastRoom -> "Public Chat Room"
+        is KaChatLinkRef.Profile -> "KaChat Profile"
+        is KaChatLinkRef.PaymentRequest -> payEyebrow
+    }
+    val title = when (ref) {
+        is KaChatLinkRef.KaPost -> post?.authorName ?: "KaPosts post"
+        is KaChatLinkRef.BroadcastRoom -> "#${ref.channel}"
+        is KaChatLinkRef.Profile -> profileName ?: com.kachat.app.util.KaspaAddress.shortDisplay(ref.address)
+        is KaChatLinkRef.PaymentRequest -> "${ref.request.amountText} ${com.kachat.app.util.KaspaUnit.symbol}"
+    }
+    val subtitle = when (ref) {
+        is KaChatLinkRef.KaPost -> when {
+            post == null -> "Tap to open this post in KaChat."
+            // A quote with no added comment is a repost: there is no text to show, so say what
+            // it is rather than leaving the card looking half-loaded.
+            post.snippet.isBlank() ->
+                if (post.action == "quote") "Reposted a post." else "Tap to open this post in KaChat."
+            else -> post.snippet
+        }
+        is KaChatLinkRef.BroadcastRoom ->
+            if (roomIsKnown) "Tap to open this KaChat public chat room." else "Tap to join this KaChat public chat room."
+        is KaChatLinkRef.Profile ->
+            if (profileIsContact) "Tap to open your chat." else "Tap to start a chat on KaChat."
+        // The memo, the maker as the signature in the link proves - their name, not the payment
+        // address - and what a tap does (iOS c6851d6, 7c71a98, 1fe8388).
+        is KaChatLinkRef.PaymentRequest -> listOfNotNull(
+            ref.request.memo.takeIf { it.isNotEmpty() },
+            payFrom.takeIf { payCreator != null && !payIsOwn },
+            payAction,
+        ).joinToString("\n")
+    }
+    // The text of a real post deserves more than the placeholder's three lines.
+    val subtitleMaxLines = if (post?.snippet?.isNotBlank() == true) 6 else 3
+
+    Row(
+        modifier = Modifier
+            .widthIn(max = 280.dp)
+            .fillMaxWidth()
+            .sendKaspaGlass(14.dp)
+            .pointerInput(url) {
+                detectTapGestures(
+                    onLongPress = { showMenu = true },
+                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onTap = { openKaChatLink(ref) }
+                )
+            }
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // A resolved post shows its AUTHOR, the same avatar the KaPosts feed draws for them. The
+        // KaPosts glyph is for a post that has not resolved yet, and for room invites, which have
+        // no author at all.
+        val authorAddress = post?.authorAddress?.takeIf { it.isNotEmpty() }
+        if (authorAddress != null) {
+            ContactAvatar(
+                imageUrl = post.authorAvatarUrl,
+                fallbackText = post.authorName ?: "",
+                size = 40.dp,
+                address = authorAddress,
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(KaspaTeal.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                eyebrow.uppercase(),
+                color = KaspaTeal,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+            // Truncated in the middle, as iOS does: a profile link's title can be an address.
+            MiddleEllipsisText(
+                title,
+                color = colors.textPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                subtitle,
+                color = colors.textSecondary,
+                fontSize = 12.sp,
+                maxLines = subtitleMaxLines,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = colors.textSecondary,
+            modifier = Modifier.size(16.dp),
+        )
+    }
+
+    if (showMenu) {
+        MessageActionsSheet(title = "KaChat Link", preview = url, onDismiss = { showMenu = false }) {
+            ActionSheetRow(
+                icon = Icons.AutoMirrored.Filled.OpenInNew,
+                title = "Open in KaChat",
+                subtitle = "Opens it right here in the app.",
+            ) {
+                showMenu = false
+                openKaChatLink(ref)
+            }
+            ActionSheetRow(
+                icon = Icons.Default.Link,
+                title = stringResource(R.string.copy_link),
+                subtitle = "Copies the address to your clipboard.",
+            ) {
+                clipboardManager.setText(AnnotatedString(url))
+                showMenu = false
+            }
+            ActionSheetRow(
+                icon = Icons.Default.Public,
+                title = stringResource(R.string.view_in_explorer),
+                subtitle = "Opens this transaction in the block explorer.",
+            ) {
+                uriHandler.openUri(kaspaExplorer.txUrl(txId))
+                showMenu = false
+            }
+            if (onSelect != null) {
+                ActionSheetRow(
+                    icon = Icons.Default.CheckCircle,
+                    title = "Select",
+                    subtitle = "Pick several messages at once.",
+                ) {
+                    onSelect()
+                    showMenu = false
+                }
+            }
+        }
+    }
+}
+
+/** Whether a public chat room is already in your list - the KaChat link card's "open" or "join". */
+@dagger.hilt.android.lifecycle.HiltViewModel
+class KaChatLinkCardViewModel @javax.inject.Inject constructor(
+    private val broadcastRepository: com.kachat.app.repository.BroadcastRepository,
+) : androidx.lifecycle.ViewModel() {
+    suspend fun hasJoinedRoom(channel: String): Boolean = runCatching {
+        broadcastRepository.getJoinedChannels().first().any { it.channelName == channel }
+    }.getOrDefault(false)
+}
