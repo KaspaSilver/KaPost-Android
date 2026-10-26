@@ -25,7 +25,7 @@ What is still KaChat-shaped underneath:
   Nextcloud backup) is still there, unreachable.
 - `.kachat` names: the services, the profile editor and the name screens are kept; only the
   profile editor, the Wallet's Domains tab and a name notification reach them.
-- Chats live in KaChat: a profile's "Chat in KaChat" opens `kachat://profile/<address>` (or its
+- Chats live in KaChat: a profile's Chat button opens `kachat://profile/<address>?chat=1` (or its
   kachat.app page).
 
 ## Dock

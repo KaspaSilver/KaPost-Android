@@ -5120,7 +5120,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(14.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Chat in KaChat", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text("Chat", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }
@@ -5279,9 +5279,10 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
 }
 
 /**
- * Chats live in KaChat: this poster's profile there (their User Info, with Open Chat on it), or
- * their kachat.app page - with the download buttons - when KaChat isn't installed. Mirrors iOS
- * KaPosts `openInKaChat`.
+ * Chats live in KaChat: the 1:1 chat with this poster there, or - without KaChat - their
+ * kachat.app page, which has the download buttons. Both are their profile link with `chat=1`,
+ * which KaChat opens as the chat itself (a KaChat without that shows their User Info, with Open
+ * Chat on it). Mirrors iOS KaPosts `openInKaChat`.
  */
 internal fun openChatInKaChat(context: android.content.Context, address: String) {
     val normalized = address.lowercase()
@@ -5291,8 +5292,8 @@ internal fun openChatInKaChat(context: android.content.Context, address: String)
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }.isSuccess
-    if (!open(KaChatLink.profileUrl(normalized))) {
-        open(KaChatLink.profileWebUrl(normalized))
+    if (!open(KaChatLink.profileUrl(normalized) + "?chat=1")) {
+        open(KaChatLink.profileWebUrl(normalized) + "?chat=1")
     }
 }
 
