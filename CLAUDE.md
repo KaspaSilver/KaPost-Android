@@ -48,6 +48,7 @@ There is no welcome guide: the shell lifts the onboarding sync hold itself.
 - applicationId `com.kachat.kaposts` (`.debug` suffix on debug builds), URL scheme `kaposts`
 - Version: `app/build.gradle.kts` (`versionName`, `versionCode`, `kachatBuildNumber`)
 - Flavours as KaChat: `play` (store, reports plain "1.0") and `github` (handed-out APK, "1.0 (n)")
+- The launcher icon is a vector drawn from the iOS icon design: `scripts/make_app_icon.py`
 
 ## Build
 

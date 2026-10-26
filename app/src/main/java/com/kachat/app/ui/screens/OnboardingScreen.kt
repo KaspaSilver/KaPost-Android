@@ -342,11 +342,11 @@ fun WelcomeScreen(
                     color = LocalAppColors.current.textPrimary
                 )
                 Image(
-                    // A PNG copy of the launcher artwork, NOT R.mipmap.ic_launcher: on API 26+
+                    // The icon as one picture (kaposts_app_mark), NOT R.mipmap.ic_launcher: on API 26+
                     // that id resolves to the adaptive-icon XML, which painterResource cannot
                     // load - it throws "Only VectorDrawables and rasterized asset types are
                     // supported" and takes the whole welcome screen down with it.
-                    painter = painterResource(id = R.drawable.kachat_app_mark),
+                    painter = painterResource(id = R.drawable.kaposts_app_mark),
                     contentDescription = "KaPosts logo",
                     modifier = Modifier.size(40.dp).clip(RoundedCornerShape(9.dp))
                 )
