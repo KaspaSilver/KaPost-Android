@@ -1226,14 +1226,6 @@ fun MainShell(
                 }
             }
 
-            composable("wallet_notification_settings") {
-                AboveDock(pushedDockPad) {
-                    WalletNotificationSettingsScreen(
-                        onBack = { navController.popBackStack() }
-                    )
-                }
-            }
-
             composable("kaposts_notification_settings") {
                 AboveDock(pushedDockPad) {
                     com.kachat.app.ui.screens.KaPostsNotificationSettingsScreen(

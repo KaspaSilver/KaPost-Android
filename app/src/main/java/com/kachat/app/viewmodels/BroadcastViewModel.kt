@@ -451,6 +451,20 @@ class BroadcastViewModel @Inject constructor(
     }
 
     /**
+     * The Languages switch on the customize sheet: every language room off at once (out of the
+     * list, bells off), or all back on - each then switched off one by one if only some are
+     * wanted (iOS KaPosts setAllLanguageChannels, d37f64d).
+     */
+    fun setAllLanguageRoomsShown(shown: Boolean) {
+        val hidden = readState.state.value.hiddenCurated
+        val joined = joinedChannels.value.map { it.channelName }.toSet()
+        for (name in FeaturedBroadcastChannels.LANGUAGE_NAMES) {
+            val on = name !in hidden && name in joined
+            if (on != shown) setCuratedRoomShown(name, shown)
+        }
+    }
+
+    /**
      * Every default room listed from the start, then - once per wallet - #kaspa and #kachat-bugs
      * with their bell on, so a bell the user later turns off stays off (iOS KaPosts
      * ensureDefaultChannelsJoined / applyDefaultNotificationsOnce, 865c9ab). Run as soon as the

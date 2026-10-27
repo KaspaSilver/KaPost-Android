@@ -175,8 +175,11 @@ class AddressActivityNotifier @Inject constructor(
 
         val baselines = loadBaselines(walletAddress).toMutableMap()
         val isFirstRun = baselines.isEmpty()
-        val featureOn = settingsRepository.addressActivityNotificationsEnabled.first() &&
-            settingsRepository.notificationsEnabled.first()
+        // Always off in KaPosts: its notifications are about posts only, so an address receiving
+        // KAS never notifies (iOS KaPosts d37f64d). The baselines below still move, so the wallet
+        // screens' refresh signal is unaffected. In KaChat this is Settings > Notifications >
+        // Wallet plus the master switch.
+        val featureOn = false
 
         var changed = false
         val changedAddresses = mutableSetOf<String>()

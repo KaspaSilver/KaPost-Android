@@ -517,9 +517,10 @@ fun BroadcastListScreen(
 }
 
 /**
- * Public Chats settings, behind the customize button at the top left of the tab (and in
- * Settings): every default room with a switch. On means the room is in the list (switching it on
- * joins it); off takes it out and silences it. Mirrors iOS KaPosts' PublicChatsSettingsView.
+ * The customize sheet, behind the button at the top left of the Public Chats tab: every default
+ * room with a switch. On means the room is in the list (switching it on joins it); off takes it
+ * out and silences it. The Languages switch turns every language room off at once; while it is
+ * on, each language has its own switch. Mirrors iOS KaPosts' PublicChatsSettingsView (d37f64d).
  */
 @Composable
 fun PublicChatsSettingsSheet(
@@ -591,9 +592,36 @@ fun PublicChatsSettingsSheet(
                         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
                     )
                 }
-                SettingsSection(title = "Languages") {
+                Column {
                     val names = com.kachat.app.models.FeaturedBroadcastChannels.LANGUAGE_NAMES
-                    names.forEachIndexed { i, name -> roomSwitch(name, showDivider = i < names.size - 1) }
+                    // On while at least one language room is.
+                    val anyLanguageOn = names.any { it !in hidden && it in joinedNames }
+                    SettingsSection(title = null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp)
+                                .padding(horizontal = 16.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Languages", color = colors.textPrimary, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                            com.kachat.app.ui.theme.IosSwitch(
+                                checked = anyLanguageOn,
+                                onCheckedChange = { on -> broadcastViewModel.setAllLanguageRoomsShown(on) },
+                            )
+                        }
+                        if (anyLanguageOn) {
+                            SettingsDivider()
+                            names.forEachIndexed { i, name -> roomSwitch(name, showDivider = i < names.size - 1) }
+                        }
+                    }
+                    Text(
+                        "Off takes every language room out of Public Chats. On, switch off the ones you don't want.",
+                        color = colors.textSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
+                    )
                 }
                 Spacer(Modifier.navigationBarsPadding().height(24.dp))
             }

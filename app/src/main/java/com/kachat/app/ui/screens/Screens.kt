@@ -2831,7 +2831,6 @@ fun SettingsScreen(
     }
 
     var showKaPostsSettings by remember { mutableStateOf(false) }
-    var showPublicChatsSettings by remember { mutableStateOf(false) }
     var showLogout by remember { mutableStateOf(false) }
     // A tab tapped on the dock copy over KaPosts Settings closes it, as every KaPosts cover.
     LaunchedEffect(Unit) { KaPostsDock.closeCovers.collect { showKaPostsSettings = false } }
@@ -2908,12 +2907,14 @@ fun SettingsScreen(
                     SettingsDivider(inset = IosRowTextInset)
                     SettingsNavigationItem(stringResource(R.string.connection), Icons.Outlined.CellTower, onClick = { navController.navigate("settings_section/connection") })
                     SettingsDivider(inset = IosRowTextInset)
-                    // KaPosts' and Public Chats' own settings, where KaChat had Chats, Storage and
-                    // Chat History (iOS KaPosts SettingsView). The notification settings are behind
-                    // the cog on the Notifications tab (iOS KaPosts 865c9ab).
+                    // KaPosts' own settings, where KaChat had Chats, Storage and Chat History (iOS
+                    // KaPosts SettingsView).
                     SettingsNavigationItem("KaPosts", Icons.AutoMirrored.Outlined.Article, onClick = { showKaPostsSettings = true })
                     SettingsDivider(inset = IosRowTextInset)
-                    SettingsNavigationItem(stringResource(R.string.broadcasts), Icons.Outlined.Forum, onClick = { showPublicChatsSettings = true })
+                    // The same page as the cog on the Notifications tab. Public Chats has no row
+                    // here: its rooms are chosen with the customize button on the Public Chats tab
+                    // itself (iOS KaPosts d37f64d).
+                    SettingsNavigationItem(stringResource(R.string.notifications), Icons.Outlined.NotificationsActive, onClick = { navController.navigate("settings_section/notifications") })
                     SettingsDivider(inset = IosRowTextInset)
                     SettingsNavigationItem("Cache", Icons.Outlined.Storage, onClick = { navController.navigate("cache_settings") })
                     SettingsDivider(inset = IosRowTextInset)
@@ -2976,7 +2977,7 @@ fun SettingsScreen(
 
             if (sectionKey == "notifications") {
                 // The master switch, at the top of the page it governs (iOS NotificationsHubPage,
-                // behind the cog on the Notifications tab): push carries KaPosts, wallet activity
+                // behind the cog on the Notifications tab and in Settings): push carries KaPosts
                 // and the public chat rooms' bells, so it sits above the pages rather than inside
                 // one of them. No header, as on iOS; the footer says what it does.
                 SettingsFormSection(
@@ -3003,16 +3004,11 @@ fun SettingsScreen(
                     }
                 }
 
-                // KaPosts' notification settings live here, behind the cog on the Notifications
-                // tab (not in Settings, iOS KaPosts 865c9ab). Public Chats rooms keep their own
-                // bells, in each room.
+                // KaPosts' notifications are about posts only - no wallet ones (iOS KaPosts
+                // d37f64d). Public Chats rooms keep their own bells, in each room.
                 SettingsFormSection(title = stringResource(R.string.notifications)) {
                     SettingsNavigationItem("KaPosts", Icons.AutoMirrored.Outlined.Article, onClick = {
                         navController.navigate("kaposts_notification_settings")
-                    })
-                    SettingsDivider(inset = IosRowTextInset)
-                    SettingsNavigationItem(stringResource(R.string.notifications_wallet), Icons.Outlined.Payments, onClick = {
-                        navController.navigate("wallet_notification_settings")
                     })
                     SettingsDivider(inset = IosRowTextInset)
                     SettingsNavigationItem(stringResource(R.string.sound_vibration), Icons.AutoMirrored.Outlined.VolumeUp, onClick = {
@@ -3032,9 +3028,6 @@ fun SettingsScreen(
 
     if (showKaPostsSettings) {
         KaPostsSettingsOverlay(onClose = { showKaPostsSettings = false })
-    }
-    if (showPublicChatsSettings) {
-        PublicChatsSettingsSheet(onDismiss = { showPublicChatsSettings = false })
     }
     if (showLogout) {
         ConfirmActionSheet(
@@ -4107,23 +4100,6 @@ fun KaPostsNotificationSettingsScreen(onBack: () -> Unit, settingsViewModel: Set
             SettingsSwitchItem("Comments", comments) { settingsViewModel.setKaPostsNotifyComments(it) }
             SettingsDivider()
             SettingsSwitchItem("Mentions", mentions) { settingsViewModel.setKaPostsNotifyMentions(it) }
-        }
-    }
-}
-
-/**
- * Settings > Notifications > Wallet — the Address Activity toggle (default ON). Gates
- * [com.kachat.app.services.AddressActivityNotifier]'s local notifications for external receipts
- * on any spending or cold storage address. Mirrors iOS's WalletNotificationSettingsView.
- */
-@Composable
-fun WalletNotificationSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
-    val addressActivityEnabled by viewModel.addressActivityNotificationsEnabled.collectAsState()
-    SettingsFormPage(title = stringResource(R.string.notifications_wallet), onBack = onBack) {
-        SettingsFormSection(title = null, footer = stringResource(R.string.address_activity_footer)) {
-            SettingsSwitchItem(stringResource(R.string.address_activity), addressActivityEnabled) {
-                viewModel.setAddressActivityNotificationsEnabled(it)
-            }
         }
     }
 }

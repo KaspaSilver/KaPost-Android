@@ -38,10 +38,10 @@ What is still KaChat-shaped underneath:
 | Tab | Route | Screen |
 |---|---|---|
 | Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
-| Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off |
+| Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once |
 | Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`IdentityAddressDetailScreen`: balance, history, UTXOs, .kachat names) |
-| Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; the cog (top left) opens `settings_section/notifications`, the notification settings |
-| Settings | `settings` | `SettingsScreen`: Customization, Security, Connection, KaPosts, Public Chats, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Log Out (deleting an account is on the opening screen's Saved Accounts) |
+| Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
+| Settings | `settings` | `SettingsScreen`: Customization, Security, Connection, KaPosts, Notifications, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Log Out (deleting an account is on the opening screen's Saved Accounts) |
 
 The dock stays in reach on every screen and steps aside for the keyboard. Pushed screens keep the
 real one (`AboveDock` lays them out above it; the Wallet, a room and the tabs run on under it
@@ -84,7 +84,8 @@ push service accepting it; until then KaPosts notifies through its in-app poller
 sends `apns_topic` = the app id (`com.kachat.kaposts`, as iOS sends its bundle id) so the shared
 push service knows which app the token is for. Only KaPosts, public chat and .kachat name pushes
 are shown; a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
-#kaspa and #kachat-bugs start with their bells on, once per account.
+#kaspa and #kachat-bugs start with their bells on, once per account; an address receiving KAS
+never notifies (`AddressActivityNotifier`).
 
 Links: KaPosts opens `kaposts://` (same targets as `kachat://`), and `kachat://kapost/`,
 `kachat://broadcast/` and `https://kachat.app/post|broadcast/`, which KaChat no longer handles.
