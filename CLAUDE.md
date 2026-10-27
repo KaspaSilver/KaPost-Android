@@ -68,8 +68,10 @@ node pool for transactions. The protocol and server docs live in KaChat-iPhone
 (`KAPOSTS_INDEXER.md`, `PUBLIC_CHATS_INDEXER.md`, `PUSH_EXTENSIONS.md`, `TRANSLATION_SERVICE.md`).
 
 Push needs a Firebase app for `com.kachat.kaposts` (`app/google-services.json`, gitignored) and the
-push service accepting it; until then KaPosts notifies through its in-app poller only. Only KaPosts,
-public chat and .kachat name pushes are shown.
+push service accepting it; until then KaPosts notifies through its in-app poller only. Registration
+sends `apns_topic` = the app id (`com.kachat.kaposts`, as iOS sends its bundle id) so the shared
+push service knows which app the token is for. Only KaPosts, public chat and .kachat name pushes
+are shown.
 
 Links: KaPosts opens `kaposts://` (same targets as `kachat://`), and `kachat://kapost/`,
 `kachat://broadcast/` and `https://kachat.app/post|broadcast/`, which KaChat no longer handles.

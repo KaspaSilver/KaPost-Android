@@ -528,6 +528,8 @@ class PushRegistrationManager @Inject constructor(
                     kaPostsNotifyReposts = kaPostsKinds.reposts,
                     kaPostsNotifyFollows = kaPostsKinds.follows,
                     kaPostsWatchAuthors = kaPostsWatchAuthors,
+                    // This build's app id, debug suffix off (iOS sends its bundle id).
+                    apnsTopic = context.packageName.removeSuffix(".debug"),
                     auth = auth,
                 )
             )

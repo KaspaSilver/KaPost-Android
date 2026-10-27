@@ -80,6 +80,10 @@ data class PushRegistrationRequest(
      * registration, empty when none, as iOS does.
      */
     @SerializedName("kaposts_watch_authors") val kaPostsWatchAuthors: List<String> = emptyList(),
+    /** The app this token belongs to (`com.kachat.kaposts`), so the push service - shared with
+     *  KaChat and KaChat Wallet - knows which app it is sending to. iOS sends it as the APNs topic
+     *  (KaPosts 2d14f71); FCM delivery itself doesn't use it. */
+    @SerializedName("apns_topic") val apnsTopic: String? = null,
     @SerializedName("auth") val auth: PushAuthRequest? = null,
 )
 
