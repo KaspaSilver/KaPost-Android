@@ -379,18 +379,22 @@ internal fun HubSectionTopBar(
             .statusBarsPadding()
             .padding(horizontal = 16.dp, vertical = 4.dp),
         leading = {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (onBack != null && !LocalInHubSection.current) {
-                    // iOS 26: the chevron in the label colour on its glass.
-                    ToolbarGlassGroup {
-                        ToolbarIconButton(Icons.Filled.ArrowBackIosNew, "Back", onBack, tint = colors.textPrimary, iconSize = 20.dp)
-                    }
+            if (onBack != null && !LocalInHubSection.current) {
+                // iOS 26: the chevron in the label colour on its glass.
+                ToolbarGlassGroup {
+                    ToolbarIconButton(Icons.Filled.ArrowBackIosNew, "Back", onBack, tint = colors.textPrimary, iconSize = 20.dp)
                 }
-                ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
             }
         },
         principal = principal,
-        trailing = { ToolbarGlassGroup(content = actions) },
+        // The connection dot far right, clear of Back, as on every KaPosts screen (iOS KaPosts
+        // 865c9ab).
+        trailing = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ToolbarGlassGroup(content = actions)
+                ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
+            }
+        },
     )
 }
 

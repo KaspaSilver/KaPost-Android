@@ -41,16 +41,18 @@ object BroadcastRetention {
 
 /** Curated rooms shown in the Broadcasts "Popular" tab — recommended channels baked into the app, not derived from any usage/activity data. */
 object FeaturedBroadcastChannels {
-    /** The two rooms every account AUTO-JOINS (see `BroadcastRepository.ensureFeaturedChannelsJoined`). */
+    /** The two rooms pinned to the top of Public Chats, which start with notifications on (see
+     *  `BroadcastViewModel.ensureDefaultRoomsJoined`). */
     val NAMES: List<String> = listOf("kaspa", "kachat-bugs")
 
     /**
-     * Curated per-language rooms, listed behind the collapsible "Other Languages" category under
-     * Popular. Curated and indexer-tracked exactly like [NAMES] (30-day retention, indexer history, no
-     * retention gear, push-eligible) but deliberately NOT auto-joined: a row is created on first
-     * open or bell tap. Auto-joining eleven more rooms would multiply push registrations,
-     * block-scan subscriptions and cellular cost for every user, including the majority who want
-     * none of them. Ordered alphabetically by display name, Latin scripts first.
+     * Curated per-language rooms, listed straight in Public Chats under the two in [NAMES] (KaPosts
+     * lists every default room; the customize button switches off the unwanted ones, iOS KaPosts
+     * 865c9ab). Curated and indexer-tracked exactly like [NAMES] (30-day retention, indexer
+     * history, no retention gear, push-eligible). They are joined like [NAMES] but with
+     * notifications OFF, which is what keeps them cheap: the background scan and the push
+     * registration only cover rooms whose bell is on. Ordered alphabetically by display name,
+     * Latin scripts first.
      */
     val LANGUAGE_NAMES: List<String> = listOf(
         "kaspa-indonesia",

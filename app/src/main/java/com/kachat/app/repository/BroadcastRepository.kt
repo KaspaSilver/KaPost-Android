@@ -74,14 +74,18 @@ class BroadcastRepository @Inject constructor(
     }
 
     /**
-     * The curated #kaspa/#kachat-bugs rooms are always present for every account (4.0, matches
-     * iOS): auto-joined with the FIXED 3-day retention their indexer backfill serves. Idempotent
-     * - joinChannel inserts with IGNORE, so an already-joined row (and its bell/listen toggles)
-     * is left completely untouched.
+     * Every default room is in Public Chats from the start (iOS KaPosts 865c9ab
+     * `ensureDefaultChannelsJoined`): #kaspa, #kachat-bugs and the language rooms, auto-joined
+     * with the FIXED retention their indexer backfill serves - except any in [hidden], switched
+     * off with the customize button. They join with notifications off, which is what keeps the
+     * language rooms cheap: the background scan and the push registration only cover rooms whose
+     * bell is on. Idempotent - joinChannel inserts with IGNORE, so an already-joined row (and its
+     * bell/listen toggles) is left completely untouched.
      */
-    suspend fun ensureFeaturedChannelsJoined() {
+    suspend fun ensureDefaultChannelsJoined(hidden: Set<String>) {
         val address = try { walletManager.getAddress() } catch (_: Exception) { return }
-        for (name in FeaturedBroadcastChannels.NAMES) {
+        for (name in FeaturedBroadcastChannels.CURATED_NAMES) {
+            if (name in hidden) continue
             database.broadcastDao().joinChannel(
                 BroadcastChannelEntity(
                     channelName = name,

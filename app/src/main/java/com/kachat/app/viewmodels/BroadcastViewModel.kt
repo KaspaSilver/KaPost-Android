@@ -379,17 +379,28 @@ class BroadcastViewModel @Inject constructor(
 
     /**
      * The rooms the Public Chats list shows, in its order: the two Popular rooms on top, then every
-     * other joined room by latest activity. Default rooms switched off in settings are left out.
-     * Shared by the list and by its Select All (iOS e08c4cc, PublicChatService.listedChannels).
+     * other room - the language rooms and your own - by latest activity. A language room nobody
+     * has written in yet keeps its place in LANGUAGE_NAMES: they are all joined at the same
+     * moment, so their join times would order them at random. Default rooms switched off with the
+     * customize button are left out. Shared by the list and by its Select All (iOS KaPosts
+     * PublicChatService.listedChannels, 865c9ab).
      */
     val listedChannels: StateFlow<List<BroadcastChannelEntity>> =
         kotlinx.coroutines.flow.combine(joinedChannels, roomSummaries, readState.state) { channels, summaries, read ->
             val featured = FeaturedBroadcastChannels.NAMES
+            val languages = FeaturedBroadcastChannels.LANGUAGE_NAMES
             val shown = channels.filter { it.channelName !in read.hiddenCurated }
-            fun lastActivity(channel: BroadcastChannelEntity): Long =
-                summaries[channel.channelName]?.lastMessage?.blockTimestamp ?: channel.joinedAt
+            // Highest first: (latest message, 0), else a language room's (0, -position), else
+            // (join time, 0).
+            fun sortKey(channel: BroadcastChannelEntity): Pair<Long, Int> {
+                summaries[channel.channelName]?.lastMessage?.blockTimestamp?.let { return it to 0 }
+                val index = languages.indexOf(channel.channelName)
+                if (index >= 0) return 0L to -index
+                return channel.joinedAt to 0
+            }
             featured.mapNotNull { name -> shown.firstOrNull { it.channelName == name } } +
-                shown.filter { it.channelName !in featured }.sortedByDescending(::lastActivity)
+                shown.filter { it.channelName !in featured }
+                    .sortedWith(compareByDescending<BroadcastChannelEntity> { sortKey(it).first }.thenByDescending { sortKey(it).second })
         }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /**
@@ -439,6 +450,23 @@ class BroadcastViewModel @Inject constructor(
         else if (channelName in FeaturedBroadcastChannels.NAMES) setNotifyEnabled(channelName, true)
     }
 
+    /**
+     * Every default room listed from the start, then - once per wallet - #kaspa and #kachat-bugs
+     * with their bell on, so a bell the user later turns off stays off (iOS KaPosts
+     * ensureDefaultChannelsJoined / applyDefaultNotificationsOnce, 865c9ab). Run as soon as the
+     * wallet's read state is loaded, so the two notify without Public Chats having been opened.
+     */
+    private suspend fun ensureDefaultRoomsJoined() {
+        val hidden = readState.state.value.hiddenCurated
+        broadcastRepository.ensureDefaultChannelsJoined(hidden)
+        if (!readState.featuredNotifyDefaultApplied()) {
+            for (name in FeaturedBroadcastChannels.NAMES) {
+                if (name !in hidden) broadcastRepository.setNotifyEnabled(name, true)
+            }
+            readState.markFeaturedNotifyDefaultApplied()
+        }
+    }
+
     /** Whether the Popular tab shows at all — toggled from the gear icon next to the join button. */
     val popularTabEnabled: StateFlow<Boolean> = settings.broadcastPopularEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
@@ -486,13 +514,14 @@ class BroadcastViewModel @Inject constructor(
     // even when live block scanning lags. Dedupe by txId happens in the DAO's REPLACE insert.
 
     init {
-        // The curated #kaspa/#kachat-bugs rooms are always present (4.0): auto-joined with
-        // fixed 3-day retention, backed by the broadcast indexer.
-        viewModelScope.launch { broadcastRepository.ensureFeaturedChannelsJoined() }
         // Read state follows the account, and every joined room gets a marker the first time it
-        // is seen, so it counts from now rather than from the start of its history.
+        // is seen, so it counts from now rather than from the start of its history. Then every
+        // default room is joined for that account (see ensureDefaultRoomsJoined).
         viewModelScope.launch {
-            walletManager.activeAddressFlow.collect { readState.setCurrentWallet(it) }
+            walletManager.activeAddressFlow.collect {
+                readState.setCurrentWallet(it)
+                if (it != null) ensureDefaultRoomsJoined()
+            }
         }
         viewModelScope.launch {
             joinedChannels.collect { channels ->
@@ -501,9 +530,8 @@ class BroadcastViewModel @Inject constructor(
         }
     }
 
-    // Rooms join with notifications OFF and stay off until the user turns a bell on - the
-    // curated rooms included. (#kaspa and #kachat-bugs used to be switched on once per wallet
-    // here; iOS 1ea3c45.)
+    // Rooms join with notifications OFF and stay off until the user turns a bell on - except
+    // #kaspa and #kachat-bugs, switched on once per wallet (iOS KaPosts 865c9ab).
 
     private var indexerPollJob: kotlinx.coroutines.Job? = null
 

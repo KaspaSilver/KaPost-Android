@@ -24,7 +24,10 @@ What is still KaChat-shaped underneath:
   `oneToOneChatsEnabled`), but the code behind it (handshakes, contextual messages, groups,
   Nextcloud backup) is still there, unreachable.
 - `.kachat` names: the services, the profile editor and the name screens are kept; only the
-  profile editor, the Wallet's Domains tab and a name notification reach them.
+  profile editor, the Wallet's Domains tab and a name notification reach them. `.kachat` is the
+  only name service KaPosts reads: KNS (.kas), dotk (.k) and Kaspa Names (.kaspa) are switched
+  off at their entry points (`KnsService.IS_ENABLED`, `NameServicesClient.OTHER_SERVICES_ENABLED`),
+  so the Domains tab, address fields, mentions and search see .kachat names only.
 - Chats live in KaChat: a profile's Chat button opens `kachat://profile/<address>?chat=1` (or its
   kachat.app page).
 
@@ -34,11 +37,20 @@ What is still KaChat-shaped underneath:
 
 | Tab | Route | Screen |
 |---|---|---|
-| Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`), the ☰ menu beside the title |
-| Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); rooms hide the dock |
-| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile` |
-| Wallet | `wallet` | `IdentityAddressDetailScreen(title = "Wallet")` - the one address's balance, history, UTXOs, domains |
-| Settings | `settings` | `SettingsScreen`: Customization, Security, Connection, Notifications, KaPosts, Public Chats, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Delete Account |
+| Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
+| Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off |
+| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`IdentityAddressDetailScreen`: balance, history, UTXOs, .kachat names) |
+| Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; the cog (top left) opens `settings_section/notifications`, the notification settings |
+| Settings | `settings` | `SettingsScreen`: Customization, Security, Connection, KaPosts, Public Chats, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Log Out (deleting an account is on the opening screen's Saved Accounts) |
+
+The dock stays in reach on every screen and steps aside for the keyboard. Pushed screens keep the
+real one (`AboveDock` lays them out above it; the Wallet, a room and the tabs run on under it
+through `LocalDockInset`). A thread is drawn inside the KaPosts screen, so the real dock floats
+over it too. KaPosts' other full-screen screens are Dialog windows (profiles, the menu's screens,
+Post Activity): they draw `KaPostsDockCopy` (`ui/screens/KaPostsDock.kt`) outside their slide, and
+a tap closes every cover (`KaPostsDock.closeCovers`) and selects the tab. The composers and the
+menu card have no dock. The connection dot sits top right on every screen, leaving the left to
+Back.
 
 Account setup is KaChat's, unchanged: `OnboardingScreen` (create / import a seed) -> `MainShell`.
 There is no welcome guide: the shell lifts the onboarding sync hold itself.
@@ -71,7 +83,8 @@ Push needs a Firebase app for `com.kachat.kaposts` (`app/google-services.json`, 
 push service accepting it; until then KaPosts notifies through its in-app poller only. Registration
 sends `apns_topic` = the app id (`com.kachat.kaposts`, as iOS sends its bundle id) so the shared
 push service knows which app the token is for. Only KaPosts, public chat and .kachat name pushes
-are shown.
+are shown; a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
+#kaspa and #kachat-bugs start with their bells on, once per account.
 
 Links: KaPosts opens `kaposts://` (same targets as `kachat://`), and `kachat://kapost/`,
 `kachat://broadcast/` and `https://kachat.app/post|broadcast/`, which KaChat no longer handles.

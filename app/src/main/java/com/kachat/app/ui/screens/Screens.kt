@@ -70,6 +70,8 @@ import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.outlined.Book
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.automirrored.outlined.Article
+import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Brush
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.SaveAlt
@@ -1386,7 +1388,15 @@ fun IdentityAddressDetailScreen(
                     onTransactionClick = { transactionActionTarget = it },
                     bottomPadding = barInset,
                 )
-                2 -> AddressDomainsTab(address.orEmpty(), onOpenService = { openedDomainService = it }, bottomPadding = barInset)
+                // KaPosts reads .kachat names only, so the Domains tab is the address's .kachat
+                // names - no .kas, .k or .kaspa cards (iOS KaPosts 865c9ab).
+                2 -> if (com.kachat.app.services.NameServicesClient.OTHER_SERVICES_ENABLED) {
+                    AddressDomainsTab(address.orEmpty(), onOpenService = { openedDomainService = it }, bottomPadding = barInset)
+                } else {
+                    Box(Modifier.fillMaxSize().padding(bottom = barInset)) {
+                        KachatAddressDomainsList(address?.takeIf { it.isNotEmpty() }, onOpen = { openedKachat = it })
+                    }
+                }
                 else -> AddressUtxoList(
                     utxos = utxos,
                     isLoading = isLoadingUtxos,
@@ -2822,7 +2832,9 @@ fun SettingsScreen(
 
     var showKaPostsSettings by remember { mutableStateOf(false) }
     var showPublicChatsSettings by remember { mutableStateOf(false) }
-    var showDeleteAccount by remember { mutableStateOf(false) }
+    var showLogout by remember { mutableStateOf(false) }
+    // A tab tapped on the dock copy over KaPosts Settings closes it, as every KaPosts cover.
+    LaunchedEffect(Unit) { KaPostsDock.closeCovers.collect { showKaPostsSettings = false } }
 
     Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
@@ -2838,8 +2850,9 @@ fun SettingsScreen(
                     onBack = { navController.popBackStack() },
                 )
             } else {
-            // iOS KaPosts' Settings tab toolbar: the connection dot in glass and the balance in
-            // the middle - no title, and no Done, since it is a tab rather than a sheet.
+            // iOS KaPosts' Settings tab toolbar: the balance in the middle and the connection dot
+            // in glass top right (865c9ab) - no title, and no Done, since it is a tab rather than
+            // a sheet.
             Row(
                 modifier = Modifier
                     .background(LocalAppColors.current.background)
@@ -2849,6 +2862,9 @@ fun SettingsScreen(
                     .padding(horizontal = 16.dp, vertical = 15.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // The dot's width on the other side, so the balance sits in the middle.
+                Spacer(Modifier.size(44.dp))
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { BalanceLabelRow(balance, copyOnTap = true) }
                 Box(
                     modifier = Modifier
                         .size(44.dp)
@@ -2859,9 +2875,6 @@ fun SettingsScreen(
                 ) {
                     Box(Modifier.size(12.dp).background(Color(dotColorHex), CircleShape))
                 }
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { BalanceLabelRow(balance, copyOnTap = true) }
-                // The dot's width on the other side, so the balance sits in the middle.
-                Spacer(Modifier.size(44.dp))
             }
             }
         }
@@ -2895,12 +2908,9 @@ fun SettingsScreen(
                     SettingsDivider(inset = IosRowTextInset)
                     SettingsNavigationItem(stringResource(R.string.connection), Icons.Outlined.CellTower, onClick = { navController.navigate("settings_section/connection") })
                     SettingsDivider(inset = IosRowTextInset)
-                    // Top-level Notifications hub (4.0, matches iOS): Chats / Wallet / KaPosts
-                    // subpages - sits between Connection and Chats like iOS's settings list.
-                    SettingsNavigationItem(stringResource(R.string.notifications), Icons.Outlined.NotificationsActive, onClick = { navController.navigate("settings_section/notifications") })
-                    SettingsDivider(inset = IosRowTextInset)
                     // KaPosts' and Public Chats' own settings, where KaChat had Chats, Storage and
-                    // Chat History (iOS KaPosts SettingsView).
+                    // Chat History (iOS KaPosts SettingsView). The notification settings are behind
+                    // the cog on the Notifications tab (iOS KaPosts 865c9ab).
                     SettingsNavigationItem("KaPosts", Icons.AutoMirrored.Outlined.Article, onClick = { showKaPostsSettings = true })
                     SettingsDivider(inset = IosRowTextInset)
                     SettingsNavigationItem(stringResource(R.string.broadcasts), Icons.Outlined.Forum, onClick = { showPublicChatsSettings = true })
@@ -2922,8 +2932,10 @@ fun SettingsScreen(
                         }
                     }
                     SettingsDivider(inset = IosRowTextInset)
-                    SettingsActionItem(stringResource(R.string.delete_account), Icons.Outlined.Delete, LocalAppColors.current.danger, labelColor = LocalAppColors.current.danger) {
-                        showDeleteAccount = true
+                    // Log out, not delete: the account stays saved on this phone, and deleting it is
+                    // done from Saved Accounts on the opening screen (iOS KaPosts 865c9ab).
+                    SettingsActionItem(stringResource(R.string.log_out), Icons.AutoMirrored.Outlined.Logout, LocalAppColors.current.danger, labelColor = LocalAppColors.current.danger) {
+                        showLogout = true
                     }
                     }
                 }
@@ -2963,10 +2975,10 @@ fun SettingsScreen(
             }
 
             if (sectionKey == "notifications") {
-                // The master switch, at the top of the page it governs (iOS NotificationsHubPage):
-                // push carries wallet activity, group mentions, broadcasts and KaPosts too, so it
-                // sits above the per-feature pages rather than inside one of them. No header, as
-                // on iOS; the footer says what it does.
+                // The master switch, at the top of the page it governs (iOS NotificationsHubPage,
+                // behind the cog on the Notifications tab): push carries KaPosts, wallet activity
+                // and the public chat rooms' bells, so it sits above the pages rather than inside
+                // one of them. No header, as on iOS; the footer says what it does.
                 SettingsFormSection(
                     title = null,
                     first = true,
@@ -2991,14 +3003,20 @@ fun SettingsScreen(
                     }
                 }
 
-                // One page per feature, in iOS's order and symbols (bubbles, banknote).
+                // KaPosts' notification settings live here, behind the cog on the Notifications
+                // tab (not in Settings, iOS KaPosts 865c9ab). Public Chats rooms keep their own
+                // bells, in each room.
                 SettingsFormSection(title = stringResource(R.string.notifications)) {
-                    SettingsNavigationItem(stringResource(R.string.chats), Icons.Outlined.Forum, onClick = {
-                        navController.navigate("notification_settings")
+                    SettingsNavigationItem("KaPosts", Icons.AutoMirrored.Outlined.Article, onClick = {
+                        navController.navigate("kaposts_notification_settings")
                     })
                     SettingsDivider(inset = IosRowTextInset)
                     SettingsNavigationItem(stringResource(R.string.notifications_wallet), Icons.Outlined.Payments, onClick = {
                         navController.navigate("wallet_notification_settings")
+                    })
+                    SettingsDivider(inset = IosRowTextInset)
+                    SettingsNavigationItem(stringResource(R.string.sound_vibration), Icons.AutoMirrored.Outlined.VolumeUp, onClick = {
+                        navController.navigate("notification_settings")
                     })
                 }
             }
@@ -3018,18 +3036,18 @@ fun SettingsScreen(
     if (showPublicChatsSettings) {
         PublicChatsSettingsSheet(onDismiss = { showPublicChatsSettings = false })
     }
-    if (showDeleteAccount) {
+    if (showLogout) {
         ConfirmActionSheet(
-            title = stringResource(R.string.delete_account),
-            confirmTitle = stringResource(R.string.delete),
-            confirmSubtitle = "This deletes the account from this phone and removes its push registration. " +
-                "Posts and messages on the Kaspa blockchain cannot be deleted. Make sure you have your recovery phrase.",
-            confirmIcon = Icons.Default.Delete,
+            title = stringResource(R.string.log_out),
+            confirmTitle = stringResource(R.string.log_out),
+            confirmSubtitle = "The account stays saved on this phone: sign back in from Saved Accounts on the " +
+                "opening screen, where an account can also be deleted.",
+            confirmIcon = Icons.AutoMirrored.Outlined.Logout,
             onConfirm = {
-                showDeleteAccount = false
-                walletViewModel.address.value?.let { walletViewModel.deleteWallet(it) }
+                showLogout = false
+                walletViewModel.logout()
             },
-            onDismiss = { showDeleteAccount = false },
+            onDismiss = { showLogout = false },
         )
     }
     }
@@ -4045,12 +4063,12 @@ fun NotificationSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel 
     val soundEnabled by viewModel.notificationSoundEnabled.collectAsState()
     val vibrationEnabled by viewModel.notificationVibrationEnabled.collectAsState()
 
-    // "Chats" since 4.0: this page is the Chats subpage of the top-level Notifications hub
-    // (Settings > Notifications > Chats), matching iOS.
-    SettingsFormPage(title = stringResource(R.string.chats), onBack = onBack) {
+    // Settings > Notifications > Sound & Vibration (iOS KaPosts NotificationsSettingsView, which
+    // was KaChat's Chats page): no per-contact modes, KaPosts has no contacts.
+    SettingsFormPage(title = stringResource(R.string.sound_vibration), onBack = onBack) {
         SettingsFormSection(
-            title = stringResource(R.string.sound_vibration),
-            footer = stringResource(R.string.notification_sound_footer),
+            title = null,
+            footer = "How a notification from KaPosts sounds and feels when it arrives.",
         ) {
             SettingsSwitchItem(stringResource(R.string.play_sound), soundEnabled) {
                 viewModel.setNotificationSoundEnabled(it)
@@ -4060,17 +4078,35 @@ fun NotificationSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel 
                 viewModel.setNotificationVibrationEnabled(it)
             }
         }
-        SettingsFormSection(title = stringResource(R.string.per_contact)) {
-            Text(
-                stringResource(R.string.per_contact_notification_hint),
-                color = LocalAppColors.current.textSecondary,
-                fontSize = 13.sp,
-                lineHeight = 18.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-            )
+    }
+}
+
+/**
+ * Settings > Notifications > KaPosts: which KaPosts pings reach you (iOS KaPosts
+ * KaPostsNotificationSettingsView). Mentions cannot be switched off at the push service, so the
+ * server is told the other five through the push registration.
+ */
+@Composable
+fun KaPostsNotificationSettingsScreen(onBack: () -> Unit, settingsViewModel: SettingsViewModel = hiltViewModel()) {
+    val likes by settingsViewModel.kaPostsNotifyLikes.collectAsState()
+    val reposts by settingsViewModel.kaPostsNotifyReposts.collectAsState()
+    val follows by settingsViewModel.kaPostsNotifyFollows.collectAsState()
+    val dislikes by settingsViewModel.kaPostsNotifyDislikes.collectAsState()
+    val comments by settingsViewModel.kaPostsNotifyComments.collectAsState()
+    val mentions by settingsViewModel.kaPostsNotifyMentions.collectAsState()
+    SettingsFormPage(title = "KaPosts", onBack = onBack) {
+        SettingsFormSection(title = null) {
+            SettingsSwitchItem("Likes", likes) { settingsViewModel.setKaPostsNotifyLikes(it) }
+            SettingsDivider()
+            SettingsSwitchItem("Reposts", reposts) { settingsViewModel.setKaPostsNotifyReposts(it) }
+            SettingsDivider()
+            SettingsSwitchItem("Follows", follows) { settingsViewModel.setKaPostsNotifyFollows(it) }
+            SettingsDivider()
+            SettingsSwitchItem("Dislikes", dislikes) { settingsViewModel.setKaPostsNotifyDislikes(it) }
+            SettingsDivider()
+            SettingsSwitchItem("Comments", comments) { settingsViewModel.setKaPostsNotifyComments(it) }
+            SettingsDivider()
+            SettingsSwitchItem("Mentions", mentions) { settingsViewModel.setKaPostsNotifyMentions(it) }
         }
     }
 }
@@ -4529,7 +4565,11 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
             }
             3 -> {
             // .kachat first: it is what every address field resolves before anything else (iOS 6ac48a7).
-            SettingsFormSection(title = stringResource(R.string.kn_kachat_names), footer = stringResource(R.string.kachat_names_resolved_first_footer)) {
+            SettingsFormSection(
+                title = stringResource(R.string.kn_kachat_names),
+                footer = if (com.kachat.app.services.NameServicesClient.OTHER_SERVICES_ENABLED) stringResource(R.string.kachat_names_resolved_first_footer)
+                    else "The only names KaPosts looks up, everywhere you can type an address.",
+            ) {
                 val isMainnet = network.equals("mainnet", ignoreCase = true)
                 // Read through the chat indexer above when it serves this network's names, else
                 // straight from the chain (KachatNamesRegistry, iOS 5df42b4, ef6b21e).
@@ -4538,9 +4578,10 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     value = stringResource(if (isMainnet) R.string.kn_live_on_mainnet else R.string.kn_live_testnet_registry)
                 )
             }
-            // The other name services this app reads (see NameServicesClient). Shown, not
-            // editable; the .kas URL follows the selected network.
-            SettingsFormSection(title = stringResource(R.string.other_domains_title), footer = stringResource(R.string.other_domains_settings_footer)) {
+            // The other name services KaChat reads (see NameServicesClient) - none in KaPosts,
+            // which looks up .kachat names only (iOS KaPosts 865c9ab). Shown, not editable; the
+            // .kas URL follows the selected network.
+            if (com.kachat.app.services.NameServicesClient.OTHER_SERVICES_ENABLED) SettingsFormSection(title = stringResource(R.string.other_domains_title), footer = stringResource(R.string.other_domains_settings_footer)) {
                 val isMainnet = network.equals("mainnet", ignoreCase = true)
                 ConnectionUrlField(label = ".kas", value = knsApiUrl)
                 listOf(com.kachat.app.services.NameServiceTLD.K, com.kachat.app.services.NameServiceTLD.KASPA).forEach { tld ->
@@ -5002,6 +5043,8 @@ fun OtherDomainsDropdown(
     selected: com.kachat.app.services.NameServiceTLD?,
     onPick: (com.kachat.app.services.NameResolution) -> Unit,
 ) {
+    // KaPosts reads .kachat names only, so there are no other services to offer.
+    if (!com.kachat.app.services.NameServicesClient.OTHER_SERVICES_ENABLED) return
     val others = resolutions.filter { it.tld != selected }
     if (others.isEmpty()) return
     val openByItself = selected == null && resolutions.any { it.address != null }

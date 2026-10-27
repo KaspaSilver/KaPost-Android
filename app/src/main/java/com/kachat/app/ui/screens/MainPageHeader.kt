@@ -176,11 +176,13 @@ fun IosToolbarRow(
 fun MainPageHeader(
     title: String,
     modifier: Modifier = Modifier,
-    /** A back arrow beside the dot. Null on the dock destinations, which are not pushed into. */
+    /** A back arrow top left. Null on the dock destinations, which are not pushed into. */
     onBack: (() -> Unit)? = null,
     /** The connection dot and the balance. A pushed page iOS gives only a back button and its
      *  title (Help) passes false. */
     showStatus: Boolean = true,
+    /** What sits top left when there is no back arrow (Public Chats' customize button). */
+    leading: (@Composable () -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val colors = LocalAppColors.current
@@ -191,27 +193,32 @@ fun MainPageHeader(
             .statusBarsPadding(),
     ) {
         // iOS's bar: leading items, the balance as the principal item (see IosToolbarRow),
-        // trailing items on one piece of glass.
+        // trailing items on one piece of glass, then the green connection dot top right - iOS
+        // KaPosts moved it right on every screen, leaving the left side to Back (865c9ab).
         IosToolbarRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
             leading = {
+                if (onBack != null && !LocalInHubSection.current) {
+                    ToolbarGlassGroup {
+                        // iOS 26: the chevron in the label colour, centred on its glass.
+                        ToolbarIconButton(Icons.Filled.ArrowBackIosNew, "Back", onBack, tint = LocalAppColors.current.textPrimary, iconSize = 20.dp)
+                    }
+                } else {
+                    leading?.invoke()
+                }
+            },
+            principal = { if (showStatus) BalanceTopBarLabel() },
+            trailing = {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (onBack != null && !LocalInHubSection.current) {
-                        ToolbarGlassGroup {
-                            // iOS 26: the chevron in the label colour, centred on its glass.
-                            ToolbarIconButton(Icons.Filled.ArrowBackIosNew, "Back", onBack, tint = LocalAppColors.current.textPrimary, iconSize = 20.dp)
-                        }
-                    }
+                    ToolbarGlassGroup(content = actions)
                     if (showStatus) ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
                 }
             },
-            principal = { if (showStatus) BalanceTopBarLabel() },
-            trailing = { ToolbarGlassGroup(content = actions) },
         )
         Text(
             text = title,

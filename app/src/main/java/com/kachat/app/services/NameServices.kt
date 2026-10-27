@@ -224,6 +224,7 @@ class NameServicesClient @Inject constructor(
     /** Every name [address] owns on .k and .kaspa. A lookup that fails keeps what the service
      *  last answered and marks it failed. */
     suspend fun refresh(address: String) {
+        if (!OTHER_SERVICES_ENABLED) return
         val normalized = address.trim().lowercase()
         if (normalized.isEmpty()) return
         if (ownerAddress != normalized) {
@@ -260,6 +261,7 @@ class NameServicesClient @Inject constructor(
     /** Names [address] owns on .k and .kaspa, for scanning many addresses - it leaves [owned]
      *  (Your Domains' address) alone. A failed lookup counts as no names. */
     suspend fun ownedNames(of: String): List<OwnedServiceName> {
+        if (!OTHER_SERVICES_ENABLED) return emptyList()
         val address = of.trim().lowercase()
         if (address.isEmpty()) return emptyList()
         return coroutineScope {
@@ -273,6 +275,7 @@ class NameServicesClient @Inject constructor(
      *  [owned] alone. A service whose lookup failed is missing from the result (iOS
      *  `ownedNamesByService(of:)`, fe52376). */
     suspend fun ownedNamesByService(of: String): Map<NameServiceTLD, List<OwnedServiceName>> {
+        if (!OTHER_SERVICES_ENABLED) return emptyMap()
         val address = of.trim().lowercase()
         if (address.isEmpty()) return emptyMap()
         val (k, kaspa) = coroutineScope {
@@ -320,6 +323,7 @@ class NameServicesClient @Inject constructor(
      *  .kachat where it is live (testnet). Account discovery asks this so an address that holds
      *  only a name, and no KAS, is still found. */
     suspend fun ownsAnyName(address: String): Boolean {
+        if (!OTHER_SERVICES_ENABLED) return ownsKachatName(address)
         val found = coroutineScope {
             val kas = async { runCatching { knsService.getOwnedDomains(address).isNotEmpty() }.getOrDefault(false) }
             val others = async { ownedNames(of = address) }
@@ -385,6 +389,7 @@ class NameServicesClient @Inject constructor(
     suspend fun resolveEverywhere(input: String): List<NameResolution> {
         val label = NameServiceTLD.splitTypedName(input).first
         if (label.isEmpty()) return emptyList()
+        if (!OTHER_SERVICES_ENABLED) return listOfNotNull(resolveKachat(label))
         val results = coroutineScope {
             listOf(
                 async { resolveKachat(label) },
@@ -496,6 +501,13 @@ class NameServicesClient @Inject constructor(
         get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
 
     companion object {
+        /**
+         * KaPosts is part of the KaChat ecosystem and reads `.kachat` names only: nothing here asks
+         * .kas (KNS), .k (dotk) or .kaspa (Kaspa Names). Their code is kept, switched off, so the
+         * shared files stay close to KaChat's (iOS KaPosts `otherServicesEnabled`, 865c9ab).
+         */
+        const val OTHER_SERVICES_ENABLED = false
+
         private const val TAG = "NameServices"
 
         /** Whether typed input could be a name on any service (and is not an address): a bare
@@ -522,6 +534,9 @@ class NameServicesClient @Inject constructor(
          *  not-found message every address field shows (iOS 5a5122d). */
         fun notFoundMessage(context: android.content.Context, typed: String, results: List<NameResolution>): String {
             val wanted = NameServiceTLD.splitTypedName(typed).second ?: NameServiceTLD.KACHAT
+            if (wanted != NameServiceTLD.KACHAT && !OTHER_SERVICES_ENABLED) {
+                return "KaPosts looks up .kachat names only"
+            }
             if (wanted == NameServiceTLD.KACHAT &&
                 (results.any { it.tld == NameServiceTLD.KACHAT && it.notLive } || !NameServiceTLD.KACHAT.isLive)
             ) {

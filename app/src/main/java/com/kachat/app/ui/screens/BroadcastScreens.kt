@@ -82,6 +82,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -203,6 +204,8 @@ fun BroadcastListScreen(
     val channels by broadcastViewModel.joinedChannels.collectAsState()
     val joinState by broadcastViewModel.joinChannelState.collectAsState()
     var showJoinDialog by remember { mutableStateOf(false) }
+    /** The customize sheet: a switch for every default room. */
+    var showCustomize by remember { mutableStateOf(false) }
     var channelInput by remember { mutableStateOf("") }
     var channelToLeave by remember { mutableStateOf<String?>(null) }
     /** The room whose long-press sheet is up. */
@@ -248,36 +251,46 @@ fun BroadcastListScreen(
                     // No back arrow, matching iOS: Public Chats is a browsing destination you
                     // arrive at, not something you were pushed into. System back still runs
                     // onBack (see the BackHandler above), which is how the Hub gets back to
-                    // its grid.
+                    // its grid. Top left, the customize button: which default rooms the list
+                    // shows (iOS KaPosts 865c9ab).
+                    leading = {
+                        val haptic = com.kachat.app.util.rememberHaptics()
+                        ToolbarGlassGroup {
+                            ToolbarIconButton(
+                                Icons.Default.Tune,
+                                "Choose rooms",
+                                onClick = {
+                                    haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                                    showCustomize = true
+                                },
+                                iconSize = 20.dp,
+                            )
+                        }
+                    },
                 )
             }
         }
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             // Rooms laid out like the Chats and Group Chats lists (iOS 83286b3): the two curated
-            // rooms pinned on top, every other joined room below by latest activity, then the
-            // default language rooms not opened yet - each its own row, no dropdown; any default
-            // room can be switched off in Public Chats settings. Keys carry a
-            // ':' prefix, which a channel name can never contain, so nothing can collide.
+            // rooms pinned on top, then every other room - the language rooms and your own - by
+            // latest activity. Every default room is listed from the start (iOS KaPosts 865c9ab);
+            // any can be switched off with the customize button. Keys carry a ':' prefix, which a
+            // channel name can never contain, so nothing can collide.
             val summaries by broadcastViewModel.roomSummaries.collectAsState()
             val senderKnsNames by broadcastViewModel.senderKnsNames.collectAsState()
             val contactAliases by broadcastViewModel.contactAliases.collectAsState()
             val myAddressForRows = remember { runCatching { broadcastViewModel.myAddress() }.getOrNull() }
-            // Default rooms switched off in Public Chats settings stay out of the list entirely.
-            val hiddenCurated by broadcastViewModel.hiddenCuratedRooms.collectAsState()
             val listed by broadcastViewModel.listedChannels.collectAsState()
-            val joinedNames = channels.map { it.channelName }.toSet()
-            val unjoinedLanguages = com.kachat.app.models.FeaturedBroadcastChannels.LANGUAGE_NAMES
-                .filter { it !in joinedNames && it !in hiddenCurated }
             // the app's one rule (addressDisplayName): your name for them, else their .kachat
             // name on testnet (KNS elsewhere), else the short address (iOS e52357d)
             fun senderName(address: String): String =
                 if (address == myAddressForRows) "You"
                 else addressDisplayName(address, contactAliases[address], senderKnsNames[address])
 
-            // The joined rooms arrive a moment after the language rows are laid out, and the list
-            // would keep its place on the first language row - opening scrolled past #kaspa and
-            // #kachat-bugs. The first time there are rooms, it starts at the top.
+            // The rooms arrive a moment after the list is laid out, and it could keep its place
+            // further down - opening scrolled past #kaspa and #kachat-bugs. The first time there
+            // are rooms, it starts at the top.
             val roomListState = androidx.compose.foundation.lazy.rememberLazyListState()
             var roomsArrived by remember { mutableStateOf(false) }
             LaunchedEffect(listed.isNotEmpty()) {
@@ -313,23 +326,6 @@ fun BroadcastListScreen(
                         },
                         onLongClick = if (isSelectionMode) null else ({ roomActionTarget = channel.channelName }),
                         selected = if (isSelectionMode) channel.channelName in selectedRooms else null,
-                    )
-                }
-
-                if (!isSelectionMode) items(unjoinedLanguages, key = { "language:$it" }) { name ->
-                    PublicChatRow(
-                        channelName = name,
-                        notifyOff = false,
-                        preview = null,
-                        emptyText = com.kachat.app.models.FeaturedBroadcastChannels.languageDisplayName(name)
-                            ?.let { "$it · tap to open" } ?: "Tap to open",
-                        timeText = null,
-                        unread = 0,
-                        onClick = {
-                            broadcastViewModel.ensureCuratedRoomJoined(name)
-                            navController.navigate("broadcast_channel/$name")
-                        },
-                        onLongClick = null,
                     )
                 }
 
@@ -433,6 +429,10 @@ fun BroadcastListScreen(
         }
     }
 
+    if (showCustomize) {
+        PublicChatsSettingsSheet(onDismiss = { showCustomize = false }, broadcastViewModel = broadcastViewModel)
+    }
+
     if (showJoinDialog) {
         // Joining and creating are the same action - there is no ownership protocol, so a name
         // nobody has used becomes a room the moment you post in it. Worth a sentence, which an
@@ -517,9 +517,9 @@ fun BroadcastListScreen(
 }
 
 /**
- * Public Chats settings, behind the gear on the Public Chats tab: every default room with a
- * switch. Off takes the room out of the list and silences it for good; on brings it back.
- * Mirrors iOS's PublicChatsSettingsView.
+ * Public Chats settings, behind the customize button at the top left of the tab (and in
+ * Settings): every default room with a switch. On means the room is in the list (switching it on
+ * joins it); off takes it out and silences it. Mirrors iOS KaPosts' PublicChatsSettingsView.
  */
 @Composable
 fun PublicChatsSettingsSheet(
@@ -561,8 +561,8 @@ fun PublicChatsSettingsSheet(
                         if (language != null) Text(language, color = colors.textSecondary, fontSize = 12.sp)
                     }
                     com.kachat.app.ui.theme.IosSwitch(
-                        // On only when the room really is in the Chats circles: joined and not
-                        // switched off. A language room never opened reads off until switched on.
+                        // On only when the room really is in the list: joined and not switched
+                        // off. Every default room is joined, so in practice "not switched off".
                         checked = name !in hidden && name in joinedNames,
                         onCheckedChange = { shown -> broadcastViewModel.setCuratedRoomShown(name, shown) }
                     )
@@ -591,7 +591,7 @@ fun PublicChatsSettingsSheet(
                         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
                     )
                 }
-                SettingsSection(title = "Other Languages") {
+                SettingsSection(title = "Languages") {
                     val names = com.kachat.app.models.FeaturedBroadcastChannels.LANGUAGE_NAMES
                     names.forEachIndexed { i, name -> roomSwitch(name, showDivider = i < names.size - 1) }
                 }
@@ -1012,8 +1012,8 @@ fun BroadcastChannelScreen(
                         onBand = { coroutineScope.launch { listState.scrollToItem(0) } },
                     )
             ) {
-                // The chat thread's bar (ChatNavBar), with the room's connection dot beside Back
-                // as iOS's navigationBarLeading ConnectionStatusIndicator puts it.
+                // The chat thread's bar (ChatNavBar): Back on the left, the room's connection dot
+                // far right after the bell, like every KaPosts screen (iOS KaPosts 865c9ab).
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1022,8 +1022,6 @@ fun BroadcastChannelScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     SheetBarBackButton(onClick = onBack)
-                    Spacer(Modifier.width(8.dp))
-                    ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
                     Spacer(Modifier.weight(1f))
                     // A room you made yourself: what "public" does and does not mean here. Rooms
                     // the indexer tracks keep their history there, so they need no such warning
@@ -1041,6 +1039,8 @@ fun BroadcastChannelScreen(
                             onClick = { showNotifySheet = true },
                         )
                     }
+                    Spacer(Modifier.width(8.dp))
+                    ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
                 }
                 // iOS PublicChatRoomTitleChip: the 1:1/group header chip measure for measure, the
                 // circle carrying the room glyph (accent at 20%, "number" 18 semibold) where they

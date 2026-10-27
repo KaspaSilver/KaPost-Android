@@ -34,6 +34,7 @@ class KnsService @Inject constructor(
 
     /** "alice.kas" -> the Kaspa address that owns it, or null if unresolvable/not found. */
     suspend fun resolve(domain: String): String? {
+        if (!IS_ENABLED) return null
         return try {
             val response = api().resolveDomain(normalizeDomain(domain))
             if (response.success) response.data?.owner else null
@@ -70,6 +71,7 @@ class KnsService @Inject constructor(
         if (SHOWS_DOMAIN_NAMES_AS_IDENTITY) getExplicitPrimaryDomain(address) else null
 
     suspend fun reverseResolve(address: String, forceRefresh: Boolean = false): String? {
+        if (!IS_ENABLED) return null
         if (!forceRefresh) {
             profileCache.cachedReverse(address)?.let { return it.domain }
         }
@@ -89,6 +91,7 @@ class KnsService @Inject constructor(
 
     /** The address's explicitly-set primary domain, or null if none has ever been set — unlike [reverseResolve], this does NOT fall back to "first owned domain". */
     suspend fun getExplicitPrimaryDomain(address: String): String? {
+        if (!IS_ENABLED) return null
         return try {
             val response = api().getPrimaryName(address)
             if (response.success) response.data?.domain?.fullName else null
@@ -103,6 +106,7 @@ class KnsService @Inject constructor(
 
     /** [getOwnedDomains] that tells a failed lookup (null) apart from a real "owns none". */
     suspend fun getOwnedDomainsOrNull(address: String): List<KnsAsset>? {
+        if (!IS_ENABLED) return emptyList()
         return try {
             val response = api().getAssetsByOwner(address)
             response.data?.assets
@@ -153,6 +157,7 @@ class KnsService @Inject constructor(
      * cached list first, else the asset's profile, `name` + `tld` lowercased, normalized.
      */
     suspend fun resolveDomainName(assetId: String): String? {
+        if (!IS_ENABLED) return null
         val id = assetId.trim()
         if (id.isEmpty()) return null
         cachedDomainNameForAssetId(id, ownerAddress = null)?.let { return it }
@@ -202,7 +207,7 @@ class KnsService @Inject constructor(
     /** One .kas domain's profile, for editing it in Your Domains (and confirming a save landed).
      *  Not cached or shown anywhere else. Null when it has none or the lookup failed. */
     suspend fun getProfileForEditing(assetId: String): KnsProfileFields? {
-        if (assetId.isBlank()) return null
+        if (!IS_ENABLED || assetId.isBlank()) return null
         return try {
             val response = api().getDomainProfile(assetId)
             if (response.success) response.data?.profile else null
@@ -315,6 +320,14 @@ class KnsService @Inject constructor(
     }
 
     companion object {
+        /**
+         * KaPosts is part of the KaChat ecosystem and looks up `.kachat` names only, so KNS (.kas
+         * domains and their profiles) is switched off: every lookup answers "nothing" without a
+         * request. The code is kept so this file stays close to KaChat's (iOS KaPosts
+         * `KNSService.isEnabled`, 865c9ab).
+         */
+        const val IS_ENABLED = false
+
         /** Whether .kas profiles (avatar, banner, bio, links) are loaded for display anywhere in
          *  the app. Off since 5.2 - only the domain name is resolved (iOS d6ded9d). */
         const val LOADS_DOMAIN_PROFILES = false

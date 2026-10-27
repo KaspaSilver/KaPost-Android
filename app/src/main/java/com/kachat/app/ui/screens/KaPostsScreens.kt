@@ -59,6 +59,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -95,6 +99,7 @@ import androidx.compose.material.icons.filled.StrikethroughS
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
@@ -228,6 +233,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -700,16 +706,9 @@ private fun KaPostsFeedScreen(
         }
     }
     var showMyProfile by remember { mutableStateOf(false) }
-    var showNotifications by remember { mutableStateOf(false) }
+    // Notifications are the dock's Notifications tab (KaPostsNotificationsTab), not a screen
+    // over the feed (iOS KaPosts 865c9ab).
     var showSearch by remember { mutableStateOf(false) }
-    val kaPostsUnseen by viewModel.unseenNotifications.collectAsState()
-    // Opening the list IS seeing them - cleared on open rather than on close so the badge does
-    // not sit there while you read. While it is open the poller holds its banners (iOS).
-    LaunchedEffect(showNotifications) {
-        if (showNotifications) viewModel.markNotificationsSeen()
-        viewModel.setNotificationsScreenVisible(showNotifications)
-    }
-    DisposableEffect(Unit) { onDispose { viewModel.setNotificationsScreenVisible(false) } }
     var followListKind by remember { mutableStateOf<Boolean?>(null) } // true = followers
     // The profile whose follow list is open: null = my own list, non-null = another user's.
     var followListPubkey by remember { mutableStateOf<String?>(null) }
@@ -768,7 +767,7 @@ private fun KaPostsFeedScreen(
     val posterProfile by viewModel.posterProfile.collectAsState()
     val deepLinkTxId by KaPostsDeepLink.pendingPostTxId.collectAsState()
 
-    // Tab-driven feed pager (no drag - see the HorizontalPager below). One LazyListState per
+    // The feed pager (swiped, or driven by the tab row - see the HorizontalPager below). One LazyListState per
     // tab, hoisted here rather than remembered inside the pager page, so each feed keeps its
     // scroll offset across switches.
     val feedPagerState = rememberPagerState(
@@ -799,19 +798,14 @@ private fun KaPostsFeedScreen(
         }
     }
 
-    // The thread overlay renders inside this screen's own composition (not a Dialog window), so it
-    // is bounded by the shell's content area - which reserves room for the floating dock. KaPosts
-    // is a tab route, so the dock is otherwise always drawn on top; ask the shell to drop it while
-    // a thread is open, exactly as Cold Storage's full-screen scanner does. Dropping the dock also
-    // collapses the shell's reserved bottom padding, which is what lets the overlay reach the
-    // bottom of the screen.
+    // The thread overlay renders inside this screen's own composition (not a Dialog window), so
+    // the real dock floats over it, as it stays in reach on every KaPosts screen (iOS KaPosts
+    // 865c9ab); the thread keeps its reply box clear of it (LocalDockInset).
     val threadOpen = threadStack.isNotEmpty()
     LaunchedEffect(threadOpen) {
-        walletViewModel.setHideBottomBar(threadOpen)
         // Out of the thread entirely: the reply box starts empty next time (iOS closeThread).
         if (!threadOpen) threadReplyText = TextFieldValue("")
     }
-    DisposableEffect(Unit) { onDispose { walletViewModel.setHideBottomBar(false) } }
 
     /** Already reading a thread: push, so Back returns here. Re-opening the post already on top
      *  is a no-op, so a double tap cannot stack it twice (iOS openDetail). */
@@ -915,15 +909,11 @@ private fun KaPostsFeedScreen(
         val focusReplyTxId = KaPostsDeepLink.pendingFocusReplyTxId.value
         KaPostsDeepLink.pendingPostTxId.value = null
         KaPostsDeepLink.pendingFocusReplyTxId.value = null
-        // "" is the tab-only sentinel (a notification with no target txid). Nothing to
-        // deep-open, but the ping still has to land somewhere that explains itself: open the
-        // Notifications list (follows, and pushes whose payload named no post), matching iOS.
+        // "" is the tab-only sentinel (a notification with no target txid): MainShell opens the
+        // Notifications tab for it (iOS KaPosts KaPostsTabView), so there is nothing to open here.
         if (txId.isNotEmpty()) {
             KaPostsDeepLink.pendingOpenNotifications.value = false
             openShared(txId, focusReplyTxId)
-        } else if (KaPostsDeepLink.pendingOpenNotifications.value) {
-            KaPostsDeepLink.pendingOpenNotifications.value = false
-            showNotifications = true
         }
     }
 
@@ -936,6 +926,27 @@ private fun KaPostsFeedScreen(
         KaPostsDeepLink.pendingProfileAddress.value = null
         threadStack = emptyList()
         viewModel.openPosterProfile(address, null)
+    }
+
+    // A tab tapped on the dock, or on its copy over one of these screens (KaPostsDock): every
+    // full-screen KaPosts screen closes at once, so the tab is what shows. A reply typed under a
+    // thread is kept, as it is when the thread is closed with Back (iOS closeAllCovers).
+    LaunchedEffect(Unit) {
+        KaPostsDock.closeCovers.collect {
+            threadStack = emptyList()
+            profileReturns = emptyMap()
+            threadFocusReplyId = null
+            showMyProfile = false
+            viewModel.closePosterProfile()
+            showSearch = false
+            followListKind = null
+            engagementTarget = null
+            moderationKind = null
+            showKaPostsSettings = false
+            showBookmarks = false
+            showDrafts = false
+            showScheduled = false
+        }
     }
 
     // The repost icon's plain tap only reaches here for a post with no txid yet (on-chain posts
@@ -989,8 +1000,8 @@ private fun KaPostsFeedScreen(
                     )
                 }
             } else Column(modifier = Modifier.fillMaxSize()) {
-                // Top chrome mirrors iOS's KaPostsPageView navigation bar: clickable connection
-                // dot leading + centered balance (ConnectionStatusIndicator / BalanceToolbarLabel
+                // Top chrome mirrors iOS's KaPostsPageView navigation bar: centered balance +
+                // clickable connection dot trailing (ConnectionStatusIndicator / BalanceToolbarLabel
                 // toolbar items), then the bold left-aligned large title, then the hamburger
                 // inline with the three feed tabs (KaPostsView.feedTabBar).
                 Box(
@@ -998,11 +1009,12 @@ private fun KaPostsFeedScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 4.dp),
                 ) {
-                    // Same clickable dot as the chat-thread and broadcast-room headers: 32dp
-                    // surface circle, 10dp live-status dot, opens the connection status page.
+                    // Same clickable dot as the chat-thread and broadcast-room headers, top right
+                    // as on every KaPosts screen (iOS KaPosts 865c9ab); opens the connection
+                    // status page.
                     ConnectionDotButton(
                         onClick = { ConnectionStatusOverlayState.open() },
-                        modifier = Modifier.align(Alignment.CenterStart),
+                        modifier = Modifier.align(Alignment.CenterEnd),
                     )
                     BalanceTopBarLabel(modifier = Modifier.align(Alignment.Center))
                 }
@@ -1014,11 +1026,9 @@ private fun KaPostsFeedScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     KaPostsFeedMenuButton(
-                        unseenNotifications = kaPostsUnseen,
                         onSelect = { item ->
                             when (item) {
                                 KaPostsFeedMenuItem.SEARCH -> showSearch = true
-                                KaPostsFeedMenuItem.NOTIFICATIONS -> showNotifications = true
                                 KaPostsFeedMenuItem.DRAFTS -> {
                                     drafts = KaPostDraftStore.load(draftContext, myAddressForDrafts.orEmpty())
                                     showDrafts = true
@@ -1047,16 +1057,14 @@ private fun KaPostsFeedScreen(
                 )
                 HorizontalDivider(color = colors.surfaceVariant)
 
-                // The tab row is the only way between feeds - a tab tap still animates the page
-                // across, but the pager takes no drags of its own. A swipe that silently changes
-                // which feed you are reading is easy to trigger by accident while scrolling, and
-                // there is nothing on screen afterwards to explain why the posts changed. The
-                // pager stays (rather than a plain when-on-tab) so each feed keeps its own scroll
-                // position and the switch is still animated.
+                // Following, Feed and Popular side by side: swipe left and right between them, or
+                // tap the tab row (iOS KaPosts KaPostsFeedPager, 865c9ab). The pager locks each
+                // touch to one direction, so a vertical scroll never turns into a feed change, and
+                // always settles on a whole page; the underline in the tab row shows which feed
+                // you landed on.
                 HorizontalPager(
                     state = feedPagerState,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                    userScrollEnabled = false,
                     key = { KaPostsFeedTabs[it] },
                 ) { page ->
                     val tab = KaPostsFeedTabs[page]
@@ -1180,9 +1188,11 @@ private fun KaPostsFeedScreen(
                         }
                     } else {
                         // Endless scroll, per tab. Each tab keeps its own cursor in the view
-                        // model, so a swipe away and back resumes exactly where it was.
+                        // model, so a swipe away and back resumes exactly where it was. The page
+                        // beside the one on screen is drawn mid-swipe too; only the feed being
+                        // read pulls in more.
                         EndlessScroll(listState = feedListStates[page], key = tab) {
-                            viewModel.loadMoreFeed(tab)
+                            if (tab == viewModel.selectedFeed.value) viewModel.loadMoreFeed(tab)
                         }
                         NewPostsPill(
                             count = pendingNew.size,
@@ -1653,17 +1663,6 @@ private fun KaPostsFeedScreen(
                 // the pubkey from the author's posts: without it the profile can't load their
                 // posts, replies or counts, nor follow on chain
                 viewModel.openPosterProfile(address, pubkey)
-            },
-        )
-    }
-
-    if (showNotifications) {
-        KaPostsNotificationsOverlay(
-            viewModel = viewModel,
-            onClose = { showNotifications = false },
-            onOpenPost = { txId ->
-                showNotifications = false
-                openShared(txId)
             },
         )
     }
@@ -4308,10 +4307,15 @@ fun KaPostThreadOverlay(
         // intrinsic height and the list absorbs whatever is left - including the shrink when the
         // keyboard opens, which is what keeps the composer riding above the IME instead of being
         // pushed off-screen.
+        // The real dock floats over the thread (it is not a Dialog window): the reply box sits
+        // above it, and right on the keyboard once the dock steps aside for it.
+        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val threadDockPad = (LocalDockInset.current - navBarBottom).coerceAtLeast(0.dp)
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .windowInsetsPadding(KaPostsOverlayInsets),
+                .windowInsetsPadding(KaPostsOverlayInsets)
+                .padding(bottom = threadDockPad),
         ) {
             // ONE control, and it always means back: up a level while the thread has history,
             // out of it at the root (iOS).
@@ -4901,31 +4905,55 @@ fun KaPostsProfileOverlay(
         // Same window-sizing fix as the other overlays.
         ForceFullScreenDialogWindow()
         val profileSlide = rememberKaPostsCoverSlideState(onClose)
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .then(profileSlide.modifier)
-                .background(colors.background)
-                .windowInsetsPadding(KaPostsOverlayInsets),
-        ) {
-            // The bar - back chevron, dot, balance - with the banner starting BELOW it (iOS).
-            CompositionLocalProvider(LocalKaPostsBack provides profileSlide.back) { KaPostsOverlayStatusBar() }
-            KaPostsProfilePage(
-                address = address,
-                pubkey = pubkey,
-                isMine = isMine,
-                viewModel = viewModel,
-                navController = navController,
-                onClose = onClose,
-                onOpenThread = onOpenThread,
-                onRepostTap = onRepostTap,
-                onViewEngagement = onViewEngagement,
-                onOpenQuoted = onOpenQuoted,
-                onOpenFollowList = onOpenFollowList,
-                onTip = onTip,
-                onReply = onReply,
-            )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(profileSlide.modifier)
+                    .background(colors.background)
+                    .windowInsetsPadding(KaPostsOverlayInsets),
+            ) {
+                // The bar - back chevron, dot, balance - with the banner starting BELOW it (iOS).
+                CompositionLocalProvider(LocalKaPostsBack provides profileSlide.back) { KaPostsOverlayStatusBar() }
+                KaPostsProfilePage(
+                    address = address,
+                    pubkey = pubkey,
+                    isMine = isMine,
+                    viewModel = viewModel,
+                    navController = navController,
+                    onClose = onClose,
+                    onOpenThread = onOpenThread,
+                    onRepostTap = onRepostTap,
+                    onViewEngagement = onViewEngagement,
+                    onOpenQuoted = onOpenQuoted,
+                    onOpenFollowList = onOpenFollowList,
+                    onTip = onTip,
+                    onReply = onReply,
+                    // The last posts scroll clear of the dock copy.
+                    bottomInset = kaPostsDockCopyInsetAboveNavBar(),
+                )
+            }
+            // The dock stays in reach over a profile, still while it slides (iOS KaPostsDockCopy).
+            KaPostsDockCopy()
         }
+    }
+}
+
+/** The teal capsule the buttons under your own profile's name share (iOS KaPosts
+ *  `profileHeaderButtonLabel`). */
+@Composable
+private fun KaPostsProfileHeaderButton(title: String, icon: ImageVector, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(KaspaTeal.copy(alpha = 0.15f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(title, color = KaspaTeal, fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
 }
 
@@ -5146,26 +5174,27 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
                         Box(Modifier.padding(top = 2.dp)) { ExpandableBioText(bio) }
                     }
                     if (isMine) {
-                        // Everything above this - avatar, banner, name, bio - comes from your KNS
-                        // profile, so the way to change any of it belongs here rather than only on
-                        // the Profile tab. Same destination that tab's own Edit KNS Profile uses.
+                        // Everything above this - avatar, banner, name, bio - comes from your
+                        // profile, so the way to change any of it belongs here. Beside it, the
+                        // Wallet: the address's balance, history and coins, the screen that used to
+                        // be the Wallet tab - pushed, so the dock stays underneath (iOS KaPosts
+                        // 865c9ab).
                         Row(
-                            modifier = Modifier
-                                .padding(top = 2.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(KaspaTeal.copy(alpha = 0.15f))
-                                .clickable {
-                                    onClose()
-                                    // KaChat's own profile (iOS 09e0403); .kas profiles are
-                                    // customized per domain in Your Domains.
-                                    navController.navigate("edit_kachat_profile")
-                                }
-                                .padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            Icon(Icons.Default.Badge, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Edit Profile", color = KaspaTeal, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            KaPostsProfileHeaderButton("Edit Profile", Icons.Default.Badge) {
+                                onClose()
+                                // KaChat's own profile (iOS 09e0403); .kas profiles are
+                                // customized per domain in Your Domains.
+                                navController.navigate("edit_kachat_profile")
+                            }
+                            if (address.isNotEmpty()) {
+                                KaPostsProfileHeaderButton("Wallet", Icons.Default.AccountBalanceWallet) {
+                                    onClose()
+                                    navController.navigate(com.kachat.app.ui.Screen.Wallet.route) { launchSingleTop = true }
+                                }
+                            }
                         }
                     }
                 }
@@ -5585,12 +5614,67 @@ fun KaPostsSearchOverlay(
     }
 }
 
+/**
+ * The Notifications tab (iOS KaPosts `KaPostsNotificationsView` as a dock tab): your KaPosts
+ * notifications under the balance and the connection dot, with the cog top left opening the
+ * notification settings, pushed inside this tab so the dock stays underneath. Opening the tab IS
+ * seeing them - cleared on open rather than on leaving, so the badge does not sit there while you
+ * read - and while it is on screen the poller holds its banners. A post opened from a row opens
+ * on the Feed tab.
+ */
+@Composable
+fun KaPostsNotificationsTab(
+    navController: NavController,
+    viewModel: KaPostsViewModel = hiltViewModel(),
+) {
+    val colors = LocalAppColors.current
+    LaunchedEffect(Unit) {
+        viewModel.markNotificationsSeen()
+        viewModel.setNotificationsScreenVisible(true)
+    }
+    DisposableEffect(Unit) { onDispose { viewModel.setNotificationsScreenVisible(false) } }
+    // Seen while you are on it: what lands while the tab is open is read as it arrives.
+    val unseen by viewModel.unseenNotifications.collectAsState()
+    LaunchedEffect(unseen) { if (unseen > 0) viewModel.markNotificationsSeen() }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.background)
+            .statusBarsPadding()
+            .semantics { paneTitle = "Notifications" },
+    ) {
+        KaPostsOverlayStatusBar(
+            leading = {
+                ToolbarGlassGroup {
+                    ToolbarIconButton(
+                        Icons.Outlined.Settings,
+                        "Notification Settings",
+                        onClick = { navController.navigate("settings_section/notifications") },
+                        iconSize = 20.dp,
+                    )
+                }
+            },
+        )
+        Box(modifier = Modifier.weight(1f)) {
+            KaPostsNotificationsList(
+                viewModel = viewModel,
+                onOpenPost = { txId ->
+                    // The post opens on the Feed tab, as a link to it does.
+                    KaPostsDeepLink.pendingOpenNotifications.value = false
+                    KaPostsDeepLink.pendingPostTxId.value = txId
+                },
+                bottomInset = LocalDockInset.current,
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun KaPostsNotificationsOverlay(
+private fun KaPostsNotificationsList(
     viewModel: KaPostsViewModel,
-    onClose: () -> Unit,
     onOpenPost: (String) -> Unit,
+    bottomInset: Dp,
 ) {
     val colors = LocalAppColors.current
     val items by viewModel.notifications.collectAsState()
@@ -5615,8 +5699,7 @@ fun KaPostsNotificationsOverlay(
         }
     }
 
-    KaPostsOverlayScaffold(title = stringResource(R.string.notifications), onClose = onClose) {
-        Box(
+    Box(
             modifier = Modifier
                 .fillMaxSize()
                 .clipToBounds()
@@ -5649,7 +5732,12 @@ fun KaPostsNotificationsOverlay(
                 }
             }
         } else {
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                // The last row scrolls clear of the dock the tab runs under.
+                contentPadding = PaddingValues(bottom = bottomInset),
+            ) {
                 items(items, key = { it.id }) { item ->
                     LaunchedEffect(item.actorAddress) {
                         viewModel.ensureSenderProfileFetched(item.actorAddress)
@@ -5766,7 +5854,6 @@ fun KaPostsNotificationsOverlay(
             )
         }
         }
-    }
 }
 
 /**
@@ -6850,12 +6937,6 @@ fun KaPostsSettingsOverlay(
 ) {
     val colors = LocalAppColors.current
     val defaultTipSompi by settingsViewModel.kaPostsDefaultTipSompi.collectAsState()
-    val likes by settingsViewModel.kaPostsNotifyLikes.collectAsState()
-    val reposts by settingsViewModel.kaPostsNotifyReposts.collectAsState()
-    val follows by settingsViewModel.kaPostsNotifyFollows.collectAsState()
-    val dislikes by settingsViewModel.kaPostsNotifyDislikes.collectAsState()
-    val comments by settingsViewModel.kaPostsNotifyComments.collectAsState()
-    val mentions by settingsViewModel.kaPostsNotifyMentions.collectAsState()
 
     // Seeded from the stored amount once; typing owns the field after that, so a re-read cannot
     // rewrite what is half-typed.
@@ -6909,20 +6990,8 @@ fun KaPostsSettingsOverlay(
                     }
                 }
             }
-
-            SettingsSection(title = stringResource(R.string.notifications)) {
-                SettingsSwitchItem("Likes", likes) { settingsViewModel.setKaPostsNotifyLikes(it) }
-                SettingsDivider()
-                SettingsSwitchItem("Reposts", reposts) { settingsViewModel.setKaPostsNotifyReposts(it) }
-                SettingsDivider()
-                SettingsSwitchItem("Follows", follows) { settingsViewModel.setKaPostsNotifyFollows(it) }
-                SettingsDivider()
-                SettingsSwitchItem("Dislikes", dislikes) { settingsViewModel.setKaPostsNotifyDislikes(it) }
-                SettingsDivider()
-                SettingsSwitchItem("Comments", comments) { settingsViewModel.setKaPostsNotifyComments(it) }
-                SettingsDivider()
-                SettingsSwitchItem("Mentions", mentions) { settingsViewModel.setKaPostsNotifyMentions(it) }
-            }
+            // Which pings reach you is Settings > Notifications > KaPosts, behind the cog on the
+            // Notifications tab (iOS KaPosts 865c9ab).
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -7198,10 +7267,16 @@ internal val LocalKaPostsBack = androidx.compose.runtime.staticCompositionLocalO
  * Dialog windows, so nothing behind them shows through.
  */
 @Composable
-internal fun KaPostsOverlayStatusBar(modifier: Modifier = Modifier) {
-    // iOS KaPostsStatusChrome: ONE inline bar - a back chevron in front of the dot on a screen
-    // that is the root of a cover, the balance in the title's place. The principal item takes
-    // precedence over the navigation title, so iOS draws no "Post" / "Profile" title there.
+internal fun KaPostsOverlayStatusBar(
+    modifier: Modifier = Modifier,
+    /** What sits top left when the screen has no Back (the Notifications tab's cog). */
+    leading: (@Composable () -> Unit)? = null,
+) {
+    // iOS KaPostsStatusChrome: ONE inline bar - a back chevron on the leading side on a screen
+    // that is the root of a cover, the balance in the title's place, the green dot top right
+    // (iOS KaPosts 865c9ab: the dot moved right on every screen, leaving the left to Back). The
+    // principal item takes precedence over the navigation title, so iOS draws no "Post" /
+    // "Profile" title there.
     val back = LocalKaPostsBack.current
     val haptic = com.kachat.app.util.rememberHaptics()
     // iOS 26: the chevron on a 44 glass disc 16 in, as MainPageHeader's (52 tall, 4 above/below).
@@ -7211,15 +7286,9 @@ internal fun KaPostsOverlayStatusBar(modifier: Modifier = Modifier) {
             .height(52.dp)
             .padding(horizontal = 16.dp),
     ) {
-        Row(
-            modifier = Modifier.align(Alignment.CenterStart),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Box(modifier = Modifier.align(Alignment.CenterStart)) {
             if (back != null) {
-                // iOS KaPostsStatusChrome: the chevron is its own bar button (semibold, in the
-                // accent) grouped with the dot on ONE piece of glass - not the system back.
-                val dotColorHex by hiltViewModel<com.kachat.app.viewmodels.ConnectionViewModel>().dotColorHex.collectAsState()
+                // The chevron is its own bar button (semibold, in the accent), not the system back.
                 ToolbarGlassGroup {
                     ToolbarIconButton(
                         Icons.Filled.ArrowBackIosNew,
@@ -7230,21 +7299,16 @@ internal fun KaPostsOverlayStatusBar(modifier: Modifier = Modifier) {
                         },
                         iconSize = 18.dp,
                     )
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .clickable { ConnectionStatusOverlayState.open() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Box(Modifier.size(12.dp).background(Color(dotColorHex), CircleShape))
-                    }
                 }
             } else {
-                ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
+                leading?.invoke()
             }
         }
         BalanceTopBarLabel(modifier = Modifier.align(Alignment.Center))
+        ConnectionDotButton(
+            onClick = { ConnectionStatusOverlayState.open() },
+            modifier = Modifier.align(Alignment.CenterEnd),
+        )
     }
 }
 
@@ -7304,26 +7368,32 @@ private fun KaPostsOverlayScaffold(
     ) {
         ForceFullScreenDialogWindow()
         val slide = rememberKaPostsCoverSlideState(onClose)
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .then(slide.modifier)
-                .background(colors.background)
-                .windowInsetsPadding(KaPostsOverlayInsets)
-                // [title] names the screen to TalkBack; iOS's bar shows the balance in its place.
-                .semantics { paneTitle = title },
-        ) {
-            CompositionLocalProvider(LocalKaPostsBack provides slide.back) {
-                if (doneBar) {
-                    SheetNavBar(
-                        title = title,
-                        trailing = { SheetBarButton(stringResource(R.string.done), onClick = slide.back) },
-                    )
-                } else {
-                    KaPostsOverlayStatusBar()
+        val dockPad = kaPostsDockCopyInsetAboveNavBar()
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(slide.modifier)
+                    .background(colors.background)
+                    .windowInsetsPadding(KaPostsOverlayInsets)
+                    // [title] names the screen to TalkBack; iOS's bar shows the balance in its place.
+                    .semantics { paneTitle = title },
+            ) {
+                CompositionLocalProvider(LocalKaPostsBack provides slide.back) {
+                    if (doneBar) {
+                        SheetNavBar(
+                            title = title,
+                            trailing = { SheetBarButton(stringResource(R.string.done), onClick = slide.back) },
+                        )
+                    } else {
+                        KaPostsOverlayStatusBar()
+                    }
+                    // Clear of the dock copy below.
+                    Box(modifier = Modifier.weight(1f).padding(bottom = dockPad)) { content() }
                 }
-                Box(modifier = Modifier.weight(1f)) { content() }
             }
+            // The dock stays in reach over this screen, still while it slides (iOS KaPostsDockCopy).
+            KaPostsDockCopy()
         }
     }
 }
@@ -7548,7 +7618,6 @@ private fun squareAndPencil(viewport: Float): ImageVector =
  *  not repeated here (iOS KaPosts `SideMenuItem.feedMenu`). */
 private enum class KaPostsFeedMenuItem(val title: String, val icon: ImageVector) {
     SEARCH("Search", Icons.Outlined.Search),
-    NOTIFICATIONS("Notifications", Icons.Outlined.Notifications),
     DRAFTS("Drafts", SquareAndPencil),
     BOOKMARKS("Bookmarks", Icons.Outlined.BookmarkBorder),
     MUTED("Muted", Icons.Outlined.VolumeOff),
@@ -7557,66 +7626,175 @@ private enum class KaPostsFeedMenuItem(val title: String, val icon: ImageVector)
 }
 
 /**
- * The hamburger beside the KaPosts title: Search, Notifications, Drafts, Bookmarks, Muted, Blocked
- * and Scheduled, one tap each. A red dot on it while notifications are unseen, and the count on
- * the Notifications row, so the news is visible without opening the menu (iOS KaPosts 494751a).
+ * The hamburger beside the KaPosts title. It slides out a card over nearly the whole screen with
+ * Search, Drafts, Bookmarks, Muted, Blocked and Scheduled ([KaPostsFeedDrawer]). Unseen
+ * notifications are the Notifications tab's badge in the dock (iOS KaPosts 865c9ab).
  */
 @Composable
-private fun KaPostsFeedMenuButton(unseenNotifications: Int, onSelect: (KaPostsFeedMenuItem) -> Unit) {
+private fun KaPostsFeedMenuButton(onSelect: (KaPostsFeedMenuItem) -> Unit) {
     val colors = LocalAppColors.current
     val haptic = com.kachat.app.util.rememberHaptics()
-    var expanded by remember { mutableStateOf(false) }
-    val badgeText = if (unseenNotifications > 99) "99+" else unseenNotifications.toString()
-    Box {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .clickable { expanded = true }
-                .semantics {
-                    contentDescription = if (unseenNotifications > 0) "Menu, $unseenNotifications unseen notifications" else "Menu"
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Filled.Menu, contentDescription = null, tint = colors.textPrimary, modifier = Modifier.size(26.dp))
-            if (unseenNotifications > 0) {
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = (-2).dp, y = 4.dp)
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFFFF3B30)),
-                )
+    var open by remember { mutableStateOf(false) }
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .clickable {
+                haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                open = true
             }
+            .semantics { contentDescription = "Menu" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.Filled.Menu, contentDescription = null, tint = colors.textPrimary, modifier = Modifier.size(26.dp))
+    }
+    if (open) {
+        KaPostsFeedDrawer(
+            onSelect = onSelect,
+            onClose = { open = false },
+        )
+    }
+}
+
+/**
+ * The feed's hamburger menu: a card that slides out from the left over nearly the whole screen
+ * (the dock included), with the feed dimmed in the strip beside it. Tap that strip, tap the
+ * close button or drag the card back to the left to close it (iOS KaPosts `KaPostsFeedDrawer`).
+ *
+ * A Dialog window, so it sits above the dock. Picking a row closes the card and then opens the
+ * item's screen, once the card has slid away.
+ */
+@Composable
+private fun KaPostsFeedDrawer(
+    onSelect: (KaPostsFeedMenuItem) -> Unit,
+    onClose: () -> Unit,
+) {
+    val colors = LocalAppColors.current
+    val haptic = com.kachat.app.util.rememberHaptics()
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    // 0 = hidden off the left edge, 1 = fully out.
+    val shown = remember { androidx.compose.animation.core.Animatable(0f) }
+    var dragPx by remember { mutableStateOf(0f) }
+    var closing by remember { mutableStateOf(false) }
+    var picked by remember { mutableStateOf<KaPostsFeedMenuItem?>(null) }
+
+    fun close() {
+        if (closing) return
+        closing = true
+        scope.launch {
+            shown.animateTo(0f, androidx.compose.animation.core.tween(220, easing = androidx.compose.animation.core.FastOutLinearInEasing))
+            onClose()
+            picked?.let(onSelect)
         }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.background(colors.surface),
-        ) {
-            KaPostsFeedMenuItem.entries.forEach { item ->
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            if (item == KaPostsFeedMenuItem.NOTIFICATIONS && unseenNotifications > 0) "${item.title} ($badgeText)" else item.title,
-                            color = colors.textPrimary,
-                            fontSize = 17.sp,
-                        )
-                    },
-                    trailingIcon = { Icon(item.icon, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(22.dp)) },
-                    onClick = {
-                        haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
-                        expanded = false
-                        onSelect(item)
-                    },
-                )
+    }
+    LaunchedEffect(Unit) {
+        shown.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = 0.9f, stiffness = 500f))
+    }
+
+    Dialog(
+        onDismissRequest = { close() },
+        properties = KaPostsFullScreenDialogProperties,
+    ) {
+        ForceFullScreenDialogWindow()
+        // The card draws its own dim over the feed: no window dim behind it.
+        val view = LocalView.current
+        LaunchedEffect(Unit) {
+            (view.parent as? DialogWindowProvider)?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        }
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            // Most of the screen, with enough of the feed left showing to tap it closed.
+            val panelWidth = minOf(maxWidth * 0.86f, 440.dp)
+            val panelPx = with(density) { panelWidth.toPx() }
+            val offsetPx = -(panelPx + with(density) { 16.dp.toPx() }) * (1f - shown.value) + dragPx.coerceAtMost(0f)
+            val progress = (shown.value * (1f + dragPx.coerceAtMost(0f) / panelPx)).coerceIn(0f, 1f)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f * progress))
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                    ) { close() }
+                    .semantics { contentDescription = "Close menu" },
+            )
+            Column(
+                modifier = Modifier
+                    .width(panelWidth)
+                    .fillMaxHeight()
+                    .offset { androidx.compose.ui.unit.IntOffset(offsetPx.roundToInt(), 0) }
+                    .shadow(12.dp, RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp))
+                    .clip(RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp))
+                    .background(colors.background)
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                if (-dragPx > panelPx / 3) {
+                                    close()
+                                } else {
+                                    scope.launch {
+                                        androidx.compose.animation.core.animate(dragPx, 0f) { value, _ -> dragPx = value }
+                                    }
+                                }
+                            },
+                            onDragCancel = { dragPx = 0f },
+                        ) { change, amount ->
+                            if (closing) return@detectHorizontalDragGestures
+                            change.consume()
+                            dragPx = (dragPx + amount).coerceAtMost(0f)
+                        }
+                    }
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start)),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "KaPosts",
+                        color = colors.textPrimary,
+                        fontSize = LargeTitleSize,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(colors.surface)
+                            .clickable {
+                                haptic(com.kachat.app.util.IosHaptic.SELECTION)
+                                close()
+                            }
+                            .semantics { contentDescription = "Close menu" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(20.dp))
+                    }
+                }
+                HorizontalDivider(color = colors.surfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
+                KaPostsFeedMenuItem.entries.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 56.dp)
+                            .clickable {
+                                haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                                picked = item
+                                close()
+                            }
+                            .padding(horizontal = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        Icon(item.icon, contentDescription = null, tint = KaspaTeal, modifier = Modifier.width(30.dp).size(26.dp))
+                        Text(item.title, color = colors.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
     }
 }
-
-
 
 /**
  * A profile bio that always shows up to three lines, with a More button when there is more.
