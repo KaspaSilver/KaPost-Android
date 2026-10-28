@@ -109,16 +109,13 @@
             <!-- Universal-link form of the same two. autoVerify needs KaPosts' package in
                  kachat.app's /.well-known/assetlinks.json (the counterpart of iOS needing KaPosts'
                  app ID in the apple-app-site-association); until then Android offers these links
-                 to KaPosts without verifying them. The duckdns host is only ever read, for links
-                 shared before the move. -->
+                 to KaPosts without verifying them. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="kachat.app" android:pathPrefix="/post/" />
                 <data android:scheme="https" android:host="kachat.app" android:pathPrefix="/broadcast/" />
-                <data android:scheme="https" android:host="kachat.duckdns.org" android:pathPrefix="/post/" />
-                <data android:scheme="https" android:host="kachat.duckdns.org" android:pathPrefix="/broadcast/" />
             </intent-filter>
         </activity>
 

@@ -774,9 +774,6 @@ private fun LinkPreviewCardContent(data: LinkPreviewData, url: String, txId: Str
  * `kaspa:` prefix (the app writes it without, so the link reads cleanly) and a missing prefix
  * means mainnet.
  *
- * Links written before kachat.app used kachat.duckdns.org. Those are still opened; they are
- * never written.
- *
  * `<channel>` is the normalized channel name with NO leading '#'
  * (see [MessageProtocol.normalizeChannelName]).
  */
@@ -801,9 +798,6 @@ object KaChatLink {
      *  and it unfurls a preview in every chat app, which a bare kachat:// line does nowhere. */
     const val WEB_HOST = "kachat.app"
 
-    /** Hosts from before kachat.app: still opened, never written. */
-    val LEGACY_WEB_HOSTS = setOf("kachat.duckdns.org")
-
     fun kaPostUrl(txId: String) = "kachat://kapost/$txId"
     fun kaPostWebUrl(txId: String) = "https://$WEB_HOST/post/$txId"
     fun broadcastUrl(channel: String) = "kachat://broadcast/$channel"
@@ -817,13 +811,13 @@ object KaChatLink {
     // The trailing segment deliberately excludes '/', '?' and '#' so a link can never carry a
     // second path component, a query string or a fragment into the app.
     private val LINK_REGEX = Regex(
-        """(?:(?:kachat|kaposts)://(kapost|broadcast|profile)/|https?://(?:kachat\.app|kachat\.duckdns\.org)/(post|broadcast|u)/)([^\s/?#]+)""",
+        """(?:(?:kachat|kaposts)://(kapost|broadcast|profile)/|https?://kachat\.app/(post|broadcast|u)/)([^\s/?#]+)""",
         RegexOption.IGNORE_CASE
     )
     // A payment request carries a query, so it has its own pattern: everything up to whitespace
     // or a quote/angle bracket, as iOS matches it (the memo inside is percent-encoded).
     private val PAY_LINK_REGEX = Regex(
-        """(?:(?:kachat|kaposts)://pay/|https?://(?:www\.)?(?:kachat\.app|kachat\.duckdns\.org)/pay/)([^\s<>"']+)""",
+        """(?:(?:kachat|kaposts)://pay/|https?://(?:www\.)?kachat\.app/pay/)([^\s<>"']+)""",
         RegexOption.IGNORE_CASE
     )
     private val TRAILING_PUNCTUATION = setOf('.', ',', '!', '?', ';', ':', '\'', '"', ')', ']', '}', '>')

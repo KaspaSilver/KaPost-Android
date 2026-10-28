@@ -86,7 +86,7 @@ fun BroadcastRoomInfoScreen(
     val messages by broadcastViewModel.getMessages(normalized).collectAsState(initial = emptyList())
     val joinedChannels by broadcastViewModel.joinedChannels.collectAsState()
     val hiddenSenders by broadcastViewModel.hiddenSenders.collectAsState()
-    // The network's default when nothing is set: the testnet-10 indexer on testnet (iOS 5463ab7).
+    // The network's default when nothing is set: blank (no server) on testnet.
     val appWideIndexer by broadcastViewModel.appWideBroadcastIndexer.collectAsState()
     val storedOverride by broadcastViewModel.indexerOverrideFor(normalized)
         .collectAsState(initial = "")
@@ -222,7 +222,8 @@ fun BroadcastRoomInfoScreen(
                     "A public chat lives on the Kaspa blockDAG, so any indexer watching the same " +
                         "network serves the same room. Point this one wherever you like - your own, " +
                         "or someone else's - without changing the indexer every other room uses. " +
-                        "Leave it blank to follow $appWideIndexer.",
+                        if (appWideIndexer.isNotBlank()) "Leave it blank to follow $appWideIndexer."
+                        else "Testnet has no default indexer, so a blank one is none.",
                     color = colors.textSecondary,
                     fontSize = 12.sp,
                 )

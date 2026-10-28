@@ -4646,7 +4646,8 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     Spacer(Modifier.height(8.dp))
                     Text(
                         if (rejected) "The URL must start with https://"
-                        else "Leave blank to use ${if (onMainnetSettings) com.kachat.app.repository.AppSettingsRepository.DEFAULT_INDEXER_URL else com.kachat.app.repository.AppSettingsRepository.DEFAULT_TESTNET_INDEXER_URL}",
+                        else if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_INDEXER_URL}"
+                        else "Testnet has no default indexer. Leave blank for none.",
                         color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -4691,8 +4692,9 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     Spacer(Modifier.height(8.dp))
                     Text(
                         if (rejected) "The URL must start with https://"
-                        // The network's default: the testnet-10 indexer on testnet (iOS 5463ab7).
-                        else "Leave blank to use ${if (onMainnetSettings) com.kachat.app.repository.AppSettingsRepository.DEFAULT_KAPOST_INDEXER_URL else com.kachat.app.repository.AppSettingsRepository.DEFAULT_TESTNET_INDEXER_URL}",
+                        // The network's default: none on testnet.
+                        else if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_KAPOST_INDEXER_URL}"
+                        else "Testnet has no default indexer. Leave blank for none.",
                         color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
                         style = MaterialTheme.typography.bodySmall
                     )

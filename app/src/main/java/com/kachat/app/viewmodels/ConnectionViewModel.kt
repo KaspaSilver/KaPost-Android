@@ -216,7 +216,7 @@ class ConnectionViewModel @Inject constructor(
         val trimmed = value.trim().trimEnd('/')
         if (trimmed.isNotEmpty() && !trimmed.startsWith("https://", ignoreCase = true)) return false
         viewModelScope.launch {
-            // Blank on testnet is the testnet-10 indexer, never the mainnet default (iOS 5463ab7).
+            // Blank on testnet is no server, never the mainnet default.
             settings.setKapostIndexerUrl(trimmed.ifBlank { if (onTestnetSettings) "" else AppSettingsRepository.DEFAULT_KAPOST_INDEXER_URL })
         }
         return true

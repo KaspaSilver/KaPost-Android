@@ -429,10 +429,10 @@ class MainActivity : AppCompatActivity() {
      * navigation happens. MainShell picks up a request that does pass, enforces Child Mode, and
      * opens the room (joining it first when it isn't one of the curated ones).
      */
-    /** The hosts a KaChat link can arrive on: the one the app writes, and the one it used to. */
+    /** The host a KaChat link arrives on: kachat.app, the one the app writes. */
     private fun isKaChatWebHost(host: String?): Boolean {
         val clean = host?.lowercase()?.removePrefix("www.") ?: return false
-        return clean == KaChatLink.WEB_HOST || clean in KaChatLink.LEGACY_WEB_HOSTS
+        return clean == KaChatLink.WEB_HOST
     }
 
     /** kachat://profile/<address> or https://kachat.app/u/<address> - someone's shared profile

@@ -8,7 +8,7 @@ import org.junit.Test
  *  `unregisterFromSupersededServiceIfNeeded`). */
 class PushSupersededServiceTest {
     private val mainnet = "https://indexer.kachat.app"
-    private val testnet = "https://tnkachat.duckdns.org:7443"
+    private val testnet = "https://testnet.example.org:7443"
 
     @Test
     fun `a different stored base is left`() {
