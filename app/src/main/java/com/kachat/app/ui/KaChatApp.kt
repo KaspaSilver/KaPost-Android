@@ -540,6 +540,14 @@ fun MainShell(
     LaunchedEffect(dockKaPostsUnseen) {
         com.kachat.app.ui.screens.KaPostsDock.unseenNotifications.value = dockKaPostsUnseen
     }
+    // The Public Chats tab's badge: unread messages across the rooms (iOS KaPosts eec2e30
+    // PublicChatUnreadBadge). The rooms' summaries come from the room store, so the count is right
+    // before the list is first opened; a default room switched off counts none.
+    val dockRoomSummaries by notificationBroadcastViewModel.roomSummaries.collectAsState()
+    val dockPublicChatsUnread = remember(dockRoomSummaries) { dockRoomSummaries.values.sumOf { it.unreadCount } }
+    LaunchedEffect(dockPublicChatsUnread) {
+        com.kachat.app.ui.screens.KaPostsDock.unreadPublicChats.value = dockPublicChatsUnread
+    }
 
     // A .kachat registration in flight: its progress half sheet, back up after a relaunch (iOS 61fb0fc).
     com.kachat.app.ui.screens.KachatRegistrationPresenter()
@@ -547,16 +555,6 @@ fun MainShell(
     // KaPosts share/deep links (kachat://kapost/<txid>, https://kachat.app/post/…):
     // surface the KaPosts tab; KaPostsScreen itself consumes the pending txid and opens the
     // post's thread once visible.
-    // A .kachat name notification: the .kachat screen opens the name (iOS beeedd4). The name stays
-    // pending until that screen takes it, so a cold start lands on it too.
-    val pendingKachatName by com.kachat.app.ui.screens.KachatDeepLink.pendingName.collectAsState()
-    LaunchedEffect(pendingKachatName) {
-        // Only where names are live (iOS 7227d69 `KachatLive.isEnabled` = isLaunched).
-        if (pendingKachatName != null && com.kachat.app.services.kachatnames.KachatNamesService.isLaunched) {
-            navController.navigate(Screen.KachatNames.route) { launchSingleTop = true }
-        }
-    }
-
     // A tapped KaPosts notification push lands on the Notifications tab; a post link, or a post
     // opened from a notification row, on the Feed (iOS KaPosts KaPostsTabView `.openKaPost`).
     val pendingKaPostTxId by KaPostsDeepLink.pendingPostTxId.collectAsState()
@@ -938,10 +936,12 @@ fun MainShell(
                                                 // the difference between deciding to look now and
                                                 // deciding to look later, and the dock is where that
                                                 // decision gets made.
-                                                // Notifications carries KaPosts' unseen count (iOS
-                                                // KaPosts KaPostsTabView `.badge`).
+                                                // Notifications carries KaPosts' unseen count, Public
+                                                // Chats the rooms' unread messages (iOS KaPosts
+                                                // KaPostsTabView `.badge`, eec2e30).
                                                 val badgeCount = when (screen) {
                                                     Screen.Notifications -> dockKaPostsUnseen
+                                                    Screen.Broadcasts -> dockPublicChatsUnread
                                                     else -> 0
                                                 }
                                                 if (badgeCount > 0) {
@@ -1238,18 +1238,6 @@ fun MainShell(
                 AboveDock(pushedDockPad) {
                     QuickReactionSettingsScreen(
                         onBack = { navController.popBackStack() }
-                    )
-                }
-            }
-
-            // A .kachat name a notification names (see KachatDeepLink above).
-            composable(Screen.KachatNames.route) {
-                AboveDock(pushedDockPad) {
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    com.kachat.app.ui.screens.KachatMarketScreen(
-                        onBack = { navController.popBackStack() },
-                        // Chats live in KaChat.
-                        onOpenChat = { address -> com.kachat.app.ui.screens.openChatInKaChat(context, address) }
                     )
                 }
             }

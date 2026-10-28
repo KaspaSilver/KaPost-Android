@@ -14,7 +14,6 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.kachat.app.R
 import com.kachat.app.services.GlobalNotificationCenterStore
-import com.kachat.app.services.NotificationHelper
 import com.kachat.app.util.KaspaUnit
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -339,13 +338,16 @@ class KachatNamesNotifier @Inject constructor(
 }
 
 /**
+ * KaPost shows no notifications about domains: nothing schedules these any more, and the app
+ * cancels any an earlier build left ([cancelAll], at launch). What follows is kept from KaChat.
+ *
  * Local reminders for .kachat names held by one of this wallet's spending addresses (Buy From):
  * the indexer's renewal and expiry pushes reach only the chatting address, so the phone schedules
  * its own - renewal opens, the name expired, and a day before grace ends - from each name's expiry
  * (iOS d1026de `KachatNameReminders`, XP-024). Nothing leaves the phone. Rescheduled on every
  * notifier check: a renewed name moves its reminders, a name that left the wallet loses them.
  * Each one is a one-time [KachatNameReminderWorker] under its own unique work name; tapping it
- * opens the name, like the pushes ([NotificationHelper.showKachatName]).
+ * opened the name, like the pushes.
  *
  * Names are `kachat-reminder-<network>-<wallet tag>-<name>-<expiresAt>-<kind>`: each wallet and
  * network keeps its own set, so a check on one never removes another's (iOS 6128f1e, IOS-088).
@@ -365,6 +367,27 @@ class KachatNameReminders @Inject constructor(
     private fun walletTag(wallet: String): String = wallet.lowercase().takeLast(12)
 
     private fun prefix(wallet: String, network: String): String = "$ROOT$network-${walletTag(wallet)}-"
+
+    companion object {
+        private const val PREFS = "kachat_name_reminders"
+        private const val KEY = "scheduled"
+        /** `kachat-reminder-<network>-<wallet tag>-<name>-<expiresAt>-<kind>` (IOS-088). */
+        private const val ROOT = "kachat-reminder-"
+        /** The first build's names, one device-wide set: removed wherever they are found. */
+        private const val LEGACY_PREFIX = "kachat-local-"
+
+        /** Every reminder, every wallet and network, the first build's too: KaPost shows no
+         *  notifications about domains. */
+        fun cancelAll(context: Context) {
+            val work = runCatching { WorkManager.getInstance(context) }.getOrNull() ?: return
+            work.cancelAllWorkByTag(ROOT)
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val raw = prefs.getString(KEY, null) ?: return
+            runCatching { JsonParser.parseString(raw).asJsonObject.keySet().toList() }.getOrNull()
+                ?.forEach { work.cancelUniqueWork(it) }
+            prefs.edit().remove(KEY).apply()
+        }
+    }
 
     /** A wallet's reminders on every network, for when it leaves this phone (iOS 6128f1e). */
     suspend fun removeAll(forWallet: String) = withContext(Dispatchers.IO) {
@@ -470,33 +493,17 @@ class KachatNameReminders @Inject constructor(
         }
         save(others + keep + wanted.mapValues { it.value.date })
     }
-
-    private companion object {
-        const val PREFS = "kachat_name_reminders"
-        const val KEY = "scheduled"
-        /** `kachat-reminder-<network>-<wallet tag>-<name>-<expiresAt>-<kind>` (IOS-088). */
-        const val ROOT = "kachat-reminder-"
-        /** The first build's names, one device-wide set: removed wherever they are found. */
-        const val LEGACY_PREFIX = "kachat-local-"
-    }
 }
 
-/** Shows one [KachatNameReminders] reminder when its time comes (iOS: the scheduled local
- *  notification, thread "kachat-names"); tapping it opens the name. */
+/** A [KachatNameReminders] reminder coming due (iOS: the scheduled local notification, thread
+ *  "kachat-names"). KaPost shows no notifications about domains, so one an earlier build
+ *  scheduled, running before the launch cancels it, ends without showing anything. */
 @HiltWorker
 class KachatNameReminderWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
-    private val notifications: NotificationHelper,
 ) : CoroutineWorker(appContext, workerParams) {
-    override suspend fun doWork(): Result {
-        val id = inputData.getString(KEY_ID) ?: return Result.success()
-        val title = inputData.getString(KEY_TITLE) ?: return Result.success()
-        val body = inputData.getString(KEY_BODY) ?: return Result.success()
-        val name = inputData.getString(KEY_NAME) ?: return Result.success()
-        notifications.showKachatName(title, body, name, dedupeKey = id)
-        return Result.success()
-    }
+    override suspend fun doWork(): Result = Result.success()
 
     companion object {
         const val KEY_ID = "id"

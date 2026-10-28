@@ -1390,4 +1390,13 @@
     <string name="chess_no_finished_tournaments_this_month">Bu ay henüz biten turnuva yok.</string>
     <string name="chess_no_finished_tournaments">Henüz biten turnuva yok.</string>
     <string name="no_testnet_indexer_yet">Henüz testnet dizinleyici yok</string>
+    <!-- Swipe up to send (KaPay's SwipeUpSendScreen) -->
+    <string name="swipe_up_to_send">Göndermek için yukarı kaydır</string>
+    <string name="swipe_up_to_consolidate">Birleştirmek için yukarı kaydır</string>
+    <string name="swipe_release_to_send">Göndermek için bırak</string>
+    <string name="swipe_keep_swiping">Kaydırmaya devam et</string>
+    <string name="swipe_sending_detail">Kaspa BlockDAG\'e yayınlanıyor...</string>
+    <string name="swipe_hint_send">Göndermek için yarıyı geçince bırak.</string>
+    <string name="swipe_failed">Başarısız</string>
+    <string name="swipe_send_failed_fallback">Gönderim yapılamadı.</string>
 </resources>

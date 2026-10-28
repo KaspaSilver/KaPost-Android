@@ -1390,4 +1390,13 @@
     <string name="chess_no_finished_tournaments_this_month">이번 달에 끝난 토너먼트가 아직 없습니다.</string>
     <string name="chess_no_finished_tournaments">끝난 토너먼트가 아직 없습니다.</string>
     <string name="no_testnet_indexer_yet">아직 테스트넷 인덱서가 없음</string>
+    <!-- Swipe up to send (KaPay's SwipeUpSendScreen) -->
+    <string name="swipe_up_to_send">위로 밀어서 보내기</string>
+    <string name="swipe_up_to_consolidate">위로 밀어서 통합</string>
+    <string name="swipe_release_to_send">손을 떼면 보내기</string>
+    <string name="swipe_keep_swiping">계속 밀기</string>
+    <string name="swipe_sending_detail">Kaspa BlockDAG에 전파하는 중...</string>
+    <string name="swipe_hint_send">절반을 넘긴 뒤 손을 떼면 보냅니다.</string>
+    <string name="swipe_failed">실패</string>
+    <string name="swipe_send_failed_fallback">전송되지 않았습니다.</string>
 </resources>

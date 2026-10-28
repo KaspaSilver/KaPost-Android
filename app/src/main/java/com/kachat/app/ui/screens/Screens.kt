@@ -610,13 +610,18 @@ fun DomainNameCard(
 /**
  * Send Kaspa (iOS `WithdrawKaspaView`): Chats > + > Send Kaspa, Donate, the Address Book, an
  * address's Send, paying a payment request - and, in [isCompoundMode], Compound UTXOs for one
- * address. Every send but Compound starts with From ([SendFromSection], iOS 6333dd3): Chatting
- * Address (the default) or Choose an Address. Fees, Max, coin control and the send follow the
+ * address. Every send but Compound has a From step ([SendFromStep]): Your Address (the default)
+ * or Choose an Address. Fees, Max, coin control and the send follow the
  * chosen address: the chatting address signs with the identity key
  * ([WalletViewModel.onSendClicked]), a spending address with its own key
  * ([WalletViewModel.withdrawFromSpendingAddress]); a payment request to a chatting address is a
  * chat payment from the chosen address. Never the external-QR-signer round trip [ColdSendFlow]
  * uses for watch-only keys.
+ *
+ * It is the step-by-step send (iOS KaPosts da3e953 `WithdrawKaspaView`; the pieces in
+ * SendKaspaComponents.kt): To, From (skipped when it is fixed), Amount on the app's own keypad, a
+ * Review that ends in Swipe up to Send ([SwipeUpToSendScreen], which shows the outcome), and the
+ * fee's Edit.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -673,8 +678,16 @@ fun SpendingAddressSendFlow(
     // Custom fee, edited in place on the fee row (SendFeeControls), as on iOS.
     var isEditingFee by remember { mutableStateOf(false) }
     var customFeeText by remember { mutableStateOf("") }
-    /// The completed send, driving the sent-confirmation half sheet.
+    /// The completed send: the review's swipe-up screen shows it.
     var sentTransaction by remember { mutableStateOf<SentTransaction?>(null) }
+    /** Why the last send failed, under the swipe-up screen's "Failed". */
+    var sendError by remember { mutableStateOf<String?>(null) }
+    /** The step on screen; null until the first move (then [initialStep]). */
+    var step by remember { mutableStateOf<SendFlowStep?>(null) }
+    /** The fee being typed on the fee step, in KAS. */
+    var feeDraft by remember { mutableStateOf("") }
+    /** The From step's Choose an Address is on (its list shows), before or after a pick. */
+    var choosingFrom by remember { mutableStateOf(false) }
     // This presentation's own sends (iOS's per-sheet isSending/sentTransaction): one closed
     // mid-send leaves its send running in the view model, and its outcome is never shown here
     // or on the next send screen.
@@ -708,7 +721,7 @@ fun SpendingAddressSendFlow(
     // Where the Kaspa leaves from (the From section, iOS 6333dd3): the chatting address by
     // default. Compound UTXOs has no From - it merges [fromAddress] ([spendingIndex]) itself.
     var source by remember { mutableStateOf<SendSource>(lockedSource ?: SendSource.Chatting) }
-    /** The From address's balance, loaded by [SendFromSection]. */
+    /** The From address's balance, loaded below for the From step and the amount's Available. */
     var sourceBalanceSompi by remember { mutableStateOf<Long?>(null) }
     val chattingAddress by viewModel.address.collectAsState()
     val sourceIndex = if (isCompoundMode) spendingIndex else source.spendingIndex
@@ -750,9 +763,9 @@ fun SpendingAddressSendFlow(
     // or when the coins cannot cover it.
     var feePreview by remember { mutableStateOf<com.kachat.app.util.SendFeeModel.Preview?>(null) }
     var isPreviewingFee by remember { mutableStateOf(false) }
-    // The amount Max last wrote, and the fee choice it left room for: changing the fee while the
-    // field still holds that amount works Max out again (see setMaxAmount).
-    var maxFill by remember { mutableStateOf<Triple<String, ColdFeeTier, Long?>?>(null) }
+    // The amount Max last wrote, and the fee choice, From and coins it left room for: changing
+    // any of them while the field still holds that amount works Max out again (see setMaxAmount).
+    var maxFill by remember { mutableStateOf<SendMaxFill?>(null) }
     // The one exact parser for typed KAS (iOS 16b64bc): comma or dot, at most 8 decimals.
     val previewAmountSompi = KaspaUnit.sompiFromUserText(amountInput)
     // Base fee on the real inputs: coin control's exact set, else the automatic-selection preview,
@@ -870,7 +883,7 @@ fun SpendingAddressSendFlow(
                 if (chunk != null) {
                     manualUtxos = chunk.second
                     fiatAmountState.setMaxKas(chunk.first / 100_000_000.0, fiatPriceInCurrency)
-                    maxFill = Triple(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), feeTier, customExtraFeeSompi)
+                    maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), feeTier, customExtraFeeSompi, source, chunk.second)
                 }
             } catch (e: Exception) {
                 // Leave the field untouched on failure - same as the Max button itself.
@@ -880,6 +893,8 @@ fun SpendingAddressSendFlow(
         }
     }
 
+    // How the send ended, for the review's swipe-up screen: the transaction it shows, or the error
+    // under "Failed" (KaPay's confirmation is the swipe-up's own full screen).
     LaunchedEffect(sendResult) {
         val result = sendResult ?: return@LaunchedEffect
         if (result.isSuccess) {
@@ -888,28 +903,15 @@ fun SpendingAddressSendFlow(
                     txId = txId,
                     amountSompi = KaspaUnit.sompiFromUserText(amountInput)?.takeIf { it > 0 },
                     // A compound is a self-send: naming the address it just came from reads as a
-                    // mistake, so it just says how much moved.
-                    recipient = recipientInput.takeIf { !isCompoundMode },
+                    // mistake, so it just says how much moved. Else the domain when one was
+                    // resolved, otherwise the address itself.
+                    recipient = if (isCompoundMode) null else (knsResolvedDomain ?: recipientInput.trim()),
                 )
             }
         } else {
-            IosToasts.error(result.exceptionOrNull()?.message ?: context.getString(R.string.withdrawal_failed))
+            sendError = result.exceptionOrNull()?.message ?: context.getString(R.string.withdrawal_failed)
         }
         viewModel.sends.consume(sendId)
-    }
-
-    // Back is Cancel, and Cancel closes the send at any time, as iOS's does - mid-send too.
-    BackHandler { onDone() }
-
-    sentTransaction?.let { sent ->
-        SentConfirmationSheet(
-            transaction = sent,
-            explorerName = kaspaExplorer.displayName,
-            explorerUrl = kaspaExplorer.txUrl(sent.txId),
-        ) {
-            sentTransaction = null
-            onDone()
-        }
     }
 
     // The recipient scanner and coin control are sheets over the send, as iOS's
@@ -955,7 +957,7 @@ fun SpendingAddressSendFlow(
                     if (chunk != null) {
                         manualUtxos = chunk.second
                         fiatAmountState.setMaxKas(chunk.first / 100_000_000.0, fiatPriceInCurrency)
-                        maxFill = Triple(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), maxTier, maxCustomExtra)
+                        maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), maxTier, maxCustomExtra, source, chunk.second)
                     } else {
                         // Same silence as the plain Max had: nothing to consolidate, or nothing
                         // known yet.
@@ -970,7 +972,7 @@ fun SpendingAddressSendFlow(
                         0L -> IosToasts.error("Not enough here to cover the network fee.")
                         else -> {
                             fiatAmountState.setMaxKas(maxSompi / 100_000_000.0, fiatPriceInCurrency)
-                            maxFill = Triple(com.kachat.app.util.formatKasAmount(maxSompi / 100_000_000.0), maxTier, maxCustomExtra)
+                            maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(maxSompi / 100_000_000.0), maxTier, maxCustomExtra, source, manualUtxos)
                         }
                     }
                 }
@@ -985,18 +987,22 @@ fun SpendingAddressSendFlow(
             }
         }
     }
-    // The fee changed after Max filled the field (a speed picked, a custom fee set): Max is worked
-    // out again for the new fee, or the send would need more than the coins hold. Only while the
-    // field still holds what Max wrote - an amount typed since is left alone.
-    LaunchedEffect(feeTier, customExtraFeeSompi) {
+    // The fee, the From or the coins changed after Max filled the field (a speed picked, a custom
+    // fee set, another address, coin control): Max is worked out again, or the send would need
+    // more than the coins hold (KaPay `usedMax`). Only while the field still holds what Max wrote -
+    // an amount typed since is left alone.
+    LaunchedEffect(feeTier, customExtraFeeSompi, source, manualUtxos) {
         val filled = maxFill ?: return@LaunchedEffect
-        if (filled.first == amountInput && (filled.second != feeTier || filled.third != customExtraFeeSompi)) {
+        if (filled.amount == amountInput &&
+            (filled.tier != feeTier || filled.customExtra != customExtraFeeSompi || filled.source != source || filled.utxos != manualUtxos)
+        ) {
             setMaxAmount()
         }
     }
     // Not while the fee preview is being worked out: the send passes the preview's extra.
     val canSend = !isSending && hasValidRecipient && (amountSompi ?: 0) > 0 && !isPreviewingFee
     val send: () -> Unit = {
+        sendError = null
         amountSompi?.takeIf { canSend }?.let {
             val request = activeRequest
             val recipient = effectiveAddress.trim()
@@ -1044,145 +1050,310 @@ fun SpendingAddressSendFlow(
         }
     }
 
-    Scaffold(
-        containerColor = LocalAppColors.current.background,
-        contentWindowInsets = if (presentedAsSheet) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
-        topBar = {
-            CenterAlignedTopAppBar(
-                windowInsets = if (presentedAsSheet) WindowInsets(0, 0, 0, 0) else TopAppBarDefaults.windowInsets,
-                title = {
-                    Text(
-                        when {
-                            isCompoundMode -> stringResource(R.string.compound_utxos)
-                            activeRequest != null -> stringResource(R.string.pr_payment_request)
-                            else -> title
-                        },
-                        color = LocalAppColors.current.textPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                navigationIcon = {
-                    if (presentedAsSheet) {
-                        SheetBarButton(stringResource(R.string.cancel), onClick = onDone, modifier = Modifier.padding(start = 12.dp))
-                    } else {
-                        SheetBarBackButton(onClick = onDone, modifier = Modifier.padding(start = 12.dp))
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = LocalAppColors.current.background)
-            )
+    // The steps of a send (iOS KaPosts da3e953 `WithdrawKaspaView`): who it goes to, where from,
+    // how much (on the app's own keypad, so no keyboard stays up), and a review where only the fee
+    // and coin control can change before swiping up to send. Compound UTXOs opens on the review (its
+    // recipient and amount are set), a payment request or a pre-filled recipient on From (or the
+    // amount, when From is fixed).
+    /** The step after To: From, unless the send's From is fixed (an address's own Send). */
+    val afterRecipient = if (lockedSource == null) SendFlowStep.FROM else SendFlowStep.AMOUNT
+    val initialStep = when {
+        isCompoundMode -> SendFlowStep.REVIEW
+        paymentRequest != null || prefillAddress != null -> afterRecipient
+        else -> SendFlowStep.RECIPIENT
+    }
+    val currentStep = step ?: initialStep
+    val insets = if (presentedAsSheet) WindowInsets(0, 0, 0, 0) else WindowInsets.systemBars
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    /** Where Back goes from a step; null for the first one. A payment request opened from a link
+     *  has no recipient step (its address is fixed). */
+    fun backStep(from: SendFlowStep): SendFlowStep? = when (from) {
+        SendFlowStep.RECIPIENT -> null
+        SendFlowStep.FROM -> if (paymentRequest != null) null else SendFlowStep.RECIPIENT
+        SendFlowStep.AMOUNT -> when {
+            lockedSource == null -> SendFlowStep.FROM
+            isCompoundMode || paymentRequest != null -> null
+            else -> SendFlowStep.RECIPIENT
         }
-    ) { padding ->
-        // The layout of the 1:1 chat's Send KAS sheet, from the shared Send Kaspa pieces (iOS
-        // 4d0324f): recipient, the big amount, Available, fee and coin control, and the send
-        // button in the column. The confirmation is a half sheet (SentConfirmationSheet), not a
-        // page that replaced this form - so every send in the app finishes the same way.
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(top = 12.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            if (!isCompoundMode) {
-                SendFromSection(
-                    source = source,
-                    onSourceChange = { picked ->
-                        if (picked != source) {
-                            source = picked
-                            // coins picked on one address can't pay from another
-                            manualUtxos = null
-                        }
-                    },
-                    availableSompi = sourceBalanceSompi,
-                    onAvailableSompiChange = { sourceBalanceSompi = it },
-                    walletViewModel = viewModel,
-                    enabled = !isSending,
-                    isLocked = lockedSource != null,
-                )
-            }
+        SendFlowStep.REVIEW -> if (isCompoundMode) null else SendFlowStep.AMOUNT
+        SendFlowStep.FEE -> SendFlowStep.REVIEW
+    }
+    fun go(to: SendFlowStep) {
+        focusManager.clearFocus()
+        if (to == SendFlowStep.RECIPIENT && activeRequest != null && paymentRequest == null) {
+            // back from a pasted request: start the recipient over
+            activeRequest = null
+            recipientInput = ""
+            fiatAmountState.reset()
+            maxFill = null
+        }
+        step = to
+    }
+    val screenTitle = when {
+        isCompoundMode -> stringResource(R.string.compound_utxos)
+        activeRequest != null -> stringResource(R.string.pr_payment_request)
+        else -> title
+    }
+    val availableSompi = if (isCompoundMode) balanceSompi else sourceBalanceSompi
+    /** The amount is more than the From address holds. */
+    val exceedsBalance = amountSompi != null && availableSompi != null && amountSompi > availableSompi
+    val canContinueFromAmount = hasValidRecipient && (amountSompi ?: 0) > 0 && !exceedsBalance && !isEstimatingMax
+    /** The recipient's name: the domain it resolved from. */
+    val recipientName = knsResolvedDomain
+    val sourceTitle = if (isCompoundMode) stringResource(R.string.send_this_address) else sendSourceTitle(source)
+    // the From address's balance: the amount's Available and its check
+    LaunchedEffect(source, chattingAddress) {
+        if (isCompoundMode) return@LaunchedEffect
+        sourceBalanceSompi = null
+        val address = source.address(chattingAddress) ?: return@LaunchedEffect
+        sourceBalanceSompi = viewModel.addressBalanceSompi(address)
+    }
 
-            SendRecipientCard(
-                input = recipientInput,
-                onInputChange = { input ->
-                    // A payment request pasted in fills in everything it carries (iOS c6851d6),
-                    // as iOS's WithdrawKaspaView.
-                    val pasted = if (isCompoundMode) null
-                    else (KaChatLink.findFirst(input.trim())?.ref as? KaChatLinkRef.PaymentRequest)?.request
-                    if (pasted != null) applyRequest(pasted) else recipientInput = input
-                },
-                lockedAddress = if (isCompoundMode) fromAddress else activeRequest?.address,
-                isResolving = isResolvingKns,
-                resolvedAddress = knsResolvedAddress,
-                resolvedName = knsResolvedDomain,
-                nameResolutions = nameResolutions,
-                selectedTld = selectedTld,
-                onSelectResolution = selectResolution,
-                lookupError = knsError,
-                isValidAddress = isValidAddress,
-                onScan = { showScanner = true },
-                enabled = !isSending,
-            )
-
-            activeRequest?.let { PaymentRequestSummary(request = it) }
-
-            KaspaAmountEntry(
-                fiatAmountState = fiatAmountState,
-                priceInCurrency = fiatPriceInCurrency,
-                currencyCode = fiatCurrencyCode,
-                isEstimatingMax = isEstimatingMax,
-                maxEnabled = hasValidRecipient && !isSending,
-                onMax = setMaxAmount,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-
-            // Compound UTXOs has no From (it merges this one address); the balance shows here.
-            if (isCompoundMode) {
-                SendInfoPill {
-                    Text(KaspaUnit.label("Available: ${ChatRepository.formatKas(balanceSompi)} KAS"))
+    SendStepTransition(currentStep, Modifier.fillMaxSize()) { shown ->
+        when (shown) {
+            SendFlowStep.RECIPIENT -> SendStepScreen(
+                title = screenTitle,
+                onCancel = onDone,
+                canContinue = hasValidRecipient,
+                onContinue = { go(afterRecipient) },
+                insets = insets,
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    SendStepQuestion(stringResource(R.string.send_who_to))
+                    SendRecipientCard(
+                        input = recipientInput,
+                        onInputChange = { input ->
+                            // A payment request pasted in fills in everything it carries (iOS
+                            // c6851d6) and moves on to its amount, as KaPay's WithdrawKaspaView.
+                            val pasted = (KaChatLink.findFirst(input.trim())?.ref as? KaChatLinkRef.PaymentRequest)?.request
+                            if (pasted != null) {
+                                applyRequest(pasted)
+                                go(afterRecipient)
+                            } else {
+                                recipientInput = input
+                            }
+                        },
+                        isResolving = isResolvingKns,
+                        resolvedAddress = knsResolvedAddress,
+                        resolvedName = knsResolvedDomain,
+                        nameResolutions = nameResolutions,
+                        selectedTld = selectedTld,
+                        onSelectResolution = selectResolution,
+                        lookupError = knsError,
+                        isValidAddress = isValidAddress,
+                        onScan = { showScanner = true },
+                        focusOnAppear = true,
+                    )
                 }
             }
 
-            SendFeeControls(
-                feeTier = feeTier,
-                onFeeTierChange = {
-                    feeTier = it
-                    customExtraFeeSompi = null
-                    isEditingFee = false
-                },
-                isEditingFee = isEditingFee,
-                customFeeText = customFeeText,
-                onCustomFeeTextChange = { customFeeText = it },
-                isEstimatingFee = isPreviewingFee,
-                feeText = "${ChatRepository.formatKas(effectiveFeeSompi)} ${KaspaUnit.symbol}",
-                onStartEditing = {
-                    customFeeText = ChatRepository.formatKas(effectiveFeeSompi)
-                    isEditingFee = true
-                },
-                onCommit = {
-                    // The typed total fee; below the computed one it clamps up to it rather than
-                    // being refused (iOS commitCustomFee).
-                    KaspaUnit.sompiFromUserText(customFeeText)?.let { totalSompi ->
-                        customExtraFeeSompi = (totalSompi - defaultFeeSompi).coerceAtLeast(0L)
+            SendFlowStep.FROM -> SendFromStep(
+                title = screenTitle,
+                source = source,
+                onSourceChange = { picked ->
+                    if (picked != source) {
+                        source = picked
+                        // coins picked on one address can't pay from another
+                        manualUtxos = null
                     }
-                    isEditingFee = false
                 },
-                coinControlSummary = coinControlSummary(manualUtxos),
-                onCoinControl = { if (!isSending) showCoinControl = true },
+                choosingFrom = choosingFrom,
+                onChoosingFromChange = { choosingFrom = it },
+                availableSompi = sourceBalanceSompi,
+                walletViewModel = viewModel,
+                onBack = backStep(SendFlowStep.FROM)?.let { back -> { go(back) } },
+                onCancel = onDone,
+                onContinue = { go(SendFlowStep.AMOUNT) },
+                insets = insets,
             )
 
-            SendActionButton(
-                title = stringResource(if (isCompoundMode) R.string.slide_to_consolidate else R.string.slide_to_send),
+            SendFlowStep.AMOUNT -> SendStepScreen(
+                title = screenTitle,
+                onBack = backStep(SendFlowStep.AMOUNT)?.let { back -> { go(back) } },
+                onCancel = onDone,
+                continueTitle = stringResource(R.string.send_review),
+                canContinue = canContinueFromAmount,
+                onContinue = { go(SendFlowStep.REVIEW) },
+                insets = insets,
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    SendStepChip(stringResource(R.string.to), recipientName ?: effectiveAddress.trim(), isAddress = recipientName == null)
+                    SendStepChip(stringResource(R.string.from), sourceTitle)
+                }
+                val request = activeRequest
+                if (request != null) {
+                    // A request's amount is fixed: no keypad, the request itself instead.
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 20.dp, vertical = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                    ) {
+                        SendReviewAmount(amountSompi, fiatPriceInCurrency, fiatCurrencyCode)
+                        PaymentRequestSummary(request = request)
+                        if (exceedsBalance) {
+                            Text(
+                                stringResource(R.string.send_exceeds_source),
+                                color = LocalAppColors.current.danger,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                } else {
+                    val available = availableSompi
+                    KaspaKeypadAmountEntry(
+                        fiatAmountState = fiatAmountState,
+                        priceInCurrency = fiatPriceInCurrency,
+                        currencyCode = fiatCurrencyCode,
+                        isEstimatingMax = isEstimatingMax,
+                        maxEnabled = hasValidRecipient,
+                        onMax = setMaxAmount,
+                        footnote = when {
+                            exceedsBalance -> stringResource(R.string.send_exceeds_source)
+                            available != null -> KaspaUnit.label(stringResource(R.string.send_available_kas, KaspaUnit.plain(available)))
+                            else -> null
+                        },
+                        footnoteIsError = exceedsBalance,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            SendFlowStep.REVIEW -> SwipeUpToSendScreen(
+                screenTitle = if (isCompoundMode) stringResource(R.string.compound_utxos) else stringResource(R.string.send_review),
+                onCancel = onDone,
+                onBack = backStep(SendFlowStep.REVIEW)?.let { back -> { go(back) } },
+                barTitle = stringResource(if (isCompoundMode) R.string.swipe_up_to_consolidate else R.string.swipe_up_to_send),
                 isBusy = isSending,
                 isEnabled = canSend,
-                onSend = send,
+                amountSompi = amountSompi,
+                recipient = if (isCompoundMode) null else (knsResolvedDomain ?: effectiveAddress.trim()).takeIf { it.isNotEmpty() },
+                sent = sentTransaction,
+                failureMessage = sendError,
+                explorerUrl = { kaspaExplorer.txUrl(it) },
+                onDone = {
+                    sentTransaction = null
+                    onDone()
+                },
+                onSwipe = send,
+                insets = insets,
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    SendReviewAmount(
+                        amountSompi = amountSompi,
+                        priceInCurrency = fiatPriceInCurrency,
+                        currencyCode = fiatCurrencyCode,
+                        label = stringResource(if (isCompoundMode) R.string.send_consolidating else R.string.send_youre_sending),
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    val fromAddressShown = if (isCompoundMode) fromAddress else source.address(chattingAddress)
+                    SendReviewCard {
+                        SendReviewRow(stringResource(R.string.to)) {
+                            if (isCompoundMode) {
+                                SendReviewValue(stringResource(R.string.send_this_address_consolidating))
+                            } else {
+                                SendReviewValue(recipientName, effectiveAddress.trim())
+                            }
+                        }
+                        SendReviewDivider()
+                        SendReviewRow(stringResource(R.string.from)) {
+                            SendReviewValue(
+                                sourceTitle,
+                                fromAddressShown?.let { "${it.take(14)}...${it.takeLast(6)}" },
+                                middleEllipsis = false,
+                            )
+                        }
+                        SendReviewDivider()
+                        SendReviewRow(stringResource(R.string.total)) {
+                            val amount = amountSompi
+                            when {
+                                isPreviewingFee || isEstimatingMax -> com.kachat.app.ui.theme.IosActivityIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = LocalAppColors.current.textSecondary,
+                                    strokeWidth = 2.dp,
+                                )
+                                amount != null -> SendReviewValue("${KaspaUnit.plain(amount + effectiveFeeSompi)} ${KaspaUnit.symbol}")
+                                else -> Text("—", color = LocalAppColors.current.textSecondary, fontSize = 15.sp)
+                            }
+                        }
+                    }
+
+                    activeRequest?.let { PaymentRequestSummary(request = it) }
+
+                    // The only things that can still change: the fee and the coins it spends.
+                    SendFeeControls(
+                        feeTier = feeTier,
+                        onFeeTierChange = {
+                            feeTier = it
+                            customExtraFeeSompi = null
+                            isEditingFee = false
+                        },
+                        isEditingFee = false,
+                        customFeeText = customFeeText,
+                        onCustomFeeTextChange = { customFeeText = it },
+                        isEstimatingFee = isPreviewingFee,
+                        feeText = "${ChatRepository.formatKas(effectiveFeeSompi)} ${KaspaUnit.symbol}",
+                        onStartEditing = {},
+                        onCommit = {},
+                        coinControlSummary = coinControlSummary(manualUtxos),
+                        onCoinControl = { if (!isSending) showCoinControl = true },
+                        onEditFee = {
+                            feeDraft = KaspaUnit.plain(effectiveFeeSompi)
+                            go(SendFlowStep.FEE)
+                        },
+                    )
+
+                    sendError?.let {
+                        Text(it, color = LocalAppColors.current.danger, fontSize = 13.sp, textAlign = TextAlign.Center)
+                    }
+                }
+            }
+
+            SendFlowStep.FEE -> SendFeeEditorScreen(
+                draft = feeDraft,
+                onDraftChange = { feeDraft = it },
+                minimumSompi = defaultFeeSompi,
+                onCancel = { go(SendFlowStep.REVIEW) },
+                onConfirm = { typed ->
+                    // never under the network's minimum (iOS commitCustomFee)
+                    customExtraFeeSompi = (typed - defaultFeeSompi).coerceAtLeast(0L)
+                    go(SendFlowStep.REVIEW)
+                },
+                insets = insets,
             )
         }
     }
 }
 
+/** The steps of [SpendingAddressSendFlow], in order (iOS `WithdrawKaspaView.Step`). */
+private enum class SendFlowStep { RECIPIENT, FROM, AMOUNT, REVIEW, FEE }
+
+/** What Max last wrote into the amount, and the fee, From and coins it left room for. */
+private data class SendMaxFill(
+    val amount: String,
+    val tier: ColdFeeTier,
+    val customExtra: Long?,
+    val source: SendSource,
+    val utxos: List<UtxoEntry>?,
+)
 
 /**
  * On-chain transaction history + UTXOs for the wallet's identity/chatting address, with direct

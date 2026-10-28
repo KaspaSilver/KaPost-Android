@@ -80,6 +80,20 @@ fun ToolbarGlassGroup(modifier: Modifier = Modifier, content: @Composable RowSco
     )
 }
 
+/** A text toolbar button ("Select", "Cancel", "Select All"): 17pt regular in the accent colour. */
+@Composable
+fun ToolbarTextButton(text: String, onClick: () -> Unit, fontWeight: FontWeight = FontWeight.Normal) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .heightIn(min = 44.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp),
+    ) {
+        Text(text, color = KaspaTeal, fontSize = 17.sp, fontWeight = fontWeight, maxLines = 1)
+    }
+}
 
 /** An icon toolbar button: a 44 disc's worth of tap target, the icon in the accent colour. */
 @Composable
@@ -183,6 +197,8 @@ fun MainPageHeader(
     showStatus: Boolean = true,
     /** What sits top left when there is no back arrow (Public Chats' customize button). */
     leading: (@Composable () -> Unit)? = null,
+    /** False hides only the connection dot (Public Chats while selecting rooms, iOS eec2e30). */
+    showsConnectionDot: Boolean = true,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val colors = LocalAppColors.current
@@ -216,7 +232,7 @@ fun MainPageHeader(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     ToolbarGlassGroup(content = actions)
-                    if (showStatus) ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
+                    if (showStatus && showsConnectionDot) ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
                 }
             },
         )

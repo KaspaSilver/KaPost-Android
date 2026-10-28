@@ -1390,4 +1390,13 @@
     <string name="chess_no_finished_tournaments_this_month">今月はまだ終了したトーナメントがありません。</string>
     <string name="chess_no_finished_tournaments">まだ終了したトーナメントがありません。</string>
     <string name="no_testnet_indexer_yet">テストネット用インデクサはまだありません</string>
+    <!-- Swipe up to send (KaPay's SwipeUpSendScreen) -->
+    <string name="swipe_up_to_send">上にスワイプして送信</string>
+    <string name="swipe_up_to_consolidate">上にスワイプして統合</string>
+    <string name="swipe_release_to_send">指を離して送信</string>
+    <string name="swipe_keep_swiping">そのままスワイプ</string>
+    <string name="swipe_sending_detail">Kaspa BlockDAG にブロードキャスト中...</string>
+    <string name="swipe_hint_send">半分を超えてから指を離すと送信します。</string>
+    <string name="swipe_failed">失敗</string>
+    <string name="swipe_send_failed_fallback">送信できませんでした。</string>
 </resources>

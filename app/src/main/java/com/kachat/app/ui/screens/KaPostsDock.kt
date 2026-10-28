@@ -57,6 +57,10 @@ object KaPostsDock {
     /** The Notifications tab's unseen count, kept by MainShell for the copy's badge. */
     val unseenNotifications = MutableStateFlow(0)
 
+    /** The Public Chats tab's unread messages across the rooms, kept by MainShell for the copy's
+     *  badge (iOS KaPosts eec2e30 `PublicChatUnreadBadge`). */
+    val unreadPublicChats = MutableStateFlow(0)
+
     /**
      * Every KaPosts full-screen screen closes at once (iOS `.kaPostsCloseCovers`): a tab was
      * tapped on the dock or on its copy, and the tab is what should show.
@@ -117,6 +121,7 @@ fun BoxScope.KaPostsDockCopy() {
     val colors = LocalAppColors.current
     val selectedRoute by KaPostsDock.selectedRoute.collectAsState()
     val unseen by KaPostsDock.unseenNotifications.collectAsState()
+    val unreadChats by KaPostsDock.unreadPublicChats.collectAsState()
     val haptic = com.kachat.app.util.rememberHaptics()
     Box(
         modifier = Modifier
@@ -137,7 +142,13 @@ fun BoxScope.KaPostsDockCopy() {
         ) {
             KAPOSTS_DOCK.forEach { screen ->
                 val selected = screen.route == selectedRoute
-                val badge = if (screen == Screen.Notifications) unseen else 0
+                // Notifications: unseen activity. Public Chats: unread messages across the rooms.
+                val badge = when (screen) {
+                    Screen.Notifications -> unseen
+                    Screen.Broadcasts -> unreadChats
+                    else -> 0
+                }
+                val badgeWord = if (screen == Screen.Broadcasts) "unread" else "unseen"
                 Box(
                     modifier = Modifier
                         .height(52.dp)
@@ -155,7 +166,7 @@ fun BoxScope.KaPostsDockCopy() {
                             KaPostsDock.select(screen)
                         }
                         .semantics {
-                            contentDescription = if (badge > 0) "${screen.label}, $badge unseen" else screen.label
+                            contentDescription = if (badge > 0) "${screen.label}, $badge $badgeWord" else screen.label
                         },
                     contentAlignment = Alignment.Center,
                 ) {

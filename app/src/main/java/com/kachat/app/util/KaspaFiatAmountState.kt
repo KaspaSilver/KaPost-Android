@@ -69,6 +69,13 @@ class KaspaFiatAmountState internal constructor(private val onKasTextChange: (St
         onKasTextChange(kasText)
     }
 
+    /** Back to an empty amount in KAS (a send's recipient started over, KaPay `reset()`). */
+    fun reset() {
+        isFiatMode = false
+        displayText = ""
+        onKasTextChange("")
+    }
+
     /** Flips units, carrying today's typed number over converted into the other one rather than
      *  clearing the field. No-ops if there's no live price yet to convert with. */
     fun toggleMode(priceInCurrency: Double?) {

@@ -339,11 +339,6 @@ class MainActivity : AppCompatActivity() {
         // the kind is then only the fallback (iOS 13046ad).
         pendingOwnAddress = intent.getStringExtra(NotificationHelper.EXTRA_WALLET_ACTIVITY_ADDRESS)?.takeIf { it.isNotEmpty() }
         if (pendingOwnAddress != null) pendingWalletActivityKind = null
-        // A .kachat name notification: open that name (iOS beeedd4).
-        intent.getStringExtra(NotificationHelper.EXTRA_KACHAT_NAME)?.takeIf { it.isNotBlank() }?.let {
-            com.kachat.app.ui.screens.KachatDeepLink.pendingName.value =
-                com.kachat.app.services.kachatnames.KachatNames.Codec.normalize(it.removeSuffix(".kachat"))
-        }
         val ownKaPostTarget = handleKaPostDeepLink(intent)
         if (!ownKaPostTarget && pendingChannelName == null && pendingWalletActivityKind == null &&
             pendingOwnAddress == null
@@ -357,7 +352,6 @@ class MainActivity : AppCompatActivity() {
             NotificationHelper.EXTRA_OPEN_GROUPS,
             NotificationHelper.EXTRA_WALLET_ACTIVITY_KIND,
             NotificationHelper.EXTRA_WALLET_ACTIVITY_ADDRESS,
-            NotificationHelper.EXTRA_KACHAT_NAME,
             NotificationHelper.EXTRA_OPEN_KAPOSTS,
             NotificationHelper.EXTRA_KAPOST_TXID,
             NotificationHelper.EXTRA_KAPOST_FOCUS_TXID,
@@ -379,10 +373,9 @@ class MainActivity : AppCompatActivity() {
         val type = intent.getStringExtra(FCM_KEY_TYPE)
             ?: intent.getStringExtra("thread_id")?.takeIf { it == "kaposts" }
         when (type) {
-            "name_event" -> intent.getStringExtra("name")?.takeIf { it.isNotBlank() }?.let {
-                com.kachat.app.ui.screens.KachatDeepLink.pendingName.value =
-                    com.kachat.app.services.kachatnames.KachatNames.Codec.normalize(it.lowercase().removeSuffix(".kachat"))
-            }
+            // .kachat name pushes are KaPay's and KaChat's: a tap on one FCM drew anyway just
+            // opens the app.
+            "name_event" -> Unit
             "broadcast" -> pendingChannelName = intent.getStringExtra("channel")?.takeIf { it.isNotBlank() }
             "kaposts" -> {
                 // The server's own key for "the content that was acted on" has been spelled

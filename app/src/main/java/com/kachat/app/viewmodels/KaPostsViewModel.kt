@@ -2369,8 +2369,17 @@ class KaPostsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The post or comment just replied to (its id). An open thread that shows it as one of its
+     * replies opens that reply's replies, so yours shows right under it instead of behind "View 1
+     * reply" (iOS KaPosts da3e953). The reload that comes with it keeps this session's reply.
+     */
+    private val _repliedTo = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val repliedTo: kotlinx.coroutines.flow.SharedFlow<String> = _repliedTo
+
     fun submitReply(parent: KaPostDraft, text: String) {
         val myAddress = myAddress() ?: return
+        _repliedTo.tryEmit(parent.id)
         // The parent is still a local session post with no txid: there is nothing on chain to
         // reply to yet, so the comment is appended as sent - no toast, no submit (iOS).
         if (parent.remoteId == null) {

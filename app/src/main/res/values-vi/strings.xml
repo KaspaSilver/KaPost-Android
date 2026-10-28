@@ -1390,4 +1390,13 @@
     <string name="chess_no_finished_tournaments_this_month">Chưa có giải đấu nào kết thúc trong tháng này.</string>
     <string name="chess_no_finished_tournaments">Chưa có giải đấu nào kết thúc.</string>
     <string name="no_testnet_indexer_yet">Chưa có trình lập chỉ mục testnet</string>
+    <!-- Swipe up to send (KaPay's SwipeUpSendScreen) -->
+    <string name="swipe_up_to_send">Vuốt lên để gửi</string>
+    <string name="swipe_up_to_consolidate">Vuốt lên để hợp nhất</string>
+    <string name="swipe_release_to_send">Thả để gửi</string>
+    <string name="swipe_keep_swiping">Tiếp tục vuốt</string>
+    <string name="swipe_sending_detail">Đang phát lên BlockDAG của Kaspa...</string>
+    <string name="swipe_hint_send">Thả sau nửa đường để gửi.</string>
+    <string name="swipe_failed">Thất bại</string>
+    <string name="swipe_send_failed_fallback">Giao dịch chưa được gửi đi.</string>
 </resources>

@@ -191,8 +191,10 @@ fun BroadcastListScreen(
      *  own: the Chats header is already up, and back belongs to the Chats screen. */
     embeddedInChats: Boolean = false,
     broadcastViewModel: BroadcastViewModel = hiltViewModel(),
-    /** Select mode, owned by the Chats screen (its header and bottom bar act on the picked
-     *  rooms, iOS e08c4cc): a tap picks a room instead of opening it. */
+    /** Select mode, owned by the Chats screen when embedded there (its header and bottom bar act
+     *  on the picked rooms, iOS e08c4cc): a tap picks a room instead of opening it. Standing alone
+     *  (KaPost's Public Chats tab), the list has its own Select, Select All and bottom bar (iOS
+     *  KaPosts eec2e30). */
     isSelectionMode: Boolean = false,
     selectedRooms: Set<String> = emptySet(),
     onToggleRoom: (String) -> Unit = {},
@@ -212,6 +214,26 @@ fun BroadcastListScreen(
     var roomActionTarget by remember { mutableStateOf<String?>(null) }
     val roomClipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
+    val listed by broadcastViewModel.listedChannels.collectAsState()
+
+    // Standing alone, Select mode is this list's own: Select / Cancel and Select All in the
+    // header, and a bar acting on every picked room (iOS KaPosts eec2e30).
+    var ownSelecting by remember { mutableStateOf(false) }
+    var ownSelection by remember { mutableStateOf(setOf<String>()) }
+    /** Picked rooms waiting on the bulk Delete's confirmation. */
+    var showBulkDelete by remember { mutableStateOf(false) }
+    val selecting = if (embeddedInChats) isSelectionMode else ownSelecting
+    val pickedRooms = if (embeddedInChats) selectedRooms else ownSelection
+    fun setSelecting(on: Boolean) {
+        ownSelecting = on
+        if (!on) ownSelection = emptySet()
+    }
+    val toggleRoom: (String) -> Unit = { name ->
+        if (embeddedInChats) onToggleRoom(name)
+        else ownSelection = if (name in ownSelection) ownSelection - name else ownSelection + name
+    }
+    // Back while picking rooms leaves Select mode first.
+    BackHandler(enabled = ownSelecting) { setSelecting(false) }
 
     LaunchedEffect(joinState.status) {
         if (joinState.status == BroadcastViewModel.JoinChannelStatus.SUCCESS) {
@@ -230,7 +252,7 @@ fun BroadcastListScreen(
         // (Kaspa Hub). Inside Chats, the Chats screen's + covers it ("New Public Chat", in its New
         // sheet - iOS 5da8ccf / be0857a). Not while selecting.
         floatingActionButton = {
-            if (embeddedInChats || isSelectionMode) return@Scaffold
+            if (embeddedInChats || selecting) return@Scaffold
             com.kachat.app.ui.theme.IosGlassFab(
                 // Above the dock the list runs under.
                 modifier = Modifier.padding(bottom = dockInset),
@@ -256,20 +278,66 @@ fun BroadcastListScreen(
                     leading = {
                         val haptic = com.kachat.app.util.rememberHaptics()
                         ToolbarGlassGroup {
-                            ToolbarIconButton(
-                                Icons.Default.Tune,
-                                "Choose rooms",
-                                onClick = {
-                                    haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
-                                    showCustomize = true
-                                },
-                                iconSize = 20.dp,
-                            )
+                            if (ownSelecting) {
+                                val allRooms = listed.map { it.channelName }.toSet()
+                                val everything = allRooms.isNotEmpty() && ownSelection == allRooms
+                                ToolbarTextButton(if (everything) "Deselect All" else "Select All", onClick = {
+                                    ownSelection = if (ownSelection == allRooms) emptySet() else allRooms
+                                })
+                            } else {
+                                ToolbarIconButton(
+                                    Icons.Default.Tune,
+                                    "Choose rooms",
+                                    onClick = {
+                                        haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                                        showCustomize = true
+                                    },
+                                    iconSize = 20.dp,
+                                )
+                            }
                         }
+                    },
+                    showsConnectionDot = !ownSelecting,
+                    actions = {
+                        val haptic = com.kachat.app.util.rememberHaptics()
+                        ToolbarTextButton(if (ownSelecting) stringResource(R.string.cancel) else "Select", onClick = {
+                            haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                            setSelecting(!ownSelecting)
+                        })
                     },
                 )
             }
-        }
+        },
+        // Select mode's actions, for every picked room at once - above the dock.
+        bottomBar = {
+            if (ownSelecting && !embeddedInChats) {
+                val picked = listed.filter { it.channelName in ownSelection }
+                PublicChatsBulkBar(
+                    picked = picked,
+                    onRead = {
+                        picked.forEach { broadcastViewModel.markRoomRead(it.channelName) }
+                        setSelecting(false)
+                        IosToasts.show("Marked ${picked.size} as read", durationMs = IosToastDuration.LONG)
+                    },
+                    onUnread = {
+                        picked.forEach { broadcastViewModel.markRoomUnread(it.channelName) }
+                        setSelecting(false)
+                        IosToasts.show("Marked ${picked.size} as unread", durationMs = IosToastDuration.LONG)
+                    },
+                    onMute = { muted ->
+                        // all off: turn them back on; else turn every picked room off
+                        picked.forEach { broadcastViewModel.setNotifyEnabled(it.channelName, muted) }
+                        setSelecting(false)
+                        IosToasts.show(
+                            if (muted) "Notifications on for ${picked.size}" else "Notifications off for ${picked.size}",
+                            durationMs = IosToastDuration.LONG,
+                        )
+                    },
+                    onDelete = { showBulkDelete = true },
+                    modifier = Modifier.padding(bottom = dockInset),
+                )
+            }
+        },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             // Rooms laid out like the Chats and Group Chats lists (iOS 83286b3): the two curated
@@ -281,7 +349,6 @@ fun BroadcastListScreen(
             val senderKnsNames by broadcastViewModel.senderKnsNames.collectAsState()
             val contactAliases by broadcastViewModel.contactAliases.collectAsState()
             val myAddressForRows = remember { runCatching { broadcastViewModel.myAddress() }.getOrNull() }
-            val listed by broadcastViewModel.listedChannels.collectAsState()
             // the app's one rule (addressDisplayName): your name for them, else their .kachat
             // name on testnet (KNS elsewhere), else the short address (iOS e52357d)
             fun senderName(address: String): String =
@@ -304,7 +371,7 @@ fun BroadcastListScreen(
                 modifier = Modifier.fillMaxSize(),
                 // Room at the bottom so the last row never sits under the floating button, nor
                 // the dock the list runs under.
-                contentPadding = PaddingValues(top = 8.dp, bottom = 96.dp + dockInset),
+                contentPadding = PaddingValues(top = 8.dp, bottom = if (ownSelecting) 8.dp else 96.dp + dockInset),
             ) {
                 items(listed, key = { "room:${it.channelName}" }) { channel ->
                     val summary = summaries[channel.channelName]
@@ -321,15 +388,15 @@ fun BroadcastListScreen(
                         unread = summary?.unreadCount ?: 0,
                         // In Select mode a tap picks the room, as on the Chats and Group Chats pages.
                         onClick = {
-                            if (isSelectionMode) onToggleRoom(channel.channelName)
+                            if (selecting) toggleRoom(channel.channelName)
                             else navController.navigate("broadcast_channel/${channel.channelName}")
                         },
-                        onLongClick = if (isSelectionMode) null else ({ roomActionTarget = channel.channelName }),
-                        selected = if (isSelectionMode) channel.channelName in selectedRooms else null,
+                        onLongClick = if (selecting) null else ({ roomActionTarget = channel.channelName }),
+                        selected = if (selecting) channel.channelName in pickedRooms else null,
                     )
                 }
 
-                if (!isSelectionMode) item(key = "footer:note") {
+                if (!selecting) item(key = "footer:note") {
                     Text(
                         "Public rooms are open to everyone. #kaspa, #kachat-bugs and the language rooms keep 30 days of history.",
                         color = LocalAppColors.current.textSecondary,
@@ -426,6 +493,32 @@ fun BroadcastListScreen(
                         say(offText)
                     }
                 }
+        }
+    }
+
+    // Bulk Delete asks first: rooms you added go with their messages; default rooms are only
+    // switched off (iOS KaPosts eec2e30 `bulkDeleteSheet`, BroadcastViewModel.removeFromList).
+    if (showBulkDelete) {
+        val names = listed.filter { it.channelName in ownSelection }.map { it.channelName }
+        ActionSheetContainer(
+            title = "Delete ${names.size} Public Chat${if (names.size == 1) "" else "s"}?",
+            subtitle = "Rooms you added are removed with their messages. Default rooms are only switched off - turn them back on any time in Public Chats settings.",
+            onDismiss = { showBulkDelete = false },
+        ) {
+            ActionSheetRow(
+                icon = Icons.Default.Delete,
+                title = stringResource(R.string.delete),
+                subtitle = "Removes the picked rooms from this device.",
+                tint = LocalAppColors.current.danger,
+            ) {
+                names.forEach { broadcastViewModel.removeFromList(it) }
+                showBulkDelete = false
+                setSelecting(false)
+                IosToasts.show("Deleted ${names.size}", durationMs = IosToastDuration.LONG)
+            }
+            ActionSheetRow(icon = Icons.Default.Close, title = "Keep", subtitle = "Leave the rooms as they are.") {
+                showBulkDelete = false
+            }
         }
     }
 
@@ -2268,5 +2361,60 @@ private fun RoomChevronDown() {
                 join = androidx.compose.ui.graphics.StrokeJoin.Round,
             ),
         )
+    }
+}
+
+/**
+ * Select mode's bottom bar on the Public Chats tab (iOS KaPosts eec2e30 `bulkActionBar`): Read,
+ * Unread, Mute / Unmute and Delete, for every picked room at once. Mute turns notifications off
+ * for every picked room; once they are all off, it turns them back on ([onMute] gets true then).
+ * Dimmed until a room is picked.
+ */
+@Composable
+private fun PublicChatsBulkBar(
+    picked: List<com.kachat.app.models.BroadcastChannelEntity>,
+    onRead: () -> Unit,
+    onUnread: () -> Unit,
+    onMute: (allMuted: Boolean) -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalAppColors.current
+    val haptic = com.kachat.app.util.rememberHaptics()
+    val enabled = picked.isNotEmpty()
+    val allMuted = enabled && picked.all { !it.notifyEnabled }
+    @Composable
+    fun RowScope.BulkButton(title: String, icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color = KaspaTeal, onClick: () -> Unit) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(enabled = enabled) {
+                    haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                    onClick()
+                }
+                .padding(vertical = 4.dp),
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+            Text(title, color = tint, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+    }
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(colors.background)
+            .alpha(if (enabled) 1f else 0.45f)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        BulkButton("Read", Icons.Default.Drafts, onClick = onRead)
+        BulkButton("Unread", Icons.Default.MarkEmailUnread, onClick = onUnread)
+        BulkButton(
+            if (allMuted) "Unmute" else "Mute",
+            if (allMuted) Icons.Default.Notifications else Icons.Default.NotificationsOff,
+            onClick = { onMute(allMuted) },
+        )
+        BulkButton("Delete", Icons.Default.Delete, tint = colors.danger, onClick = onDelete)
     }
 }

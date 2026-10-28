@@ -1262,4 +1262,13 @@
     <string name="chess_no_finished_tournaments_this_month">Belum ada turnamen yang selesai bulan ini.</string>
     <string name="chess_no_finished_tournaments">Belum ada turnamen yang selesai.</string>
     <string name="no_testnet_indexer_yet">Belum ada pengindeks testnet</string>
+    <!-- Swipe up to send (KaPay's SwipeUpSendScreen) -->
+    <string name="swipe_up_to_send">Geser ke atas untuk mengirim</string>
+    <string name="swipe_up_to_consolidate">Geser ke atas untuk menggabungkan</string>
+    <string name="swipe_release_to_send">Lepaskan untuk mengirim</string>
+    <string name="swipe_keep_swiping">Terus geser</string>
+    <string name="swipe_sending_detail">Menyiarkan ke BlockDAG Kaspa...</string>
+    <string name="swipe_hint_send">Lepaskan lewat setengah untuk mengirim.</string>
+    <string name="swipe_failed">Gagal</string>
+    <string name="swipe_send_failed_fallback">Pengiriman tidak terkirim.</string>
 </resources>

@@ -1390,4 +1390,13 @@
     <string name="chess_no_finished_tournaments_this_month">لا توجد بطولات منتهية هذا الشهر بعد.</string>
     <string name="chess_no_finished_tournaments">لا توجد بطولات منتهية بعد.</string>
     <string name="no_testnet_indexer_yet">لا يوجد مفهرس للشبكة التجريبية بعد</string>
+    <!-- Swipe up to send (KaPay's SwipeUpSendScreen) -->
+    <string name="swipe_up_to_send">اسحب لفوق عشان تبعت</string>
+    <string name="swipe_up_to_consolidate">اسحب لفوق عشان تدمج</string>
+    <string name="swipe_release_to_send">سيب عشان تبعت</string>
+    <string name="swipe_keep_swiping">كمّل سحب</string>
+    <string name="swipe_sending_detail">بيتبث على BlockDAG بتاع Kaspa...</string>
+    <string name="swipe_hint_send">سيب بعد النص عشان تبعت.</string>
+    <string name="swipe_failed">فشل</string>
+    <string name="swipe_send_failed_fallback">الإرسال ماطلعش.</string>
 </resources>

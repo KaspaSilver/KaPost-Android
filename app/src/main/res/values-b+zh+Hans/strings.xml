@@ -1390,4 +1390,13 @@
     <string name="chess_no_finished_tournaments_this_month">本月还没有已结束的锦标赛。</string>
     <string name="chess_no_finished_tournaments">还没有已结束的锦标赛。</string>
     <string name="no_testnet_indexer_yet">尚无测试网索引器</string>
+    <!-- Swipe up to send (KaPay's SwipeUpSendScreen) -->
+    <string name="swipe_up_to_send">向上滑动发送</string>
+    <string name="swipe_up_to_consolidate">向上滑动合并</string>
+    <string name="swipe_release_to_send">松开即发送</string>
+    <string name="swipe_keep_swiping">继续滑动</string>
+    <string name="swipe_sending_detail">正在广播到 Kaspa BlockDAG...</string>
+    <string name="swipe_hint_send">滑过一半后松开即可发送。</string>
+    <string name="swipe_failed">失败</string>
+    <string name="swipe_send_failed_fallback">发送未成功。</string>
 </resources>

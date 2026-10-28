@@ -1390,4 +1390,13 @@
     <string name="chess_no_finished_tournaments_this_month">Aucun tournoi terminé ce mois-ci.</string>
     <string name="chess_no_finished_tournaments">Aucun tournoi terminé pour l\'instant.</string>
     <string name="no_testnet_indexer_yet">Pas encore d\'indexeur testnet</string>
+    <!-- Swipe up to send (KaPay's SwipeUpSendScreen) -->
+    <string name="swipe_up_to_send">Balayez vers le haut pour envoyer</string>
+    <string name="swipe_up_to_consolidate">Balayez vers le haut pour consolider</string>
+    <string name="swipe_release_to_send">Relâchez pour envoyer</string>
+    <string name="swipe_keep_swiping">Continuez à balayer</string>
+    <string name="swipe_sending_detail">Diffusion sur le BlockDAG de Kaspa...</string>
+    <string name="swipe_hint_send">Relâchez au-delà de la moitié pour envoyer.</string>
+    <string name="swipe_failed">Échec</string>
+    <string name="swipe_send_failed_fallback">L\'envoi n\'est pas parti.</string>
 </resources>

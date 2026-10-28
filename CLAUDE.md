@@ -29,7 +29,7 @@ What is still KaChat-shaped underneath:
   `oneToOneChatsEnabled`), but the code behind it (handshakes, contextual messages, groups,
   Nextcloud backup) is still there, unreachable.
 - `.kachat` names: the services, the profile editor and the name screens are kept; only the
-  profile editor, the Wallet's Domains tab and a name notification reach them. The Domains tab
+  profile editor and the Wallet's Domains tab reach them. The Domains tab
   (`KaPostAddressDomainsTab`) only lists the names: registering, renewing, selling and editing
   them is KaChat Wallet's, which its button opens (`com.kachat.wallet`, listed in the manifest's
   `<queries>`). `.kachat` is the
@@ -46,7 +46,7 @@ What is still KaChat-shaped underneath:
 | Tab | Route | Screen |
 |---|---|---|
 | Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
-| Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once |
+| Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once; Select (top right) picks rooms for Read, Unread, Mute and Delete; the tab's badge is the unread count across the rooms (`KaPostsDock.unreadPublicChats`) |
 | Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`IdentityAddressDetailScreen`: balance, then History, UTXOs and .kachat names, which swipe; Receive and Send only on History) |
 | Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; a row opens its post on the Feed (a follow opens the follower's profile); the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
 | Settings | `settings` | `SettingsScreen`: Customization, Security, Connection (its tabs swipe; the .kachat names indexer URL is on Domains), KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency), Notifications, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Log Out (deleting an account is on the opening screen's Saved Accounts) |
@@ -85,6 +85,42 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 Claude may build debug variants and run them on an emulator. Release signing (`keystore.properties`)
 and store builds are the owner's.
 
+## Sending Kaspa
+
+Every send is the step-by-step flow iOS KaPosts took from KaPay (da3e953: `WithdrawKaspaView`,
+`Views/Shared/SendKaspaComponents.swift`), built from the shared pieces in
+`ui/screens/SendKaspaComponents.kt` and `ui/screens/SwipeUpSendScreen.kt` (copied from KaPay
+Android). Change those pieces, not one screen.
+
+1. **To**: `SendStepScreen` + `SendStepQuestion` ("Who are you sending to?") + `SendRecipientCard`
+   (Paste and Scan QR pills under the field; no Address Book in KaPost). On a first step Cancel
+   sits at the bottom beside Continue (`SendContinueButton`); later steps have Back and Cancel in
+   `SendStepHeader`.
+2. **From**: `SendFromStep` ("Where are you sending from?"): Your Address, or Choose an Address
+   with your addresses listed right there (`OwnAddressList`, the same cards `OwnAddressPicker`'s
+   sheet shows). Skipped when the From is fixed (an address's own Send, a post's tip).
+3. **Amount**: `KaspaKeypadAmountEntry`, the app's own number pad (`KaspaKeypad`,
+   `KeypadAmountText`), so no system keyboard, under "To ..." and "From ..." chips
+   (`SendStepChip`). The From's balance is the Available under the amount, red when the amount is
+   more. Continue is "Review".
+4. **Review**: `SwipeUpToSendScreen` with Back: the amount and its fiat value, To / From / Total
+   (`SendReviewCard`), then `SendFeeControls`. Only the fee speed, coin control and the fee's Edit
+   can change; a Max amount is worked out again when they (or the From) change. Swipe up to Send
+   shows the BlockDAG and the outcome on its own screen (no `SentConfirmationSheet`).
+5. **Fee**: Edit (`onEditFee`) opens `SendFeeEditorScreen` (the fee on the keypad, never under the
+   network's minimum, a warning above ten times it); Confirm goes back to the review.
+
+Steps slide sideways (`SendStepTransition`). Where they are used:
+- `SpendingAddressSendFlow` (`Screens.kt`): the Wallet's Send, a room sender's Send, paying a
+  chat-payment request (other requests go to KaPay), Compound UTXOs. A pre-filled recipient or a
+  request opens on From (a request's amount is fixed: no keypad), Compound on the review.
+- `KaPostTipSheet` (`KaPostsScreens.kt`): no To (the poster is the recipient); From only for a
+  profile's tip (a post's tip comes from your address), then the amount; the review also has the
+  tip's encrypted memo and the small-amount warning.
+- Not ported: the .kachat sheets (`KachatTxSheet`, `KachatClaimSheet` in
+  `KachatNamesLiveScreens.kt`) keep their one-page form; nothing in KaPost opens them (the Domains
+  tab only lists names), as in iOS KaPosts. iOS's Request Payment screen isn't in KaPost either.
+
 ## Protocol and servers
 
 Same as KaChat: payloads under `kchat:1:`, the KaChat indexer for KaPosts and Public Chats, the
@@ -102,8 +138,12 @@ push service accepting it; until then KaPosts notifies through its in-app poller
 sends `apns_topic` = the app id (`com.kachat.kaposts`, as iOS sends its bundle id) so the shared
 push service knows which app the token is for. It watches no chat address (`watched_addresses`
 empty, main address only), so the push service sends it no chat messages; any chat push that
-comes anyway is ignored (`KaChatFirebaseMessagingService`). Only KaPosts, public chat and .kachat name pushes
-are shown; a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
+comes anyway is ignored (`KaChatFirebaseMessagingService`). Only KaPosts and public chat pushes
+are shown: KaPost has no notifications about domains. `.kachat` name pushes (`name_event`, routed
+here by `primary_address`) are dropped, nothing runs `KachatNamesNotifier`, and the renewal
+reminders an earlier build scheduled are cancelled at launch (`KachatNameReminders.cancelAll`). A
+name push FCM draws by itself (one sent with a `notification` block) can only be stopped by the
+push service skipping `name_event` for `com.kachat.kaposts`; a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
 #kaspa and #kachat-bugs start with their bells on, once per account; an address receiving KAS
 never notifies (`AddressActivityNotifier`).
 

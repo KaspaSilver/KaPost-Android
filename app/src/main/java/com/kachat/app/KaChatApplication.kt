@@ -224,6 +224,11 @@ class KaChatApplication : Application(), Configuration.Provider {
         startupStep("group sync worker") {
             WorkManager.getInstance(this).cancelUniqueWork(SyncWorker.WORK_NAME)
         }
+        // KaPost shows no notifications about domains: any .kachat renewal reminder an earlier
+        // build scheduled is cancelled.
+        startupStep(".kachat reminders: cancel") {
+            com.kachat.app.services.kachatnames.KachatNameReminders.cancelAll(this)
+        }
 
         // Keep ApiLogging.verbose (read by the OkHttp interceptors in AppModule on every request)
         // in sync with the persisted Verbose API Logging toggle for the process's whole lifetime.
@@ -282,9 +287,9 @@ class KaChatApplication : Application(), Configuration.Provider {
                     }
                 }
                 if (runCatching { com.kachat.app.services.kachatnames.KachatNamesService.isLaunched }.getOrDefault(false)) {
-                    // .kachat news for the Profile bell (offers, sales, renewal, expiry): the
-                    // refresh runs KachatNamesNotifier (iOS 86471dd). Where names are live
-                    // (testnet-10, and mainnet since iOS ef6b21e).
+                    // The .kachat registry, fresh for the name screens. Where names are live
+                    // (testnet-10, and mainnet since iOS ef6b21e). KaPost raises no notifications
+                    // from it (no KachatNamesNotifier).
                     owner.lifecycleScope.launch(Dispatchers.IO + logOnly) {
                         try {
                             kachatNamesRegistry.get().refreshIfStale()
