@@ -7,7 +7,7 @@ import org.junit.Test
 /** Audit AND-006: when to leave the push service this device last registered with (port of iOS
  *  `unregisterFromSupersededServiceIfNeeded`). */
 class PushSupersededServiceTest {
-    private val mainnet = "https://kachat.duckdns.org"
+    private val mainnet = "https://indexer.kachat.app"
     private val testnet = "https://tnkachat.duckdns.org:7443"
 
     @Test
@@ -20,7 +20,7 @@ class PushSupersededServiceTest {
     fun `the same service is not left`() {
         assertNull(PushRegistrationManager.supersededBase(mainnet, mainnet))
         assertNull(PushRegistrationManager.supersededBase("$mainnet/", mainnet))
-        assertNull(PushRegistrationManager.supersededBase("HTTPS://KACHAT.DUCKDNS.ORG", "$mainnet/"))
+        assertNull(PushRegistrationManager.supersededBase("HTTPS://INDEXER.KACHAT.APP", "$mainnet/"))
         assertNull(PushRegistrationManager.supersededBase(" $mainnet ", mainnet))
     }
 

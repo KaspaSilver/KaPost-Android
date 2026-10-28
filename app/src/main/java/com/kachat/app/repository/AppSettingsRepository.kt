@@ -83,12 +83,22 @@ class AppSettingsRepository @Inject constructor(
 
         // Defaults matching the iOS app
         const val DEFAULT_NETWORK        = "mainnet"
-        const val DEFAULT_INDEXER_URL    = "https://kachat.duckdns.org"
+        const val DEFAULT_INDEXER_URL    = "https://indexer.kachat.app"
         // Superseded defaults, migrated away on read (see `indexerUrl` below): kasia.fyi is offline
         // and never ran the group-chat REST endpoints; kasia.wtf was the previous community default,
-        // now replaced by KaChat's own indexer (kachat.duckdns.org).
+        // replaced by KaChat's own indexer (kachat.duckdns.org).
         const val LEGACY_DEFAULT_INDEXER_URL = "https://indexer.kasia.fyi"
         const val LEGACY_DEFAULT_INDEXER_URL_KASIA_WTF = "https://indexer.kasia.wtf"
+        /** KaChat's own indexer under its old name, now indexer.kachat.app. Saved on every field
+         *  that defaulted to it (Connection Settings writes the default back when a field is
+         *  cleared), so every field reads it as the new name ([renamedIndexer]). */
+        const val LEGACY_DEFAULT_INDEXER_URL_DUCKDNS = "https://kachat.duckdns.org"
+
+        /** [url], or the current default when it is KaChat's indexer under its old name. */
+        fun renamedIndexer(url: String): String {
+            val normalized = url.trim().trimEnd('/').lowercase()
+            return if (normalized == LEGACY_DEFAULT_INDEXER_URL_DUCKDNS) DEFAULT_INDEXER_URL else url
+        }
         const val DEFAULT_KNS_API_URL    = "https://api.knsdomains.org/mainnet/api/v1"
         const val DEFAULT_KASPA_REST_URL = "https://api.kaspa.org"
         /** Testnet-10 (Toccata covenants; the node pool's testnet seeds are on 16210). */
@@ -103,11 +113,11 @@ class AppSettingsRepository @Inject constructor(
 
         fun defaultKaspaRestUrl(network: com.kachat.app.util.KaspaNetwork.Type) =
             if (network == com.kachat.app.util.KaspaNetwork.Type.MAINNET) DEFAULT_KASPA_REST_URL else DEFAULT_KASPA_TESTNET_REST_URL
-        const val DEFAULT_KAPOST_INDEXER_URL = "https://kachat.duckdns.org"
+        const val DEFAULT_KAPOST_INDEXER_URL = DEFAULT_INDEXER_URL
         /** Server-side KaPost translation - same box as the KaPosts indexer by default. */
-        const val DEFAULT_TRANSLATION_SERVICE_URL = "https://kachat.duckdns.org"
-        const val DEFAULT_BROADCAST_INDEXER_URL = "https://kachat.duckdns.org"
-        const val DEFAULT_PUSH_INDEXER_URL = "https://kachat.duckdns.org"
+        const val DEFAULT_TRANSLATION_SERVICE_URL = DEFAULT_INDEXER_URL
+        const val DEFAULT_BROADCAST_INDEXER_URL = DEFAULT_INDEXER_URL
+        const val DEFAULT_PUSH_INDEXER_URL = DEFAULT_INDEXER_URL
         // KaChat ships pinned to Kaspium's public node out of the box, rather than defaulting
         // to full seed/DNS/peer-gossip discovery - the "Use Default" button in Connection
         // Settings resets back to this same address after a user has typed something else.
@@ -371,16 +381,16 @@ class AppSettingsRepository @Inject constructor(
      *  indexer on testnet - so a blank left from before testnet had an indexer becomes it, and a
      *  custom URL is kept (iOS 5463ab7). */
     private fun indexerOrDefault(stored: String?, default: String, network: KaspaNetwork.Type): String {
-        val value = stored?.takeIf { it.isNotBlank() }
+        val value = stored?.takeIf { it.isNotBlank() }?.let(::renamedIndexer)
         return value ?: if (network == KaspaNetwork.Type.TESTNET) DEFAULT_TESTNET_INDEXER_URL else default
     }
 
     // Transforms away superseded default indexers on read (rather than a one-time write-back
     // migration) - anyone who saved settings on an old default (kasia.fyi, or the previous
-    // community default kasia.wtf) is moved to the current default (kachat.duckdns.org). Custom
-    // indexers the user typed are kept as-is.
+    // community default kasia.wtf, or KaChat's own under its old name kachat.duckdns.org) is moved
+    // to the current default (indexer.kachat.app). Custom indexers the user typed are kept as-is.
     private fun resolveIndexerUrl(profile: ConnectionProfile, network: KaspaNetwork.Type): String {
-        val stored = profile.indexerUrl?.takeIf { url -> url.isNotBlank() }
+        val stored = profile.indexerUrl?.takeIf { url -> url.isNotBlank() }?.let(::renamedIndexer)
         if (network == KaspaNetwork.Type.TESTNET) return stored ?: DEFAULT_TESTNET_INDEXER_URL
         return if (stored == null || stored == LEGACY_DEFAULT_INDEXER_URL || stored == LEGACY_DEFAULT_INDEXER_URL_KASIA_WTF) DEFAULT_INDEXER_URL else stored
     }
@@ -415,7 +425,7 @@ class AppSettingsRepository @Inject constructor(
     // Translating a post has nothing to do with which chain the app is on: blank means the
     // shipped service on both networks (iOS 2ca41aa).
     private fun resolveTranslationServiceUrl(profile: ConnectionProfile): String =
-        profile.translationServiceUrl?.takeIf { url -> url.isNotBlank() } ?: DEFAULT_TRANSLATION_SERVICE_URL
+        profile.translationServiceUrl?.takeIf { url -> url.isNotBlank() }?.let(::renamedIndexer) ?: DEFAULT_TRANSLATION_SERVICE_URL
 
     // Falls back to DEFAULT_TRUSTED_NODE_ADDRESS only when the key has never been written at
     // all (a fresh install) - once the user explicitly saves "" (clearing it via the Kaspa Node
