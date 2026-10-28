@@ -51,6 +51,14 @@
          application layer instead: the URL settings fields are read-only, and the one
          user-editable server input (Nextcloud) rejects explicit http:// in the UI and again in
          NextcloudService.normalizeServer. -->
+    <!-- The Wallet's Domains tab opens KaChat Wallet, where .kachat names are managed (iOS
+         KaPosts 4c0d5a8): Android 11+ only hands out another app's launch intent for a package
+         listed here. -->
+    <queries>
+        <package android:name="com.kachat.wallet" />
+        <package android:name="com.kachat.wallet.debug" />
+    </queries>
+
     <application
         android:name=".KaChatApplication"
         android:allowBackup="false"

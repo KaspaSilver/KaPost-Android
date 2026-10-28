@@ -114,8 +114,8 @@
     <string name="kns_domains">KNSドメイン</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">KaChatロゴ</string>
-    <string name="kachat_can_t_show_notifications_until">このアプリの通知を許可するまで、KaPostsは通知を表示できません。</string>
-    <string name="kachat_needs_to_connect_to_a">KaPostsはノードに接続する必要があります。どのように接続しますか?</string>
+    <string name="kachat_can_t_show_notifications_until">このアプリの通知を許可するまで、KaPostは通知を表示できません。</string>
+    <string name="kachat_needs_to_connect_to_a">KaPostはノードに接続する必要があります。どのように接続しますか?</string>
     <string name="kaspa">Kaspa</string>
     <string name="kaspa_address_or_kns_domain">KaspaアドレスまたはKNSドメイン</string>
     <string name="kaspa_explorer">Kaspaエクスプローラー</string>
@@ -577,9 +577,9 @@
     <string name="welcome_fund_chatting_body">始めるには 50 Kaspa がおすすめです。.kachat 名を取得してしばらくチャットできます。5 Kaspa で約 2500 件のメッセージを送れます。</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">テストネット</string>
-    <string name="testnet_restart_to_testnet">テストネットへの切り替えを完了するには、KaPosts を完全に終了して開き直してください。</string>
-    <string name="testnet_restart_to_mainnet">メインネットへの切り替えを完了するには、KaPosts を完全に終了して開き直してください。</string>
-    <string name="kaposts_not_on_testnet">KaPosts はまだテストネットでは利用できません</string>
+    <string name="testnet_restart_to_testnet">テストネットへの切り替えを完了するには、KaPost を完全に終了して開き直してください。</string>
+    <string name="testnet_restart_to_mainnet">メインネットへの切り替えを完了するには、KaPost を完全に終了して開き直してください。</string>
+    <string name="kaposts_not_on_testnet">KaPost はまだテストネットでは利用できません</string>
     <string name="kaposts_not_on_testnet_sub">テストネット用の KaPost インデクサーはありません。メインネットで閲覧・投稿するには、設定 > 接続 でテストネットをオフにしてください。</string>
     <string name="nextcloud_off_on_testnet">テストネットがオンの間、Nextcloud はオフになります。</string>
     <string name="nextcloud_off_on_testnet_footer">Nextcloud を使ったバックアップ、同期、メディア、通話はメインネットでのみ動作するため、テストネットがメインネットのバックアップを上書きすることはありません。設定 > 接続 でテストネットをオフにすると、Nextcloud の接続は元どおりに戻ります。</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">この名前の期限まで %1$s を切っています。すぐに更新が必要です。</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">これは Testnet のアドレスです。KaPosts は Mainnet で動作中です。</string>
-    <string name="address_other_network_mainnet">これは Mainnet のアドレスです。KaPosts は Testnet で動作中です。</string>
+    <string name="address_other_network_testnet">これは Testnet のアドレスです。KaPost は Mainnet で動作中です。</string>
+    <string name="address_other_network_mainnet">これは Mainnet のアドレスです。KaPost は Testnet で動作中です。</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">1つのトランザクションで使えるUTXOは最大%1$d個のため、これ以上選択できません。</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1041,7 +1041,7 @@
     <string name="what_is_this">これは何ですか?</string>
     <string name="what_is_a_seed_phrase">seed phrase とは?</string>
     <string name="seed_phrase_explainer_master_key">seed phrase は、アカウントのマスターキーとして機能する 12 語または 24 語の普通の単語のリストです。ウォレット、チャット用アドレス、メッセージはすべてここから生まれます。</string>
-    <string name="seed_phrase_explainer_anyone">これらの単語を持っている人は、アカウントのすべてを持ち出せます。単語をなくし、さらにこの端末もなくすと、誰もアカウントを取り戻せません。KaPosts でも無理です。</string>
+    <string name="seed_phrase_explainer_anyone">これらの単語を持っている人は、アカウントのすべてを持ち出せます。単語をなくし、さらにこの端末もなくすと、誰もアカウントを取り戻せません。KaPost でも無理です。</string>
     <string name="seed_phrase_explainer_paper">単語は順番どおりに紙に書き、安全で人目につかない場所に保管してください。ウェブサイトに入力したり、チャットで送ったり、スクリーンショットやクラウドのメモに残したりしないでください。</string>
     <string name="seed_phrase_explainer_lengths">12 語でも十分に安全です。24 語にするとさらに保護が強くなります。</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

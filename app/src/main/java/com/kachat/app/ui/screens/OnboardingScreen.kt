@@ -334,7 +334,7 @@ fun WelcomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    text = "KaPosts",
+                    text = "KaPost",
                     style = MaterialTheme.typography.headlineLarge.copy(
                         fontWeight = FontWeight.Bold,
                         fontSize = 36.sp
@@ -347,7 +347,7 @@ fun WelcomeScreen(
                     // load - it throws "Only VectorDrawables and rasterized asset types are
                     // supported" and takes the whole welcome screen down with it.
                     painter = painterResource(id = R.drawable.kaposts_app_mark),
-                    contentDescription = "KaPosts logo",
+                    contentDescription = "KaPost logo",
                     modifier = Modifier.size(40.dp).clip(RoundedCornerShape(9.dp))
                 )
             }
@@ -487,7 +487,7 @@ fun WelcomeScreen(
         // (iOS: 10pt above the safe area), so the height budget that keeps Create and Import on
         // screen is untouched and a 3-button bar never covers it.
         Text(
-            text = "KaPosts ${com.kachat.app.util.AppVersion.display}",
+            text = "KaPost ${com.kachat.app.util.AppVersion.display}",
             fontSize = 11.sp,
             color = LocalAppColors.current.textSecondary,
             modifier = Modifier

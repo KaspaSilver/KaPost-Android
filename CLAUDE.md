@@ -9,6 +9,11 @@ out of KaChat so KaChat can stay focused on 1:1 and group chats. It is the Andro
 KaPosts-iPhone (`KaspaSilver/KaPosts-iPhone`) and follows it screen for screen. One account = one
 Kaspa address, used to sign and pay for every post, reply, like, follow and room message.
 
+The app is called **KaPost** wherever a person sees it: the launcher name (`app_name`, "KaPost
+APK" for the GitHub flavour), notification titles, every on-screen string and the translations
+(iOS KaPosts 4c0d5a8). The code, the package, the applicationId, the `kaposts://` scheme and log
+tags keep "KaPosts". Write "KaPost" in any new user-facing text.
+
 The source started as a copy of KaChat-Android (`KaspaSilver/KaChat-Android`) at commit `9289fad8`
 (5.2.2 build 7, 2026-10-22), the point where KaChat-Android matched KaChat-iPhone `8b31f71`, which
 KaPosts-iPhone was cut from. KaChat's other features are removed: 1:1 and group chat screens,
@@ -24,7 +29,10 @@ What is still KaChat-shaped underneath:
   `oneToOneChatsEnabled`), but the code behind it (handshakes, contextual messages, groups,
   Nextcloud backup) is still there, unreachable.
 - `.kachat` names: the services, the profile editor and the name screens are kept; only the
-  profile editor, the Wallet's Domains tab and a name notification reach them. `.kachat` is the
+  profile editor, the Wallet's Domains tab and a name notification reach them. The Domains tab
+  (`KaPostAddressDomainsTab`) only lists the names: registering, renewing, selling and editing
+  them is KaChat Wallet's, which its button opens (`com.kachat.wallet`, listed in the manifest's
+  `<queries>`). `.kachat` is the
   only name service KaPosts reads: KNS (.kas), dotk (.k) and Kaspa Names (.kaspa) are switched
   off at their entry points (`KnsService.IS_ENABLED`, `NameServicesClient.OTHER_SERVICES_ENABLED`),
   so the Domains tab, address fields, mentions and search see .kachat names only.
@@ -40,8 +48,8 @@ What is still KaChat-shaped underneath:
 | Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
 | Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once |
 | Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`IdentityAddressDetailScreen`: balance, history, UTXOs, .kachat names) |
-| Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
-| Settings | `settings` | `SettingsScreen`: Customization, Security, Connection, KaPosts, Notifications, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Log Out (deleting an account is on the opening screen's Saved Accounts) |
+| Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; a row opens its post on the Feed (a follow opens the follower's profile); the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
+| Settings | `settings` | `SettingsScreen`: Customization, Security, Connection (its tabs swipe; the .kachat names indexer URL is on Domains), KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency), Notifications, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Log Out (deleting an account is on the opening screen's Saved Accounts) |
 
 The dock stays in reach on every screen and steps aside for the keyboard. Pushed screens keep the
 real one (`AboveDock` lays them out above it; the Wallet, a room and the tabs run on under it

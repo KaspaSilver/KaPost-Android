@@ -823,8 +823,20 @@ class KaPostsViewModel @Inject constructor(
 
     private val undoJobs = mutableMapOf<String, Job>()
 
+    /** KaPost Settings > Cool down before post: off, [scheduleUndoable] runs the action at once
+     *  and no Undo toast shows (iOS KaPosts 4c0d5a8 `KaPostsActionScheduler.cooldownEnabled`). */
+    private val cooldownEnabled = settings.kaPostsCooldownEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
     private fun scheduleUndoable(key: String, action: suspend () -> Unit) {
         cancelUndoable(key)
+        if (!cooldownEnabled.value) {
+            // No window, so nothing to undo: the toast the caller just raised goes before it is
+            // ever drawn.
+            if (_undoToast.value?.key == key) _undoToast.value = null
+            viewModelScope.launch { action() }
+            return
+        }
         _undoDeadlines.value = _undoDeadlines.value + (key to System.currentTimeMillis() + UNDO_DELAY_MS)
         undoJobs[key] = viewModelScope.launch {
             delay(UNDO_DELAY_MS)

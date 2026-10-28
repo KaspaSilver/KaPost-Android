@@ -96,6 +96,14 @@ class SettingsViewModel @Inject constructor(
     val kaPostsDefaultTipSompi = settings.kaPostsDefaultTipSompi
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /** The default tip set in a currency: (amount, lowercase currency code); null otherwise. */
+    val kaPostsDefaultTipFiat = settings.kaPostsDefaultTipFiat
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** KaPost Settings > Cool down before post. */
+    val kaPostsCooldownEnabled = settings.kaPostsCooldownEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
     fun setAddressActivityNotificationsEnabled(value: Boolean) = viewModelScope.launch { settings.setAddressActivityNotificationsEnabled(value) }
     fun setKaPostsNotifyLikes(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyLikes(value) }
     fun setKaPostsNotifyReposts(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyReposts(value) }
@@ -104,6 +112,8 @@ class SettingsViewModel @Inject constructor(
     fun setKaPostsNotifyComments(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyComments(value) }
     fun setKaPostsNotifyMentions(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyMentions(value) }
     fun setKaPostsDefaultTipSompi(value: Long?) = viewModelScope.launch { settings.setKaPostsDefaultTipSompi(value) }
+    fun setKaPostsDefaultTipFiat(amount: Double, currency: String) = viewModelScope.launch { settings.setKaPostsDefaultTipFiat(amount, currency) }
+    fun setKaPostsCooldownEnabled(value: Boolean) = viewModelScope.launch { settings.setKaPostsCooldownEnabled(value) }
 
     // ------------------------------------------------------------------
     // Simple Mode (Settings > Security > Simple Mode + the Welcome Guide's

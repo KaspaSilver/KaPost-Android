@@ -161,8 +161,8 @@ android {
     }
 
     // Where a build is handed out from. Same package, same signing key, same code - the one
-    // thing that differs is the launcher name: the GitHub APK calls itself "KaPosts APK" (see
-    // src/github/res) so a person can tell it from the Play Store's "KaPosts" at a glance.
+    // thing that differs is the launcher name: the GitHub APK calls itself "KaPost APK" (see
+    // src/github/res) so a person can tell it from the Play Store's "KaPost" at a glance.
     // Installing one over the other still updates in place, since Android sees one package.
     // Play builds: bundlePlayRelease. GitHub APK: assembleGithubRelease.
     flavorDimensions += "distribution"

@@ -189,7 +189,7 @@ fun OpenSourceLicensesScreen(onBack: () -> Unit) {
         ) {
             item {
                 Text(
-                    "KaPosts is built with these open source libraries. Their authors ask that these " +
+                    "KaPost is built with these open source libraries. Their authors ask that these " +
                         "notices travel with the app.",
                     color = colors.textSecondary,
                     fontSize = 14.sp,

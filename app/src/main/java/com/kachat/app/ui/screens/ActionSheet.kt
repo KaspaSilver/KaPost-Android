@@ -732,7 +732,7 @@ fun SenderActionsSheet(
             icon = Icons.Default.Person,
             title = stringResource(R.string.view_profile),
             subtitle = if (onOpenChat == null) {
-                "Their KaPosts profile: posts, replies and followers."
+                "Their KaPost profile: posts, replies and followers."
             } else {
                 stringResource(R.string.their_profile_kachat_name_address)
             },

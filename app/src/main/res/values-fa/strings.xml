@@ -135,8 +135,8 @@
     <string name="kns_domains">دامنه‌های KNS</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">لوگوی KaChat</string>
-    <string name="kachat_can_t_show_notifications_until">KaPosts تا زمانی که اعلان‌ها را برای این برنامه مجاز نکنید نمی‌تواند اعلان‌ها را نمایش دهد.</string>
-    <string name="kachat_needs_to_connect_to_a">KaPosts باید به یک گره متصل شود. چگونه می‌خواهید متصل شوید؟</string>
+    <string name="kachat_can_t_show_notifications_until">KaPost تا زمانی که اعلان‌ها را برای این برنامه مجاز نکنید نمی‌تواند اعلان‌ها را نمایش دهد.</string>
+    <string name="kachat_needs_to_connect_to_a">KaPost باید به یک گره متصل شود. چگونه می‌خواهید متصل شوید؟</string>
     <string name="kaspa">کاسپا</string>
     <string name="kaspa_address_or_kns_domain">آدرس Kaspa یا دامنه KNS</string>
     <string name="kaspa_explorer">کاوشگر کاسپا</string>
@@ -614,9 +614,9 @@
     <string name="welcome_fund_chatting_body">برای شروع ۵۰ Kaspa توصیه می‌شود - کافی برای گرفتن یک نام ‎.kachat و مدتی گفتگو. ۵ Kaspa برای حدود ۲۵۰۰ پیام کافی است.</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">تست‌نت</string>
-    <string name="testnet_restart_to_testnet">برای تکمیل تغییر به تست‌نت، KaPosts را کاملاً ببندید و دوباره باز کنید.</string>
-    <string name="testnet_restart_to_mainnet">برای تکمیل بازگشت به شبکه اصلی، KaPosts را کاملاً ببندید و دوباره باز کنید.</string>
-    <string name="kaposts_not_on_testnet">KaPosts هنوز در شبکه آزمایشی در دسترس نیست</string>
+    <string name="testnet_restart_to_testnet">برای تکمیل تغییر به تست‌نت، KaPost را کاملاً ببندید و دوباره باز کنید.</string>
+    <string name="testnet_restart_to_mainnet">برای تکمیل بازگشت به شبکه اصلی، KaPost را کاملاً ببندید و دوباره باز کنید.</string>
+    <string name="kaposts_not_on_testnet">KaPost هنوز در شبکه آزمایشی در دسترس نیست</string>
     <string name="kaposts_not_on_testnet_sub">برای شبکه آزمایشی هیچ ایندکسر KaPost وجود ندارد. برای خواندن و ارسال در شبکه اصلی، شبکه آزمایشی را در تنظیمات > اتصال خاموش کنید.</string>
     <string name="nextcloud_off_on_testnet">تا وقتی شبکه آزمایشی روشن است، Nextcloud خاموش است.</string>
     <string name="nextcloud_off_on_testnet_footer">پشتیبان‌گیری، همگام‌سازی، رسانه و تماس از طریق Nextcloud فقط در شبکه اصلی کار می‌کند، تا شبکه آزمایشی هرگز نسخه پشتیبان شبکه اصلی شما را بازنویسی نکند. شبکه آزمایشی را در تنظیمات > اتصال خاموش کنید تا اتصال Nextcloud شما همان‌طور که بود برگردد.</string>
@@ -948,8 +948,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">کمتر از %1$s تا انقضای این نام مانده است. باید به‌زودی تمدیدش کنید.</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">این یک آدرس Testnet است. KaPosts روی Mainnet است.</string>
-    <string name="address_other_network_mainnet">این یک آدرس Mainnet است. KaPosts روی Testnet است.</string>
+    <string name="address_other_network_testnet">این یک آدرس Testnet است. KaPost روی Mainnet است.</string>
+    <string name="address_other_network_mainnet">این یک آدرس Mainnet است. KaPost روی Testnet است.</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">یک تراکنش حداکثر می‌تواند %1$d UTXO را خرج کند، بنابراین نمی‌توان موارد بیشتری انتخاب کرد.</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1072,7 +1072,7 @@
     <string name="what_is_this">این چیست؟</string>
     <string name="what_is_a_seed_phrase">عبارت بازیابی چیست؟</string>
     <string name="seed_phrase_explainer_master_key">عبارت بازیابی فهرستی از ۱۲ یا ۲۴ کلمه معمولی است که مانند کلید اصلی حساب شما عمل می‌کند. کیف پول، آدرس گفتگو و پیام‌های شما همه از آن می‌آیند.</string>
-    <string name="seed_phrase_explainer_anyone">هر کسی این کلمات را داشته باشد می‌تواند همه‌چیز حساب شما را بردارد. اگر آن‌ها را گم کنید و این دستگاه را هم از دست بدهید، هیچ‌کس نمی‌تواند حسابتان را برگرداند، حتی KaPosts.</string>
+    <string name="seed_phrase_explainer_anyone">هر کسی این کلمات را داشته باشد می‌تواند همه‌چیز حساب شما را بردارد. اگر آن‌ها را گم کنید و این دستگاه را هم از دست بدهید، هیچ‌کس نمی‌تواند حسابتان را برگرداند، حتی KaPost.</string>
     <string name="seed_phrase_explainer_paper">کلمات را به ترتیب روی کاغذ بنویسید و در جایی امن و خصوصی نگه دارید. هرگز آن‌ها را در وب‌سایتی تایپ نکنید، در گفتگو نفرستید و در اسکرین‌شات یا یادداشت ابری نگه ندارید.</string>
     <string name="seed_phrase_explainer_lengths">۱۲ کلمه همین حالا هم بسیار امن است. ۲۴ کلمه امنیت بیشتری اضافه می‌کند.</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

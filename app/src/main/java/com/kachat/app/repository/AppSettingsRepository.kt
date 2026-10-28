@@ -3,6 +3,7 @@ package com.kachat.app.repository
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -176,6 +177,18 @@ class AppSettingsRepository @Inject constructor(
         /** The amount a tap on Tip sends straight away, in sompi. Unset (or 0) means the amount
          *  screen opens instead, which is the default. */
         val KEY_KAPOSTS_DEFAULT_TIP_SOMPI = longPreferencesKey("kaposts_default_tip_sompi")
+        /** The same default tip set in a currency instead (KaPost Settings, the unit tapped from
+         *  KAS to the currency): each tip sends what this is worth in KAS at the price of the
+         *  moment. Only one of this and [KEY_KAPOSTS_DEFAULT_TIP_SOMPI] is set (iOS KaPosts
+         *  4c0d5a8 `kaPostsDefaultTipFiat`). */
+        val KEY_KAPOSTS_DEFAULT_TIP_FIAT = doublePreferencesKey("kaposts_default_tip_fiat")
+        /** The lowercase currency code [KEY_KAPOSTS_DEFAULT_TIP_FIAT] is in (the app's currency
+         *  when it was set). */
+        val KEY_KAPOSTS_DEFAULT_TIP_FIAT_CURRENCY = stringPreferencesKey("kaposts_default_tip_fiat_currency")
+        /** KaPost Settings > Cool down before post: every KaPosts action (post, comment, like,
+         *  repost, vote, edit, delete) waits 5 seconds with an Undo before it goes on chain. Off,
+         *  they go at once. On by default (iOS `kaPostsCooldownEnabled`). */
+        val KEY_KAPOSTS_COOLDOWN_ENABLED = booleanPreferencesKey("kaposts_cooldown_enabled")
         /** Portfolio's eye button: every amount on that screen reads as dots. */
         val KEY_PORTFOLIO_VALUES_HIDDEN = booleanPreferencesKey("portfolio_values_hidden")
 
@@ -687,6 +700,16 @@ class AppSettingsRepository @Inject constructor(
         it[KEY_KAPOSTS_DEFAULT_TIP_SOMPI]?.takeIf { sompi -> sompi > 0 }
     }
 
+    /** See [KEY_KAPOSTS_DEFAULT_TIP_FIAT]: the amount and its currency, null unless the default
+     *  tip is set in a currency. */
+    val kaPostsDefaultTipFiat: Flow<Pair<Double, String>?> = dataStore.data.map { prefs ->
+        val amount = prefs[KEY_KAPOSTS_DEFAULT_TIP_FIAT]?.takeIf { it > 0 } ?: return@map null
+        amount to (prefs[KEY_KAPOSTS_DEFAULT_TIP_FIAT_CURRENCY] ?: prefs[KEY_CURRENCY] ?: "usd")
+    }
+
+    /** See [KEY_KAPOSTS_COOLDOWN_ENABLED]. */
+    val kaPostsCooldownEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_COOLDOWN_ENABLED] ?: true }
+
     /**
      * Whether a KaPosts notification event should post, per the K API's contentType/voteType
      * mapping — mirrors iOS's `AppSettings.shouldNotifyKaPostsAction` exactly: `vote` +
@@ -1131,10 +1154,23 @@ class AppSettingsRepository @Inject constructor(
 
     suspend fun setPortfolioValuesHidden(value: Boolean) = dataStore.edit { it[KEY_PORTFOLIO_VALUES_HIDDEN] = value }
 
+    /** A default tip in KAS; it replaces one set in a currency. Null clears both. */
     suspend fun setKaPostsDefaultTipSompi(value: Long?) = dataStore.edit {
         if (value != null && value > 0) it[KEY_KAPOSTS_DEFAULT_TIP_SOMPI] = value
         else it.remove(KEY_KAPOSTS_DEFAULT_TIP_SOMPI)
+        it.remove(KEY_KAPOSTS_DEFAULT_TIP_FIAT)
+        it.remove(KEY_KAPOSTS_DEFAULT_TIP_FIAT_CURRENCY)
     }
+
+    /** A default tip in [currency] (lowercase code); it replaces one set in KAS. */
+    suspend fun setKaPostsDefaultTipFiat(amount: Double, currency: String) = dataStore.edit {
+        if (amount <= 0) return@edit
+        it[KEY_KAPOSTS_DEFAULT_TIP_FIAT] = amount
+        it[KEY_KAPOSTS_DEFAULT_TIP_FIAT_CURRENCY] = currency
+        it.remove(KEY_KAPOSTS_DEFAULT_TIP_SOMPI)
+    }
+
+    suspend fun setKaPostsCooldownEnabled(value: Boolean) = dataStore.edit { it[KEY_KAPOSTS_COOLDOWN_ENABLED] = value }
     suspend fun setBackupRetention(value: com.kachat.app.models.BackupRetention) = dataStore.edit { it[KEY_BACKUP_RETENTION] = value.name }
     suspend fun setPendingKnsCommit(commit: PendingKnsCommit) = dataStore.edit { it[KEY_PENDING_KNS_COMMIT] = Gson().toJson(commit) }
     suspend fun clearPendingKnsCommit() = dataStore.edit { it.remove(KEY_PENDING_KNS_COMMIT) }

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBackIosNew
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -36,6 +37,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -307,6 +311,101 @@ private fun AddressDomainServiceNames(address: String, tld: NameServiceTLD, vm: 
                 )
             } else {
                 list.forEach { name -> DomainNameCard(title = name) }
+            }
+        }
+        PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter))
+    }
+}
+
+/** KaChat Wallet's app id (its debug build adds ".debug"), for the Domains tab's Open button. */
+private const val KACHAT_WALLET_PACKAGE = "com.kachat.wallet"
+
+/**
+ * A wallet's Domains tab in KaPost: the `.kachat` names the address holds, to look at only. Names
+ * are registered, renewed, sold and edited in KaChat Wallet, not here, so the tab says so and
+ * opens that app. `.kachat` is the only name service KaPost reads - no .kas, .k or .kaspa
+ * (iOS KaPosts 4c0d5a8 `AddressDomainsTab`).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun KaPostAddressDomainsTab(
+    address: String,
+    bottomPadding: androidx.compose.ui.unit.Dp,
+    vm: AddressDomainsViewModel = hiltViewModel(),
+) {
+    val colors = LocalAppColors.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val state by vm.state.collectAsState()
+    var walletAppMissing by remember { mutableStateOf(false) }
+    LaunchedEffect(address) { vm.load(address) }
+    val pullState = rememberPullToRefreshState()
+    LaunchedEffect(pullState.isRefreshing) {
+        if (pullState.isRefreshing) {
+            vm.load(address)
+            pullState.endRefresh()
+        }
+    }
+    // Null while loading.
+    val names = state.names[NameServiceTLD.KACHAT]?.takeIf { state.address == address.trim().lowercase() }
+    Box(Modifier.fillMaxSize().padding(bottom = bottomPadding).nestedScroll(pullState.nestedScrollConnection)) {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(colors.surface)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(
+                        Icons.Filled.AccountBalanceWallet,
+                        contentDescription = null,
+                        tint = KaspaTeal,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text("Manage your domains in KaChat Wallet", color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    "KaPost shows the .kachat names on this address. To register, renew, sell or edit them, use the KaChat Wallet app.",
+                    color = colors.textSecondary,
+                    fontSize = 15.sp,
+                )
+                Text(
+                    "Open KaChat Wallet",
+                    color = Color.Black,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(KaspaTeal)
+                        .clickable {
+                            val pm = context.packageManager
+                            val launch = pm.getLaunchIntentForPackage(KACHAT_WALLET_PACKAGE)
+                                ?: pm.getLaunchIntentForPackage("$KACHAT_WALLET_PACKAGE.debug")
+                            walletAppMissing = launch == null
+                            launch?.let { context.startActivity(it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                        }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+                if (walletAppMissing) {
+                    Text("KaChat Wallet isn't installed on this phone.", color = colors.warning, fontSize = 13.sp)
+                }
+            }
+            when {
+                names == null -> Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
+                    com.kachat.app.ui.theme.IosActivityIndicator(color = KaspaTeal)
+                }
+                names.isEmpty() -> Text(
+                    "No .kachat names on this address.",
+                    color = colors.textSecondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                )
+                else -> names.forEach { name -> DomainNameCard(title = name) }
             }
         }
         PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter))

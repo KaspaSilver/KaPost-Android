@@ -371,7 +371,7 @@ class NotificationHelper @Inject constructor(
         val vibrationEnabled = settings.notificationVibrationEnabled.first()
         val notification = NotificationCompat.Builder(context, channelFor(soundEnabled, vibrationEnabled))
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("KaPosts")
+            .setContentTitle("KaPost")
             .setContentText(text)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)

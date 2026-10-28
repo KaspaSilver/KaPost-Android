@@ -535,7 +535,7 @@ class NameServicesClient @Inject constructor(
         fun notFoundMessage(context: android.content.Context, typed: String, results: List<NameResolution>): String {
             val wanted = NameServiceTLD.splitTypedName(typed).second ?: NameServiceTLD.KACHAT
             if (wanted != NameServiceTLD.KACHAT && !OTHER_SERVICES_ENABLED) {
-                return "KaPosts looks up .kachat names only"
+                return "KaPost looks up .kachat names only"
             }
             if (wanted == NameServiceTLD.KACHAT &&
                 (results.any { it.tld == NameServiceTLD.KACHAT && it.notLive } || !NameServiceTLD.KACHAT.isLive)

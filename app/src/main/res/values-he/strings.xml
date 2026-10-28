@@ -114,8 +114,8 @@
     <string name="kns_domains">דומיינים KNS</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">לוגו KaChat</string>
-    <string name="kachat_can_t_show_notifications_until">KaPosts לא יכול להציג התראות עד שתאפשר אותן עבור אפליקציה זו.</string>
-    <string name="kachat_needs_to_connect_to_a">KaPosts צריך להתחבר לצומת. איך תרצה להתחבר?</string>
+    <string name="kachat_can_t_show_notifications_until">KaPost לא יכול להציג התראות עד שתאפשר אותן עבור אפליקציה זו.</string>
+    <string name="kachat_needs_to_connect_to_a">KaPost צריך להתחבר לצומת. איך תרצה להתחבר?</string>
     <string name="kaspa">קספה</string>
     <string name="kaspa_address_or_kns_domain">כתובת Kaspa או דומיין KNS</string>
     <string name="kaspa_explorer">סייר קספה</string>
@@ -448,7 +448,7 @@
     <string name="ks_group_messages">הודעות קבוצתיות</string>
     <string name="ks_group_updates">שינויים בקבוצות</string>
     <string name="ks_public_chats">צ\'אטים ציבוריים</string>
-    <string name="ks_kapost_actions">פעילות KaPosts</string>
+    <string name="ks_kapost_actions">פעילות KaPost</string>
     <string name="ks_chess_moves">מהלכי שחמט</string>
     <string name="ks_chess_games">משחקי שחמט</string>
     <string name="ks_self_stash">רשומות שמורות</string>
@@ -577,9 +577,9 @@
     <string name="welcome_fund_chatting_body">מומלץ להתחיל עם 50 Kaspa - מספיק כדי לקבל שם ‎.kachat ולשוחח לזמן מה. 5 Kaspa מספיקים לכ-2500 הודעות.</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">טסטנט</string>
-    <string name="testnet_restart_to_testnet">סגרו את KaPosts לגמרי ופתחו מחדש כדי לסיים את המעבר לטסטנט.</string>
-    <string name="testnet_restart_to_mainnet">סגרו את KaPosts לגמרי ופתחו מחדש כדי לסיים את החזרה לרשת הראשית.</string>
-    <string name="kaposts_not_on_testnet">KaPosts עדיין לא זמין ברשת הבדיקה</string>
+    <string name="testnet_restart_to_testnet">סגרו את KaPost לגמרי ופתחו מחדש כדי לסיים את המעבר לטסטנט.</string>
+    <string name="testnet_restart_to_mainnet">סגרו את KaPost לגמרי ופתחו מחדש כדי לסיים את החזרה לרשת הראשית.</string>
+    <string name="kaposts_not_on_testnet">KaPost עדיין לא זמין ברשת הבדיקה</string>
     <string name="kaposts_not_on_testnet_sub">אין אינדקסר KaPost לרשת הבדיקה. כבה את רשת הבדיקה בהגדרות > חיבור כדי לקרוא ולפרסם ברשת הראשית.</string>
     <string name="nextcloud_off_on_testnet">Nextcloud כבוי כל עוד רשת הבדיקה פועלת.</string>
     <string name="nextcloud_off_on_testnet_footer">גיבויים, סנכרון, מדיה ושיחות דרך Nextcloud פועלים רק ברשת הראשית, כך שרשת הבדיקה לעולם לא תדרוס את הגיבוי של הרשת הראשית. כבה את רשת הבדיקה בהגדרות > חיבור והחיבור ל-Nextcloud יחזור כפי שהיה.</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">נותרו פחות מ-%1$s עד שהשם הזה יפוג. תצטרכו לחדש אותו בקרוב.</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">זו כתובת Testnet. ‏KaPosts פועל ב-Mainnet.</string>
-    <string name="address_other_network_mainnet">זו כתובת Mainnet. ‏KaPosts פועל ב-Testnet.</string>
+    <string name="address_other_network_testnet">זו כתובת Testnet. ‏KaPost פועל ב-Mainnet.</string>
+    <string name="address_other_network_mainnet">זו כתובת Mainnet. ‏KaPost פועל ב-Testnet.</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">עסקה אחת יכולה להוציא לכל היותר %1$d UTXO, ולכן אי אפשר לבחור עוד.</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1041,7 +1041,7 @@
     <string name="what_is_this">מה זה?</string>
     <string name="what_is_a_seed_phrase">מה זה seed phrase?</string>
     <string name="seed_phrase_explainer_master_key">seed phrase היא רשימה של 12 או 24 מילים רגילות שמשמשת כמפתח הראשי לחשבון שלך. הארנק, כתובת הצ\'אט וההודעות שלך כולם נובעים ממנה.</string>
-    <string name="seed_phrase_explainer_anyone">כל מי שיש לו את המילים האלה יכול לקחת את כל מה שבחשבון שלך. אם תאבד אותן וגם את המכשיר הזה, אף אחד לא יוכל לשחזר את החשבון שלך, אפילו לא KaPosts.</string>
+    <string name="seed_phrase_explainer_anyone">כל מי שיש לו את המילים האלה יכול לקחת את כל מה שבחשבון שלך. אם תאבד אותן וגם את המכשיר הזה, אף אחד לא יוכל לשחזר את החשבון שלך, אפילו לא KaPost.</string>
     <string name="seed_phrase_explainer_paper">כתוב את המילים על נייר, לפי הסדר, ושמור אותן במקום בטוח ופרטי. לעולם אל תקליד אותן באתר, אל תשלח אותן בצ\'אט ואל תשמור אותן בצילום מסך או בפתקים בענן.</string>
     <string name="seed_phrase_explainer_lengths">12 מילים כבר בטוחות מאוד. 24 מילים מוסיפות הגנה נוספת.</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

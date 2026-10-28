@@ -248,7 +248,7 @@ class MainActivity : AppCompatActivity() {
         if (!show || crashFile == null) return
         com.kachat.app.ui.theme.IosAlertDialog(
             onDismissRequest = { show = false; CrashRecorder.markSeen(this) },
-            title = { Text("KaPosts closed unexpectedly") },
+            title = { Text("KaPost closed unexpectedly") },
             text = { Text("The app did not close normally the last time it ran. A report of what happened was saved. Sharing it with the developer is the quickest way to get it fixed - it contains no messages, keys or addresses.") },
             confirmButton = {
                 TextButton(onClick = {
@@ -268,7 +268,7 @@ class MainActivity : AppCompatActivity() {
             val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
             val send = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, "KaPosts crash report")
+                putExtra(Intent.EXTRA_SUBJECT, "KaPost crash report")
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">KaPosts</string>
+    <string name="app_name">KaPost</string>
 
     <!-- UI strings, extracted from hardcoded literals throughout ui/screens/ -->
     <string name="photo_saved">Photo saved</string>
@@ -55,8 +55,8 @@
     <string name="on">On</string>
     <string name="off">Off</string>
     <string name="who_will_use_kachat">How do you want KaChat?</string>
-    <string name="child_mode_is_on_guide_info">Simple Mode is on. Chats, Group Chats, Portfolio and Cold Storage are available; Swaps, KaPosts and Public Chats are hidden. Manage this in Settings > Security > Simple Mode.</string>
-    <string name="a_child_gets_a_simpler_safer">Simple Mode is a smaller KaChat: just Chats, Group Chats, Portfolio and Cold Storage. Swaps, KaPosts and Public Chats stay hidden until the password unlocks them.</string>
+    <string name="child_mode_is_on_guide_info">Simple Mode is on. Chats, Group Chats, Portfolio and Cold Storage are available; Swaps, KaPost and Public Chats are hidden. Manage this in Settings > Security > Simple Mode.</string>
+    <string name="a_child_gets_a_simpler_safer">Simple Mode is a smaller KaChat: just Chats, Group Chats, Portfolio and Cold Storage. Swaps, KaPost and Public Chats stay hidden until the password unlocks them.</string>
     <string name="adult">Full</string>
     <string name="the_full_app_everything_available">The full app, everything available.</string>
     <string name="child">Simple</string>
@@ -89,7 +89,7 @@
     <string name="wrong_password_nothing_changed">Wrong password. Nothing changed.</string>
     <string name="what_stays_available">What stays available</string>
     <string name="chats_and_group_chats">Chats &amp; Group Chats</string>
-    <string name="child_mode_about_footer">While Simple Mode is on, Swaps, KaPosts and Public Chats are removed everywhere - the dock, the Chats-tab cycle, links and notifications. Biometrics never unlock Simple Mode; only the password does.</string>
+    <string name="child_mode_about_footer">While Simple Mode is on, Swaps, KaPost and Public Chats are removed everywhere - the dock, the Chats-tab cycle, links and notifications. Biometrics never unlock Simple Mode; only the password does.</string>
     <string name="load_earlier_messages">Load earlier messages</string>
     <string name="delivery_sent">Sent</string>
     <string name="delivery_sending">Sending</string>
@@ -97,14 +97,14 @@
     <string name="delivery_failed_tap_to_retry">Failed \u00b7 Tap to retry</string>
     <string name="delivery_needs_attention">Needs attention</string>
     <string name="delivery_failed_retry_accessibility">Failed to send. Tap to retry.</string>
-    <string name="battery_rationale_title">Get notified while KaPosts is closed</string>
+    <string name="battery_rationale_title">Get notified while KaPost is closed</string>
     <string name="battery_rationale_body">Some phones close apps to save battery, which can stop your message notifications.</string>
     <string name="battery_rationale_allow">Allow</string>
-    <string name="battery_rationale_allow_detail">Lets new messages wake KaPosts up to notify you.</string>
-    <string name="battery_rationale_not_now_detail">Change it later in Settings &gt; Apps &gt; KaPosts &gt; Battery.</string>
+    <string name="battery_rationale_allow_detail">Lets new messages wake KaPost up to notify you.</string>
+    <string name="battery_rationale_not_now_detail">Change it later in Settings &gt; Apps &gt; KaPost &gt; Battery.</string>
     <string name="open_source_licenses">Open Source Licenses</string>
     <string name="screen_lock_required">Screen Lock Required</string>
-    <string name="screen_lock_required_message">Set a screen lock on this phone (Settings &gt; Security) to view or unlock secret keys in KaPosts.</string>
+    <string name="screen_lock_required_message">Set a screen lock on this phone (Settings &gt; Security) to view or unlock secret keys in KaPost.</string>
     <string name="show_password">Show password</string>
     <string name="hide_password">Hide password</string>
     <string name="coin_control">Coin Control</string>
@@ -123,7 +123,7 @@
     <string name="help">Help</string>
     <string name="broadcast_indexer">Public Chats Indexer</string>
     <string name="broadcast_indexer_footer">KaChat public chat history indexer for #kaspa and #kachat-bugs</string>
-    <string name="kapost_indexer_footer">K social network indexer that powers KaPosts feeds</string>
+    <string name="kapost_indexer_footer">K social network indexer that powers KaPost feeds</string>
     <string name="coinbase">Coinbase</string>
     <string name="chatting_address">Chatting Address</string>
     <string name="chatting_address_2">Chatting address</string>
@@ -217,8 +217,8 @@
     <string name="contact_kns_domains">KNS Domains</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">KaChat Logo</string>
-    <string name="kachat_can_t_show_notifications_until">KaPosts can\'t show notifications until you allow them for this app.</string>
-    <string name="kachat_needs_to_connect_to_a">KaPosts needs to connect to a node. How would you like to connect?</string>
+    <string name="kachat_can_t_show_notifications_until">KaPost can\'t show notifications until you allow them for this app.</string>
+    <string name="kachat_needs_to_connect_to_a">KaPost needs to connect to a node. How would you like to connect?</string>
     <string name="kaspa">Kaspa</string>
     <string name="kaspa_address_or_kns_domain">Kaspa Address or KNS Domain</string>
     <string name="kaspa_explorer">Kaspa Explorer</string>
@@ -500,7 +500,7 @@
 
     <!-- Import source-wallet chooser -->
     <string name="where_is_this_seed_phrase_from">Where is this seed phrase from?</string>
-    <string name="different_wallets_store_your_kaspa">Different wallets store your Kaspa on different address paths. Pick where this seed phrase comes from so KaPosts finds your funds and domains.</string>
+    <string name="different_wallets_store_your_kaspa">Different wallets store your Kaspa on different address paths. Pick where this seed phrase comes from so KaPost finds your funds and domains.</string>
     <string name="default_label">Default</string>
     <string name="continue_label">Continue</string>
 
@@ -530,7 +530,7 @@
     <string name="reveal">Reveal</string>
 
     <!-- Share-sheet in-place compose -->
-    <string name="share_to_kachat">Share to KaPosts</string>
+    <string name="share_to_kachat">Share to KaPost</string>
     <string name="send_to">Send to</string>
     <string name="couldnt_send_saved_as_draft">Couldn\'t send. Saved as a draft in this chat.</string>
 
@@ -620,7 +620,7 @@
     <string name="ks_group_messages">Group Messages</string>
     <string name="ks_group_updates">Group Updates</string>
     <string name="ks_public_chats">Public Chats</string>
-    <string name="ks_kaposts">KaPosts</string>
+    <string name="ks_kaposts">KaPost</string>
     <string name="ks_kapost_actions">KaPost Activity</string>
     <string name="ks_chess_moves">Chess Moves</string>
     <string name="ks_chess_games">Chess Games</string>
@@ -751,9 +751,9 @@
     <string name="welcome_fund_chatting_body">50 Kaspa is recommended to get started - enough to claim a .kachat name and chat for a while. 5 Kaspa is enough for about 2500 messages.</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">Testnet</string>
-    <string name="testnet_restart_to_testnet">Close KaPosts completely and open it again to finish switching to Testnet.</string>
-    <string name="testnet_restart_to_mainnet">Close KaPosts completely and open it again to finish switching back to Mainnet.</string>
-    <string name="kaposts_not_on_testnet">KaPosts isn\'t available on Testnet yet</string>
+    <string name="testnet_restart_to_testnet">Close KaPost completely and open it again to finish switching to Testnet.</string>
+    <string name="testnet_restart_to_mainnet">Close KaPost completely and open it again to finish switching back to Mainnet.</string>
+    <string name="kaposts_not_on_testnet">KaPost isn\'t available on Testnet yet</string>
     <string name="kaposts_not_on_testnet_sub">There is no KaPost indexer for testnet. Turn off Testnet in Settings > Connection to read and post on mainnet.</string>
     <string name="nextcloud_off_on_testnet">Nextcloud is off while Testnet is on.</string>
     <string name="nextcloud_off_on_testnet_footer">Backups, sync, media and calls through Nextcloud work on mainnet only, so testnet can never overwrite your mainnet backup. Turn off Testnet in Settings > Connection and your Nextcloud connection comes back as it was.</string>
@@ -1084,8 +1084,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">Less than %1$s is left before this name expires. You\'d have to renew it soon.</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">This is a Testnet address. KaPosts is on Mainnet.</string>
-    <string name="address_other_network_mainnet">This is a Mainnet address. KaPosts is on Testnet.</string>
+    <string name="address_other_network_testnet">This is a Testnet address. KaPost is on Mainnet.</string>
+    <string name="address_other_network_mainnet">This is a Mainnet address. KaPost is on Testnet.</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">One transaction can spend at most %1$d UTXOs, so no more can be selected.</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1240,7 +1240,7 @@
     <string name="what_is_this">What is this?</string>
     <string name="what_is_a_seed_phrase">What is a seed phrase?</string>
     <string name="seed_phrase_explainer_master_key">A seed phrase is a list of 12 or 24 ordinary words that works as the master key to your account. Your account, its address and your posts all come from it.</string>
-    <string name="seed_phrase_explainer_anyone">Anyone who has these words can take everything in your account. If you lose them and lose this device, nobody can get your account back, not even KaPosts.</string>
+    <string name="seed_phrase_explainer_anyone">Anyone who has these words can take everything in your account. If you lose them and lose this device, nobody can get your account back, not even KaPost.</string>
     <string name="seed_phrase_explainer_paper">Write the words on paper, in order, and keep them somewhere safe and private. Never type them into a website, send them in a chat, or keep them in a screenshot or cloud notes.</string>
     <string name="seed_phrase_explainer_lengths">12 words are already very secure. 24 words add even more protection.</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->
@@ -1427,7 +1427,7 @@
     <string name="pr_chatting_footer">The payment lands in your chat with whoever pays, with the memo.</string>
     <string name="pr_memo_placeholder">What it\'s for (optional)</string>
     <string name="pr_copy">Copy Payment Request</string>
-    <string name="pr_anyone_note">Anyone who opens or pastes it in KaPosts or KaChat gets Send Kaspa with this filled in, and sees it was made by your address (signed with its key).</string>
+    <string name="pr_anyone_note">Anyone who opens or pastes it in KaPost or KaChat gets Send Kaspa with this filled in, and sees it was made by your address (signed with its key).</string>
     <string name="pr_requested">Requested</string>
     <string name="pr_paid_as_chat_payment">Paid as a chat payment: it shows in your chat with them.</string>
     <string name="pr_paid_to_their_spending">Paid to their spending address.</string>

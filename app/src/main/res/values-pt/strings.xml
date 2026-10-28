@@ -114,8 +114,8 @@
     <string name="kns_domains">Dominios KNS</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">Logo do KaChat</string>
-    <string name="kachat_can_t_show_notifications_until">O KaPosts nao pode mostrar notificacoes ate que voce as permita para este app.</string>
-    <string name="kachat_needs_to_connect_to_a">O KaPosts precisa se conectar a um no. Como voce gostaria de se conectar?</string>
+    <string name="kachat_can_t_show_notifications_until">O KaPost nao pode mostrar notificacoes ate que voce as permita para este app.</string>
+    <string name="kachat_needs_to_connect_to_a">O KaPost precisa se conectar a um no. Como voce gostaria de se conectar?</string>
     <string name="kaspa">Kaspa</string>
     <string name="kaspa_address_or_kns_domain">Endereço Kaspa ou dominio KNS</string>
     <string name="kaspa_explorer">Kaspa Explorer</string>
@@ -448,7 +448,7 @@
     <string name="ks_group_messages">Mensagens de grupo</string>
     <string name="ks_group_updates">Alterações de grupo</string>
     <string name="ks_public_chats">Chats públicos</string>
-    <string name="ks_kapost_actions">Atividade do KaPosts</string>
+    <string name="ks_kapost_actions">Atividade do KaPost</string>
     <string name="ks_chess_moves">Lances de xadrez</string>
     <string name="ks_chess_games">Partidas de xadrez</string>
     <string name="ks_self_stash">Registros salvos</string>
@@ -577,9 +577,9 @@
     <string name="welcome_fund_chatting_body">Recomenda-se 50 Kaspa para começar - o suficiente para reivindicar um nome .kachat e conversar por um tempo. 5 Kaspa bastam para cerca de 2500 mensagens.</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">Testnet</string>
-    <string name="testnet_restart_to_testnet">Feche o KaPosts completamente e abra de novo para concluir a mudança para a Testnet.</string>
-    <string name="testnet_restart_to_mainnet">Feche o KaPosts completamente e abra de novo para concluir a volta para a Mainnet.</string>
-    <string name="kaposts_not_on_testnet">O KaPosts ainda não está disponível na Testnet</string>
+    <string name="testnet_restart_to_testnet">Feche o KaPost completamente e abra de novo para concluir a mudança para a Testnet.</string>
+    <string name="testnet_restart_to_mainnet">Feche o KaPost completamente e abra de novo para concluir a volta para a Mainnet.</string>
+    <string name="kaposts_not_on_testnet">O KaPost ainda não está disponível na Testnet</string>
     <string name="kaposts_not_on_testnet_sub">Não há um indexador KaPost para a testnet. Desative a Testnet em Ajustes > Conexão para ler e publicar na mainnet.</string>
     <string name="nextcloud_off_on_testnet">O Nextcloud fica desligado enquanto a Testnet estiver ligada.</string>
     <string name="nextcloud_off_on_testnet_footer">Backups, sincronização, mídia e chamadas pelo Nextcloud funcionam só na mainnet, então a testnet nunca sobrescreve seu backup da mainnet. Desative a Testnet em Ajustes > Conexão e sua conexão com o Nextcloud volta como estava.</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">Falta menos de %1$s para este nome vencer. Você teria que renová-lo em breve.</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">Este é um endereço da Testnet. O KaPosts está na Mainnet.</string>
-    <string name="address_other_network_mainnet">Este é um endereço da Mainnet. O KaPosts está na Testnet.</string>
+    <string name="address_other_network_testnet">Este é um endereço da Testnet. O KaPost está na Mainnet.</string>
+    <string name="address_other_network_mainnet">Este é um endereço da Mainnet. O KaPost está na Testnet.</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">Uma transação pode gastar no máximo %1$d UTXOs, por isso não é possível selecionar mais.</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1041,7 +1041,7 @@
     <string name="what_is_this">O que é isto?</string>
     <string name="what_is_a_seed_phrase">O que é uma seed phrase?</string>
     <string name="seed_phrase_explainer_master_key">Uma seed phrase é uma lista de 12 ou 24 palavras comuns que funciona como a chave mestra da sua conta. Sua carteira, seu endereço de chat e suas mensagens vêm todos dela.</string>
-    <string name="seed_phrase_explainer_anyone">Qualquer pessoa que tenha essas palavras pode levar tudo o que há na sua conta. Se você perdê-las e também perder este aparelho, ninguém consegue recuperar sua conta, nem mesmo o KaPosts.</string>
+    <string name="seed_phrase_explainer_anyone">Qualquer pessoa que tenha essas palavras pode levar tudo o que há na sua conta. Se você perdê-las e também perder este aparelho, ninguém consegue recuperar sua conta, nem mesmo o KaPost.</string>
     <string name="seed_phrase_explainer_paper">Escreva as palavras em papel, na ordem, e guarde-as em um lugar seguro e privado. Nunca as digite em um site, não as envie em um chat e não as guarde em uma captura de tela ou em notas na nuvem.</string>
     <string name="seed_phrase_explainer_lengths">12 palavras já são muito seguras. 24 palavras adicionam ainda mais proteção.</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

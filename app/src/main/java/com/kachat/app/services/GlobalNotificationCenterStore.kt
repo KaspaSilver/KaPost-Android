@@ -166,7 +166,7 @@ class GlobalNotificationCenterStore @Inject constructor(
         fun sourceLabel(source: String): String = when (source) {
             "wallet" -> "Wallet"
             "kachat" -> ".kachat"
-            "kaposts" -> "KaPosts"
+            "kaposts" -> "KaPost"
             "group" -> "Group"
             "broadcast" -> "Public Chat"
             else -> source

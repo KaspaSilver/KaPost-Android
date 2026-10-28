@@ -130,6 +130,10 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.SwapVert
+import com.kachat.app.util.currencySymbolFor
+import com.kachat.app.util.formatFiatAmount
+import com.kachat.app.util.formatKasAmount
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Person
@@ -716,6 +720,8 @@ private fun KaPostsFeedScreen(
     // network yet) and, when an instant tip failed, why (iOS fae6686 `TipTarget.failure`).
     var tipTarget by remember { mutableStateOf<KaPostTipTarget?>(null) }
     val defaultTipSompi by settingsViewModel.kaPostsDefaultTipSompi.collectAsState()
+    val defaultTipFiat by settingsViewModel.kaPostsDefaultTipFiat.collectAsState()
+    val tipPriceViewModel: com.kachat.app.viewmodels.PortfolioViewModel = hiltViewModel()
     /**
      * Tipping a poster. With a default amount set (KaPosts Settings) it goes out at once,
      * through exactly the path the tip sheet's Send uses - the same contact creation, the same
@@ -729,8 +735,23 @@ private fun KaPostsFeedScreen(
         val name = viewModel.posterDisplayName(address)
         // A tip names the post it is for, so the post counts it (KAPOSTS_INDEXER.md 5.11).
         val target = com.kachat.app.models.KaPostTip.of(post)
-        val amount = defaultTipSompi
-        if (amount == null || amount <= 0) {
+        // A default tip set in a currency sends what it is worth in KAS right now (iOS KaPosts
+        // 4c0d5a8); with no price yet, the amount screen opens with the reason.
+        val fiat = defaultTipFiat
+        val fiatText = fiat?.let { formatFiatAmount(it.first, it.second) }
+        val fiatPrice = fiat?.let { tipPriceViewModel.priceIn(it.second) }?.takeIf { it > 0 }
+        val amount = when {
+            fiat != null && fiatPrice != null -> Math.round(fiat.first / fiatPrice * 100_000_000.0)
+            fiat != null -> null
+            else -> defaultTipSompi
+        }
+        if (fiat != null && fiatPrice == null) {
+            tipPriceViewModel.refreshPrice()
+            tipTarget = KaPostTipTarget(
+                address, name, target,
+                failure = "Tip didn't send: there is no KAS price yet to turn $fiatText into KAS.",
+            )
+        } else if (amount == null || amount <= 0) {
             tipTarget = KaPostTipTarget(address, name, target)
         } else {
             chatViewModel.addContact(address, null)
@@ -738,7 +759,8 @@ private fun KaPostsFeedScreen(
             chatViewModel.sendPayment(address, kasText, tip = target) { ok, error, txId ->
                 if (ok) {
                     viewModel.countTip(target)
-                    viewModel.showTipToast("Tipped $kasText ${KaspaUnit.symbol} to $name", txId.orEmpty())
+                    val amountText = fiatText?.let { "$kasText ${KaspaUnit.symbol} ($it)" } ?: "$kasText ${KaspaUnit.symbol}"
+                    viewModel.showTipToast("Tipped $amountText to $name", txId.orEmpty())
                 } else {
                     // The amount screen opens with the reason ("Tip didn't send: " and the
                     // reason, as UserFacingError words it), so the tip can be sent by hand.
@@ -1044,7 +1066,7 @@ private fun KaPostsFeedScreen(
                         },
                     )
                     Text(
-                        text = "KaPosts",
+                        text = "KaPost",
                         color = colors.textPrimary,
                         fontSize = LargeTitleSize,
                         fontWeight = FontWeight.Bold,
@@ -1946,7 +1968,7 @@ private fun scheduledStatusLine(entry: com.kachat.app.services.KaPostScheduledEn
     com.kachat.app.services.KaPostScheduledEntry.STATUS_CANCELLED -> "Cancelled"
     else -> {
         val whenText = formatScheduledTime(entry.notBeforeMs, is24Hour)
-        if (entry.onServer) "Goes out $whenText" else "Goes out $whenText - from this phone, so open KaPosts around then"
+        if (entry.onServer) "Goes out $whenText" else "Goes out $whenText - from this phone, so open KaPost around then"
     }
 }
 
@@ -4555,7 +4577,7 @@ private fun KaPostsActionErrorAlert(viewModel: KaPostsViewModel) {
     val colors = LocalAppColors.current
     com.kachat.app.ui.theme.IosAlertDialog(
         onDismissRequest = { viewModel.clearActionError() },
-        title = { Text("KaPosts", color = colors.textPrimary) },
+        title = { Text("KaPost", color = colors.textPrimary) },
         text = { Text(message, color = colors.textSecondary) },
         confirmButton = {
             TextButton(onClick = { viewModel.clearActionError() }) {
@@ -5329,89 +5351,6 @@ internal fun openChatInKaChat(context: android.content.Context, address: String)
 // MARK: - Notifications overlay
 
 /**
- * The half sheet behind a tapped KaPosts notification. Same shape as the app's other half-sheet
- * menus, so a menu is a menu wherever it appears. Mirrors iOS's `notificationActionsSheet`.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun KaPostNotificationActionsSheet(
-    title: String,
-    canOpenInApp: Boolean,
-    onOpenInApp: () -> Unit,
-    onOpenExplorer: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    // A sheet of plain content: iOS's white sheet in light mode, the raised grey in dark.
-    com.kachat.app.ui.theme.IosSheetColors {
-        val colors = LocalAppColors.current
-        // Back closes the sheet, not the list behind it - the innermost handler wins, so the
-        // overlay's own back is left alone while this is up.
-        BackHandler(enabled = true) { onDismiss() }
-        Box(modifier = Modifier.fillMaxSize()) {
-            // The scrim. Tapping it, like tapping outside a sheet anywhere else, puts it away.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.45f))
-                    .clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() },
-                        onClick = onDismiss,
-                    ),
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter)
-                    .clip(com.kachat.app.ui.theme.IosSheetShape)
-                    .background(colors.background)
-                    // Swallows taps so they cannot fall through to the scrim behind it.
-                    .clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() },
-                        onClick = {},
-                    ),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .padding(top = 12.dp, bottom = 28.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    // The drag handle a sheet is recognised by, even though this one is dismissed by
-                    // tapping away rather than dragged.
-                    Box(
-                        modifier = Modifier
-                            .padding(bottom = 4.dp)
-                            .width(32.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(colors.textSecondary.copy(alpha = 0.4f)),
-                    )
-                    Text(title, color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                    if (canOpenInApp) {
-                        ActionSheetRow(
-                            icon = Icons.AutoMirrored.Filled.Chat,
-                            title = "Open in KaPosts",
-                            subtitle = "Goes to the post this is about, in the app.",
-                            onClick = onOpenInApp,
-                        )
-                    }
-                    ActionSheetRow(
-                        icon = Icons.Default.Public,
-                        title = stringResource(R.string.view_in_explorer),
-                        subtitle = "Opens the transaction on your chosen block explorer.",
-                        onClick = onOpenExplorer,
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
  * Search across KaPosts: posts by their text, and the people who wrote them.
  *
  * The depth line under the results is not decoration. This search is client-side (the K indexer
@@ -5467,7 +5406,7 @@ fun KaPostsSearchOverlay(
                     // iOS promptState: magnifyingglass at 40, headline, subheadline, 10 apart.
                     Icon(Icons.Default.Search, null, tint = colors.textSecondary, modifier = Modifier.size(52.dp))
                     Spacer(Modifier.height(10.dp))
-                    Text("Search KaPosts", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                    Text("Search KaPost", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
                     Spacer(Modifier.height(10.dp))
                     Text(
                         "Find posts by what they say, and people by their name or domain. Only people who have posted appear.",
@@ -5663,6 +5602,8 @@ fun KaPostsNotificationsTab(
                     KaPostsDeepLink.pendingOpenNotifications.value = false
                     KaPostsDeepLink.pendingPostTxId.value = txId
                 },
+                // A follow has no post: the follower's profile, over the Feed tab.
+                onOpenProfile = { address -> ProfileDeepLink.request(address) },
                 bottomInset = LocalDockInset.current,
             )
         }
@@ -5674,19 +5615,26 @@ fun KaPostsNotificationsTab(
 private fun KaPostsNotificationsList(
     viewModel: KaPostsViewModel,
     onOpenPost: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
     bottomInset: Dp,
 ) {
     val colors = LocalAppColors.current
     val items by viewModel.notifications.collectAsState()
     val isLoading by viewModel.isLoadingNotifications.collectAsState()
-    val kaspaExplorer by viewModel.kaspaExplorer.collectAsState()
-    val uriHandler = LocalUriHandler.current
+    val haptic = com.kachat.app.util.rememberHaptics()
 
     val listState = rememberLazyListState()
     val paging = pagingStateOf(viewModel, KaPostsViewModel.PAGE_NOTIFICATIONS)
-    // The notification whose action sheet is up. Tapping a row asks what to do with it rather
-    // than committing to one of the two answers.
-    var actionTarget by remember { mutableStateOf<KaPostsViewModel.NotificationItem?>(null) }
+    /** A tapped notification goes straight to what it is about: the post (a reply or quote
+     *  itself, or your post for a like, repost or tip), on the Feed tab. A follow has no post,
+     *  so it opens the follower's profile (iOS KaPosts 4c0d5a8). */
+    fun open(item: KaPostsViewModel.NotificationItem) {
+        val target = item.targetTxId
+        when {
+            target != null -> onOpenPost(target)
+            item.actorAddress.isNotEmpty() -> onOpenProfile(item.actorAddress)
+        }
+    }
 
     LaunchedEffect(Unit) { viewModel.loadNotifications() }
     EndlessScroll(listState = listState) { viewModel.loadMoreNotifications() }
@@ -5752,11 +5700,11 @@ private fun KaPostsNotificationsList(
                         verticalAlignment = Alignment.Top,
                         modifier = Modifier
                             .fillMaxWidth()
-                            // The whole row asks what to do with this notification. There used to
-                            // be a "View" button wired straight to the explorer sitting next to a
-                            // row tap that opened the post in-app - two destinations, one of them
-                            // unlabelled, and the button quietly ate taps meant for the row.
-                            .clickable { actionTarget = item }
+                            // The whole row opens the post; no explorer link.
+                            .clickable {
+                                haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                                open(item)
+                            }
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                     ) {
                         // The avatar carries a small badge saying what KIND of action this is,
@@ -5834,25 +5782,6 @@ private fun KaPostsNotificationsList(
         if (pullRefreshState.verticalOffset > 0f || pullRefreshState.isRefreshing) {
             PullToRefreshContainer(state = pullRefreshState, modifier = Modifier.align(Alignment.TopCenter))
         }
-        // Drawn here, inside the overlay's own window: this list is a full-screen dialog, and a
-        // sheet asking for a window of its own would come up behind it - which is how tapping a
-        // notification came to do nothing at all.
-        actionTarget?.let { item ->
-            KaPostNotificationActionsSheet(
-                title = posterDisplayNameState(viewModel, item.actorAddress),
-                canOpenInApp = item.targetTxId != null,
-                onOpenInApp = {
-                    val target = item.targetTxId
-                    actionTarget = null
-                    target?.let(onOpenPost)
-                },
-                onOpenExplorer = {
-                    actionTarget = null
-                    uriHandler.openUri(kaspaExplorer.txUrl(item.id))
-                },
-                onDismiss = { actionTarget = null },
-            )
-        }
         }
 }
 
@@ -5892,7 +5821,7 @@ private fun reportPost(context: android.content.Context, post: KaPostDraft) {
     val intent = Intent(Intent.ACTION_SENDTO).apply {
         data = android.net.Uri.parse("mailto:")
         putExtra(Intent.EXTRA_EMAIL, arrayOf(KAPOSTS_REPORT_ADDRESS))
-        putExtra(Intent.EXTRA_SUBJECT, "KaPosts report")
+        putExtra(Intent.EXTRA_SUBJECT, "KaPost report")
         putExtra(Intent.EXTRA_TEXT, body)
     }
     runCatching { context.startActivity(intent) }.onFailure {
@@ -6926,30 +6855,89 @@ private fun KaPostTipRow(
 }
 
 /**
- * KaPosts' own settings, behind the gear in the feed's icon row: which KaPosts activity notifies
- * you (these switches used to live in Settings, Notifications), and the default tip - the amount
- * a tap on Tip sends at once, with no amount screen in between. Mirrors iOS's KaPostsSettingsView.
+ * KaPosts' own settings, behind the gear in the feed's icon row: the cool down before post (the
+ * 5-second Undo window every action waits out, or none), and the default tip - the amount a tap
+ * on Tip sends at once, with no amount screen in between. The tip is set in KAS or, with the unit
+ * tapped, in the app's currency (USD unless changed in Settings): then each tip sends that much
+ * worth of KAS at the price of the moment. Mirrors iOS's KaPostsSettingsView (KaPosts 4c0d5a8).
  */
 @Composable
 fun KaPostsSettingsOverlay(
     onClose: () -> Unit,
     settingsViewModel: com.kachat.app.viewmodels.SettingsViewModel = hiltViewModel(),
+    portfolioViewModel: com.kachat.app.viewmodels.PortfolioViewModel = hiltViewModel(),
 ) {
     val colors = LocalAppColors.current
+    val haptic = com.kachat.app.util.rememberHaptics()
     val defaultTipSompi by settingsViewModel.kaPostsDefaultTipSompi.collectAsState()
+    val defaultTipFiat by settingsViewModel.kaPostsDefaultTipFiat.collectAsState()
+    val cooldownEnabled by settingsViewModel.kaPostsCooldownEnabled.collectAsState()
+    val appCurrency by portfolioViewModel.currency.collectAsState()
+    // Read so the footer's KAS figure updates when a price lands.
+    val livePrice by portfolioViewModel.currentPriceUsd.collectAsState()
 
-    // Seeded from the stored amount once; typing owns the field after that, so a re-read cannot
-    // rewrite what is half-typed.
-    var instantTipEnabled by remember(defaultTipSompi == null) { mutableStateOf(defaultTipSompi != null) }
-    var tipText by remember { mutableStateOf(defaultTipSompi?.let { kasAmountText(it) } ?: "") }
-
-    fun commitTip(text: String) {
-        val sompi = KaspaUnit.sompiFromUserText(text) ?: return
-        if (sompi <= 0) return
-        settingsViewModel.setKaPostsDefaultTipSompi(sompi)
+    var instantTipEnabled by remember { mutableStateOf(false) }
+    var tipText by remember { mutableStateOf("") }
+    /** The default tip is typed in [tipCurrency] rather than KAS. */
+    var tipInFiat by remember { mutableStateOf(false) }
+    /** Null = the app's currency. */
+    var pickedCurrency by remember { mutableStateOf<String?>(null) }
+    val tipCurrency = pickedCurrency ?: appCurrency
+    // Seeded from the stored tip once it loads; typing owns the field after that, so a re-read
+    // cannot rewrite what is half-typed.
+    var seeded by remember { mutableStateOf(false) }
+    LaunchedEffect(defaultTipSompi, defaultTipFiat) {
+        if (seeded) return@LaunchedEffect
+        val fiat = defaultTipFiat
+        val sompi = defaultTipSompi
+        when {
+            fiat != null -> {
+                instantTipEnabled = true
+                tipInFiat = true
+                pickedCurrency = fiat.second
+                tipText = kaPostsFiatTipText(fiat.first)
+            }
+            sompi != null -> {
+                instantTipEnabled = true
+                tipText = kasAmountText(sompi)
+            }
+            else -> return@LaunchedEffect
+        }
+        seeded = true
     }
 
-    KaPostsOverlayScaffold(title = "KaPosts Settings", onClose = onClose) {
+    /** The amount typed, as a number (either unit). */
+    fun typedAmount(): Double? = KaspaUnit.sompiFromUserText(tipText)?.let { it / 100_000_000.0 }
+
+    fun commitTip() {
+        if (!instantTipEnabled) return
+        seeded = true
+        if (tipInFiat) {
+            val amount = typedAmount()?.takeIf { it > 0 } ?: return
+            settingsViewModel.setKaPostsDefaultTipFiat(amount, tipCurrency)
+        } else {
+            val sompi = KaspaUnit.sompiFromUserText(tipText)?.takeIf { it > 0 } ?: return
+            settingsViewModel.setKaPostsDefaultTipSompi(sompi)
+        }
+    }
+
+    /** Flips the tip between KAS and the app's currency, carrying the amount over at today's
+     *  price (the number stays as typed when there is no price yet). */
+    fun switchTipUnit() {
+        haptic(com.kachat.app.util.IosHaptic.SELECTION)
+        val toFiat = !tipInFiat
+        val currency = if (toFiat) appCurrency else tipCurrency
+        val price = portfolioViewModel.priceIn(currency)
+        val amount = typedAmount()
+        if (amount != null && amount > 0 && price != null && price > 0) {
+            tipText = if (toFiat) kaPostsFiatTipText(amount * price) else formatKasAmount(amount / price)
+        }
+        pickedCurrency = currency
+        tipInFiat = toFiat
+        commitTip()
+    }
+
+    KaPostsOverlayScaffold(title = "KaPost Settings", onClose = onClose) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -6958,44 +6946,119 @@ fun KaPostsSettingsOverlay(
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Spacer(Modifier.height(4.dp))
-            SettingsSection(title = "Tipping") {
-                SettingsSwitchItem("Send a default tip instantly", instantTipEnabled) { enabled ->
-                    instantTipEnabled = enabled
-                    if (enabled) {
-                        if (tipText.isBlank()) tipText = "1"
-                        commitTip(tipText)
-                    } else {
-                        settingsViewModel.setKaPostsDefaultTipSompi(null)
+            Column {
+                SettingsSection(title = null) {
+                    SettingsSwitchItem("Cool down before post", cooldownEnabled) { enabled ->
+                        settingsViewModel.setKaPostsCooldownEnabled(enabled)
+                    }
+                }
+                SettingsFormFooter(
+                    if (cooldownEnabled) "Posts, comments, likes, reposts, votes, edits and deletes wait 5 seconds, with an Undo, before they go on chain."
+                    else "Posts, comments, likes, reposts, votes, edits and deletes go on chain at once, with no Undo."
+                )
+            }
+            Column {
+                SettingsSection(title = "Tipping") {
+                    SettingsSwitchItem("Send a default tip instantly", instantTipEnabled) { enabled ->
+                        instantTipEnabled = enabled
+                        if (enabled) {
+                            if (tipText.isBlank()) tipText = "1"
+                            commitTip()
+                        } else {
+                            seeded = true
+                            settingsViewModel.setKaPostsDefaultTipSompi(null)
+                        }
+                    }
+                    if (instantTipEnabled) {
+                        SettingsDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            if (tipInFiat) {
+                                Text(
+                                    currencySymbolFor(tipCurrency),
+                                    color = colors.textSecondary,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.widthIn(min = 22.dp),
+                                )
+                            } else {
+                                androidx.compose.foundation.Image(
+                                    painter = androidx.compose.ui.res.painterResource(com.kachat.app.R.drawable.ic_kaspa_logo),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(22.dp),
+                                )
+                            }
+                            com.kachat.app.ui.theme.IosTextField(
+                                value = tipText,
+                                onValueChange = { input ->
+                                    tipText = input.filter { it.isDigit() || it == '.' || it == ',' }
+                                    commitTip()
+                                },
+                                placeholder = { Text("1", color = colors.textSecondary) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                modifier = Modifier.weight(1f),
+                            )
+                            // Tap to set the tip in the other unit.
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(KaspaTeal.copy(alpha = 0.12f))
+                                    .clickable { switchTipUnit() }
+                                    .semantics {
+                                        contentDescription = if (tipInFiat) "Tip in ${tipCurrency.uppercase()}, switch to KAS"
+                                        else "Tip in KAS, switch to ${appCurrency.uppercase()}"
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    if (tipInFiat) tipCurrency.uppercase() else KaspaUnit.symbol,
+                                    color = KaspaTeal,
+                                    fontSize = 15.sp,
+                                )
+                                Icon(
+                                    Icons.Default.SwapVert,
+                                    contentDescription = null,
+                                    tint = KaspaTeal,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
                     }
                 }
                 if (instantTipEnabled) {
-                    SettingsDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        com.kachat.app.ui.theme.IosTextField(
-                            value = tipText,
-                            onValueChange = { input ->
-                                tipText = input.filter { it.isDigit() || it == '.' || it == ',' }
-                                commitTip(tipText)
-                            },
-                            placeholder = { Text("1", color = colors.textSecondary) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(KaspaUnit.symbol, color = colors.textSecondary, fontSize = 15.sp)
+                    // What a tip sends: in KAS, or the currency amount with what it comes to in
+                    // KAS today.
+                    val footer = if (!tipInFiat) {
+                        "Tap the unit to set the tip in your currency instead."
+                    } else {
+                        val price = livePrice.let { portfolioViewModel.priceIn(tipCurrency) }
+                        val amount = typedAmount()
+                        if (amount != null && amount > 0 && price != null && price > 0) {
+                            "Each tip sends ${formatFiatAmount(amount, tipCurrency)} worth of KAS at the price of the moment - about ${formatKasAmount(amount / price)} KAS now."
+                        } else {
+                            "Each tip sends this much worth of KAS at the price of the moment."
+                        }
                     }
+                    SettingsFormFooter(footer)
                 }
             }
-            // Which pings reach you is Settings > Notifications > KaPosts, behind the cog on the
+            // Which pings reach you is Settings > Notifications > KaPost, behind the cog on the
             // Notifications tab (iOS KaPosts 865c9ab).
             Spacer(Modifier.height(24.dp))
         }
     }
 }
+
+/** A currency amount for the default-tip field: two decimals, trimmed ("1", "1.5", "0.25"). */
+private fun kaPostsFiatTipText(value: Double): String =
+    String.format(java.util.Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
 
 /** A sompi amount as KAS, with the trailing zeros off: "1", "0.5", "12.25". */
 private fun kasAmountText(sompi: Long): String =
@@ -7751,7 +7814,7 @@ private fun KaPostsFeedDrawer(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "KaPosts",
+                        "KaPost",
                         color = colors.textPrimary,
                         fontSize = LargeTitleSize,
                         fontWeight = FontWeight.Bold,

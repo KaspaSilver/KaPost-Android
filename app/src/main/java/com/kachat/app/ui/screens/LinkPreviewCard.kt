@@ -1044,33 +1044,33 @@ fun KaChatInternalLinkCard(
         // A reply or a quote is still a KaPosts post, but saying which one it is explains why
         // the text may read as half a conversation.
         is KaChatLinkRef.KaPost -> when (post?.action) {
-            "reply" -> "KaPosts reply"
-            "quote" -> "KaPosts quote"
-            else -> "KaPosts"
+            "reply" -> "KaPost reply"
+            "quote" -> "KaPost quote"
+            else -> "KaPost"
         }
         is KaChatLinkRef.BroadcastRoom -> "Public Chat Room"
-        is KaChatLinkRef.Profile -> "KaPosts Profile"
+        is KaChatLinkRef.Profile -> "KaPost Profile"
         is KaChatLinkRef.PaymentRequest -> payEyebrow
     }
     val title = when (ref) {
-        is KaChatLinkRef.KaPost -> post?.authorName ?: "KaPosts post"
+        is KaChatLinkRef.KaPost -> post?.authorName ?: "KaPost post"
         is KaChatLinkRef.BroadcastRoom -> "#${ref.channel}"
         is KaChatLinkRef.Profile -> profileName ?: com.kachat.app.util.KaspaAddress.shortDisplay(ref.address)
         is KaChatLinkRef.PaymentRequest -> "${ref.request.amountText} ${com.kachat.app.util.KaspaUnit.symbol}"
     }
     val subtitle = when (ref) {
         is KaChatLinkRef.KaPost -> when {
-            post == null -> "Tap to open this post in KaPosts."
+            post == null -> "Tap to open this post in KaPost."
             // A quote with no added comment is a repost: there is no text to show, so say what
             // it is rather than leaving the card looking half-loaded.
             post.snippet.isBlank() ->
-                if (post.action == "quote") "Reposted a post." else "Tap to open this post in KaPosts."
+                if (post.action == "quote") "Reposted a post." else "Tap to open this post in KaPost."
             else -> post.snippet
         }
         is KaChatLinkRef.BroadcastRoom ->
             if (roomIsKnown) "Tap to open this public chat room." else "Tap to join this public chat room."
         is KaChatLinkRef.Profile ->
-            if (profileIsContact) "Tap to open your chat." else "Tap to see their KaPosts profile."
+            if (profileIsContact) "Tap to open your chat." else "Tap to see their KaPost profile."
         // The memo, the maker as the signature in the link proves - their name, not the payment
         // address - and what a tap does (iOS c6851d6, 7c71a98, 1fe8388).
         is KaChatLinkRef.PaymentRequest -> listOfNotNull(
@@ -1153,10 +1153,10 @@ fun KaChatInternalLinkCard(
     }
 
     if (showMenu) {
-        MessageActionsSheet(title = "KaPosts Link", preview = url, onDismiss = { showMenu = false }) {
+        MessageActionsSheet(title = "KaPost Link", preview = url, onDismiss = { showMenu = false }) {
             ActionSheetRow(
                 icon = Icons.AutoMirrored.Filled.OpenInNew,
-                title = "Open in KaPosts",
+                title = "Open in KaPost",
                 subtitle = "Opens it right here in the app.",
             ) {
                 showMenu = false

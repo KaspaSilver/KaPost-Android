@@ -1388,14 +1388,13 @@ fun IdentityAddressDetailScreen(
                     onTransactionClick = { transactionActionTarget = it },
                     bottomPadding = barInset,
                 )
-                // KaPosts reads .kachat names only, so the Domains tab is the address's .kachat
-                // names - no .kas, .k or .kaspa cards (iOS KaPosts 865c9ab).
+                // KaPost reads .kachat names only, so the Domains tab is the address's .kachat
+                // names - no .kas, .k or .kaspa cards (iOS KaPosts 865c9ab) - to look at only:
+                // they are managed in KaChat Wallet (iOS KaPosts 4c0d5a8).
                 2 -> if (com.kachat.app.services.NameServicesClient.OTHER_SERVICES_ENABLED) {
                     AddressDomainsTab(address.orEmpty(), onOpenService = { openedDomainService = it }, bottomPadding = barInset)
                 } else {
-                    Box(Modifier.fillMaxSize().padding(bottom = barInset)) {
-                        KachatAddressDomainsList(address?.takeIf { it.isNotEmpty() }, onOpen = { openedKachat = it })
-                    }
+                    KaPostAddressDomainsTab(address.orEmpty(), bottomPadding = barInset)
                 }
                 else -> AddressUtxoList(
                     utxos = utxos,
@@ -2909,7 +2908,7 @@ fun SettingsScreen(
                     SettingsDivider(inset = IosRowTextInset)
                     // KaPosts' own settings, where KaChat had Chats, Storage and Chat History (iOS
                     // KaPosts SettingsView).
-                    SettingsNavigationItem("KaPosts", Icons.AutoMirrored.Outlined.Article, onClick = { showKaPostsSettings = true })
+                    SettingsNavigationItem("KaPost", Icons.AutoMirrored.Outlined.Article, onClick = { showKaPostsSettings = true })
                     SettingsDivider(inset = IosRowTextInset)
                     // The same page as the cog on the Notifications tab. Public Chats has no row
                     // here: its rooms are chosen with the customize button on the Public Chats tab
@@ -2987,7 +2986,7 @@ fun SettingsScreen(
                         "Everything you have switched on below can reach you, even when the app is closed. Turning this off silences all of it."
                     } else if (!notificationPermissionGranted) {
                         // Android only: the OS permission is a separate switch here.
-                        "Android has notifications switched off for KaPosts. Turning this on will ask for permission."
+                        "Android has notifications switched off for KaPost. Turning this on will ask for permission."
                     } else {
                         "Turn this on to receive anything you have switched on below, even when the app is closed."
                     },
@@ -3007,7 +3006,7 @@ fun SettingsScreen(
                 // KaPosts' notifications are about posts only - no wallet ones (iOS KaPosts
                 // d37f64d). Public Chats rooms keep their own bells, in each room.
                 SettingsFormSection(title = stringResource(R.string.notifications)) {
-                    SettingsNavigationItem("KaPosts", Icons.AutoMirrored.Outlined.Article, onClick = {
+                    SettingsNavigationItem("KaPost", Icons.AutoMirrored.Outlined.Article, onClick = {
                         navController.navigate("kaposts_notification_settings")
                     })
                     SettingsDivider(inset = IosRowTextInset)
@@ -4061,7 +4060,7 @@ fun NotificationSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel 
     SettingsFormPage(title = stringResource(R.string.sound_vibration), onBack = onBack) {
         SettingsFormSection(
             title = null,
-            footer = "How a notification from KaPosts sounds and feels when it arrives.",
+            footer = "How a notification from KaPost sounds and feels when it arrives.",
         ) {
             SettingsSwitchItem(stringResource(R.string.play_sound), soundEnabled) {
                 viewModel.setNotificationSoundEnabled(it)
@@ -4087,7 +4086,7 @@ fun KaPostsNotificationSettingsScreen(onBack: () -> Unit, settingsViewModel: Set
     val dislikes by settingsViewModel.kaPostsNotifyDislikes.collectAsState()
     val comments by settingsViewModel.kaPostsNotifyComments.collectAsState()
     val mentions by settingsViewModel.kaPostsNotifyMentions.collectAsState()
-    SettingsFormPage(title = "KaPosts", onBack = onBack) {
+    SettingsFormPage(title = "KaPost", onBack = onBack) {
         SettingsFormSection(title = null) {
             SettingsSwitchItem("Likes", likes) { settingsViewModel.setKaPostsNotifyLikes(it) }
             SettingsDivider()
@@ -4444,7 +4443,7 @@ private fun AddressBookSection(viewModel: ConnectionViewModel) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = hiltViewModel()) {
     val network by viewModel.network.collectAsState()
@@ -4455,9 +4454,9 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
     val translationServiceUrl by viewModel.translationServiceUrl.collectAsState()
     var editingTranslationUrl by remember { mutableStateOf(false) }
     var editingKapostIndexerUrl by remember { mutableStateOf(false) }
+    var editingNamesIndexerUrl by remember { mutableStateOf(false) }
     val broadcastIndexerUrl by viewModel.broadcastIndexerUrl.collectAsState()
     val pushIndexerUrl by viewModel.pushIndexerUrl.collectAsState()
-    val scrollState = rememberScrollState()
     val onMainnetSettings = network.equals("mainnet", ignoreCase = true)
 
     Scaffold(
@@ -4482,25 +4481,41 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                 stringResource(R.string.connection_tab_explorer),
             )
             var selectedConnectionTab by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) }
+            // Swipe sideways between the tabs, or tap one (iOS KaPosts 4c0d5a8, the feeds' pager).
+            // Save covers every tab: the fields keep their edits while you switch between them.
+            val connectionPager = androidx.compose.foundation.pager.rememberPagerState(
+                initialPage = selectedConnectionTab,
+                pageCount = { connectionTabs.size },
+            )
+            LaunchedEffect(connectionPager) {
+                androidx.compose.runtime.snapshotFlow { connectionPager.settledPage }.collect { selectedConnectionTab = it }
+            }
+            LaunchedEffect(selectedConnectionTab) {
+                if (connectionPager.currentPage != selectedConnectionTab) connectionPager.animateScrollToPage(selectedConnectionTab)
+            }
             UnderlineTabBar(
                 titles = connectionTabs,
                 selectedIndex = selectedConnectionTab,
                 onSelect = { selectedConnectionTab = it },
             )
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = connectionPager,
+            modifier = Modifier.fillMaxSize(),
+            verticalAlignment = Alignment.Top,
+        ) { page ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp)
-                .verticalScroll(scrollState),
+                .verticalScroll(rememberScrollState()),
         ) {
             // Each section spaces itself, its footer under the card (SettingsFormSection).
             Spacer(Modifier.height(16.dp))
-            when (selectedConnectionTab) {
+            when (page) {
             0 -> {
-            SettingsFormSection(title = stringResource(R.string.message_indexer), footer = stringResource(R.string.message_indexer_service_for_chat_functionality)) {
-                ConnectionUrlField(label = "Indexer URL", value = indexerUrl)
-            }
-
+            // KaPost, Public Chats and Push. KaChat's message indexer is not here: KaPost has no 1:1
+            // chats, and the same address (indexerUrl) is the .kachat names indexer, on the Domains
+            // tab (iOS KaPosts 4c0d5a8).
             SettingsFormSection(title = stringResource(R.string.kapost_indexer), footer = stringResource(R.string.kapost_indexer_footer)) {
                 // Editable, as on iOS: someone running their own K indexer points the app at it.
                 ConnectionUrlField(
@@ -4526,7 +4541,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
             AddressBookSection(viewModel)
             }
             2 -> {
-            SettingsFormSection(title = "Translation Service", footer = "Translates KaPosts written in another language. Runs on the KaPost indexer's " +
+            SettingsFormSection(title = "Translation Service", footer = "Translates KaPost posts written in another language. Runs on the KaPost indexer's " +
                         "box by default; point this at your own if you host one (see " +
                         "TRANSLATION_SERVICE.md). Tap to change.") {
                 // Editable, unlike the read-only fields around it: the point of this setting is
@@ -4544,15 +4559,27 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
             SettingsFormSection(
                 title = stringResource(R.string.kn_kachat_names),
                 footer = if (com.kachat.app.services.NameServicesClient.OTHER_SERVICES_ENABLED) stringResource(R.string.kachat_names_resolved_first_footer)
-                    else "The only names KaPosts looks up, everywhere you can type an address.",
+                    else "The only names KaPost looks up, everywhere you can type an address. Run your own names " +
+                        "indexer and put its address here, or leave it blank for the default. When the indexer " +
+                        "doesn't answer or falls behind, names are read straight from the chain.",
             ) {
                 val isMainnet = network.equals("mainnet", ignoreCase = true)
-                // Read through the chat indexer above when it serves this network's names, else
-                // straight from the chain (KachatNamesRegistry, iOS 5df42b4, ef6b21e).
+                // indexerUrl: KachatNamesRegistry reads names through it while it answers for this
+                // network's registry and keeps up, else straight from the chain (iOS 5df42b4,
+                // ef6b21e, KaPosts 4c0d5a8).
                 ConnectionUrlField(
-                    label = "KaChat Names (.kachat)",
-                    value = stringResource(if (isMainnet) R.string.kn_live_on_mainnet else R.string.kn_live_testnet_registry)
+                    label = ".kachat Names Indexer URL",
+                    value = indexerUrl,
+                    onClick = { editingNamesIndexerUrl = true },
                 )
+                SettingsDivider()
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Registry", color = LocalAppColors.current.textPrimary, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                    Text(if (isMainnet) "Mainnet" else "Testnet (testnet-10)", color = LocalAppColors.current.textSecondary, fontSize = 17.sp)
+                }
             }
             // The other name services KaChat reads (see NameServicesClient) - none in KaPosts,
             // which looks up .kachat names only (iOS KaPosts 865c9ab). Shown, not editable; the
@@ -4578,6 +4605,52 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
             Spacer(modifier = Modifier.height(100.dp))
         }
         }
+        }
+    }
+
+    if (editingNamesIndexerUrl) {
+        var draft by remember { mutableStateOf(indexerUrl) }
+        var rejected by remember { mutableStateOf(false) }
+        com.kachat.app.ui.theme.IosAlertDialog(
+            onDismissRequest = { editingNamesIndexerUrl = false },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text(".kachat Names Indexer URL", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    com.kachat.app.ui.theme.IosTextField(
+                        value = draft,
+                        onValueChange = { draft = it; rejected = false },
+                        singleLine = true,
+                        isError = rejected,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        if (rejected) "The URL must start with https://"
+                        else "Leave blank to use ${if (onMainnetSettings) com.kachat.app.repository.AppSettingsRepository.DEFAULT_INDEXER_URL else com.kachat.app.repository.AppSettingsRepository.DEFAULT_TESTNET_INDEXER_URL}",
+                        color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val trimmed = draft.trim().trimEnd('/')
+                    if (trimmed.isNotEmpty() && !trimmed.startsWith("https://", ignoreCase = true)) {
+                        rejected = true
+                    } else {
+                        // Blank is the network's default (AppSettingsRepository.resolveIndexerUrl).
+                        viewModel.setIndexerUrl(trimmed)
+                        editingNamesIndexerUrl = false
+                    }
+                }) { Text("Save", color = KaspaTeal) }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingNamesIndexerUrl = false }) {
+                    Text(stringResource(R.string.cancel), color = LocalAppColors.current.textSecondary)
+                }
+            }
+        )
     }
 
     if (editingKapostIndexerUrl) {

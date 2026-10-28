@@ -114,8 +114,8 @@
     <string name="kns_domains">KNS ডোমেন</string>
     <string name="kachat">KaChat</string>
     <string name="kachat_logo">KaChat লোগো</string>
-    <string name="kachat_can_t_show_notifications_until">আপনি এই অ্যাপের জন্য বিজ্ঞপ্তির অনুমতি না দেওয়া পর্যন্ত KaPosts বিজ্ঞপ্তি দেখাতে পারবে না।</string>
-    <string name="kachat_needs_to_connect_to_a">KaPosts-কে একটি নোডের সাথে সংযোগ করতে হবে। আপনি কীভাবে সংযোগ করতে চান?</string>
+    <string name="kachat_can_t_show_notifications_until">আপনি এই অ্যাপের জন্য বিজ্ঞপ্তির অনুমতি না দেওয়া পর্যন্ত KaPost বিজ্ঞপ্তি দেখাতে পারবে না।</string>
+    <string name="kachat_needs_to_connect_to_a">KaPost-কে একটি নোডের সাথে সংযোগ করতে হবে। আপনি কীভাবে সংযোগ করতে চান?</string>
     <string name="kaspa">কাস্পা</string>
     <string name="kaspa_address_or_kns_domain">Kaspa ঠিকানা বা KNS ডোমেন</string>
     <string name="kaspa_explorer">কাস্পা এক্সপ্লোরার</string>
@@ -577,9 +577,9 @@
     <string name="welcome_fund_chatting_body">শুরু করতে ৫০ Kaspa সুপারিশ করা হয় - একটি .kachat নাম নেওয়া ও কিছুদিন চ্যাট করার জন্য যথেষ্ট। ৫ Kaspa দিয়ে প্রায় ২৫০০ মেসেজ পাঠানো যায়।</string>
     <!-- Testnet (iOS bdae4b7, 0c1af03, 9858bd1, 0bda85e, af8ec68, f38cac2) -->
     <string name="testnet">টেস্টনেট</string>
-    <string name="testnet_restart_to_testnet">টেস্টনেটে বদল শেষ করতে KaPosts পুরোপুরি বন্ধ করে আবার খুলুন।</string>
-    <string name="testnet_restart_to_mainnet">মেইননেটে ফেরা শেষ করতে KaPosts পুরোপুরি বন্ধ করে আবার খুলুন।</string>
-    <string name="kaposts_not_on_testnet">KaPosts এখনও টেস্টনেটে উপলব্ধ নয়</string>
+    <string name="testnet_restart_to_testnet">টেস্টনেটে বদল শেষ করতে KaPost পুরোপুরি বন্ধ করে আবার খুলুন।</string>
+    <string name="testnet_restart_to_mainnet">মেইননেটে ফেরা শেষ করতে KaPost পুরোপুরি বন্ধ করে আবার খুলুন।</string>
+    <string name="kaposts_not_on_testnet">KaPost এখনও টেস্টনেটে উপলব্ধ নয়</string>
     <string name="kaposts_not_on_testnet_sub">টেস্টনেটের জন্য কোনো KaPost ইনডেক্সার নেই। মেইননেটে পড়তে ও পোস্ট করতে সেটিংস > সংযোগ থেকে টেস্টনেট বন্ধ করুন।</string>
     <string name="nextcloud_off_on_testnet">টেস্টনেট চালু থাকলে Nextcloud বন্ধ থাকে।</string>
     <string name="nextcloud_off_on_testnet_footer">Nextcloud-এর মাধ্যমে ব্যাকআপ, সিঙ্ক, মিডিয়া ও কল শুধু মেইননেটে কাজ করে, তাই টেস্টনেট কখনো আপনার মেইননেট ব্যাকআপ মুছে লিখতে পারে না। সেটিংস > সংযোগ থেকে টেস্টনেট বন্ধ করলে আপনার Nextcloud সংযোগ আগের মতো ফিরে আসবে।</string>
@@ -917,8 +917,8 @@
     <!-- .kachat: expires-soon follows the period clock (iOS 24d673a, IOS-060) -->
     <string name="kn_buy_soon_left">এই নামের মেয়াদ শেষ হতে %1$s-এর কম বাকি। শীঘ্রই এটি নবায়ন করতে হবে।</string>
     <!-- Addresses of the other network are refused (iOS ce20e87, IOS-003) -->
-    <string name="address_other_network_testnet">এটি একটি Testnet ঠিকানা। KaPosts এখন Mainnet-এ আছে।</string>
-    <string name="address_other_network_mainnet">এটি একটি Mainnet ঠিকানা। KaPosts এখন Testnet-এ আছে।</string>
+    <string name="address_other_network_testnet">এটি একটি Testnet ঠিকানা। KaPost এখন Mainnet-এ আছে।</string>
+    <string name="address_other_network_mainnet">এটি একটি Mainnet ঠিকানা। KaPost এখন Testnet-এ আছে।</string>
     <!-- Coin Control: the most coins one transaction may spend (AND-012 follow-up) -->
     <string name="coin_control_max_selection">একটি লেনদেনে সর্বোচ্চ %1$dটি UTXO খরচ করা যায়, তাই আর বেশি নির্বাচন করা যাবে না।</string>
     <!-- Seed phrase screen: the passphrase is part of the backup (iOS 3076ab7, IOS-017) -->
@@ -1041,7 +1041,7 @@
     <string name="what_is_this">এটা কী?</string>
     <string name="what_is_a_seed_phrase">seed phrase কী?</string>
     <string name="seed_phrase_explainer_master_key">seed phrase হলো ১২ বা ২৪টি সাধারণ শব্দের একটি তালিকা, যা আপনার অ্যাকাউন্টের মূল চাবি হিসেবে কাজ করে। আপনার ওয়ালেট, চ্যাটিং ঠিকানা আর বার্তা সবই এটি থেকে আসে।</string>
-    <string name="seed_phrase_explainer_anyone">যার কাছে এই শব্দগুলো থাকবে সে আপনার অ্যাকাউন্টের সবকিছু নিয়ে নিতে পারবে। আপনি এগুলো হারালে আর এই ডিভাইসও হারালে কেউ আপনার অ্যাকাউন্ট ফেরত দিতে পারবে না, KaPosts-ও না।</string>
+    <string name="seed_phrase_explainer_anyone">যার কাছে এই শব্দগুলো থাকবে সে আপনার অ্যাকাউন্টের সবকিছু নিয়ে নিতে পারবে। আপনি এগুলো হারালে আর এই ডিভাইসও হারালে কেউ আপনার অ্যাকাউন্ট ফেরত দিতে পারবে না, KaPost-ও না।</string>
     <string name="seed_phrase_explainer_paper">শব্দগুলো ক্রমানুসারে কাগজে লিখে কোনো নিরাপদ ও ব্যক্তিগত জায়গায় রাখুন। কখনো কোনো ওয়েবসাইটে টাইপ করবেন না, চ্যাটে পাঠাবেন না, বা স্ক্রিনশট বা ক্লাউড নোটে রাখবেন না।</string>
     <string name="seed_phrase_explainer_lengths">১২টি শব্দ ইতিমধ্যেই খুব নিরাপদ। ২৪টি শব্দ আরও বেশি সুরক্ষা দেয়।</string>
     <!-- Onboarding: the seed phrase explainer page's headings (iOS 712bb4d) -->

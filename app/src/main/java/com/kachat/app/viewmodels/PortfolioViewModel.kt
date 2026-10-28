@@ -421,6 +421,14 @@ class PortfolioViewModel @Inject constructor(
      * none at all, is fetched again - just the price, not the whole launch burst, which is what
      * CoinGecko's keyless tier throttles. A fresh one is left alone.
      */
+    /** 1 KAS in [currencyCode]: the live price for the app's currency, else the last one this
+     *  phone saw for that currency (null if it never fetched one) - iOS KaPosts 4c0d5a8
+     *  `KaspaPriceService.price(in:)`. */
+    fun priceIn(currencyCode: String): Double? {
+        if (currencyCode == currency.value) _currentPriceUsd.value?.let { return it }
+        return repository.readPersistedPrice(currencyCode)?.price
+    }
+
     fun refreshSpotPriceIfStale() {
         val currencyCode = currency.value
         val persisted = repository.readPersistedPrice(currencyCode)

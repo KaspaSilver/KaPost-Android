@@ -414,7 +414,7 @@ class KaPostsService @Inject constructor(
      *  already handles a failed request (iOS 1ae83d8, KasiaAPIClient .noIndexer). */
     private suspend fun api(): KaPostApi = networkService.kapostApi.value
         ?: kotlinx.coroutines.withTimeoutOrNull(10_000) { networkService.kapostApi.filterNotNull().first() }
-        ?: throw java.io.IOException("KaPosts isn't available on this network")
+        ?: throw java.io.IOException("KaPost isn't available on this network")
 
     // MARK: - Requester identity (own compressed pubkey, derived once per wallet)
 
