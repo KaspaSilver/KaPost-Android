@@ -1194,7 +1194,7 @@ fun SpendingAddressSendFlow(
  * getSpendingUtxoLabels, etc. - all keyed by address string, nothing spending-chain-specific
  * about them) rather than duplicating a second copy of this state.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun IdentityAddressDetailScreen(
     onBack: () -> Unit,
@@ -1234,6 +1234,13 @@ fun IdentityAddressDetailScreen(
     val context = LocalContext.current
 
     var selectedTab by remember { mutableStateOf(0) }
+    val tabPager = androidx.compose.foundation.pager.rememberPagerState(initialPage = selectedTab, pageCount = { 3 })
+    LaunchedEffect(tabPager) {
+        androidx.compose.runtime.snapshotFlow { tabPager.settledPage }.collect { selectedTab = it }
+    }
+    LaunchedEffect(selectedTab) {
+        if (tabPager.currentPage != selectedTab) tabPager.animateScrollToPage(selectedTab)
+    }
     var showQr by remember { mutableStateOf(false) }
     var showWithdraw by remember { mutableStateOf(false) }
     var showCompoundFlow by remember { mutableStateOf(false) }
@@ -1348,16 +1355,21 @@ fun IdentityAddressDetailScreen(
             )
         },
         bottomBar = {
-            AddressReceiveSendBar(
-                receiveEnabled = !address.isNullOrEmpty(),
-                sendEnabled = balanceSompi > 0L,
-                onReceive = { showQr = true },
-                onSend = { showWithdraw = true },
-            )
+            // Receive and Send belong to the history; the UTXOs and Domains tabs don't show them
+            // (iOS KaPosts 0b9fd28).
+            if (selectedTab == 0) {
+                AddressReceiveSendBar(
+                    receiveEnabled = !address.isNullOrEmpty(),
+                    sendEnabled = balanceSompi > 0L,
+                    onReceive = { showQr = true },
+                    onSend = { showWithdraw = true },
+                )
+            }
         }
     ) { padding ->
-        // What Receive / Send and the dock cover: the lists scroll clear of it.
-        val barInset = padding.calculateBottomPadding()
+        // What Receive / Send and the dock cover: the lists scroll clear of it. Without the bar
+        // (UTXOs, Domains) it is the dock alone.
+        val barInset = maxOf(padding.calculateBottomPadding(), LocalDockInset.current)
         Column(modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding())) {
             AddressPageBalanceHeader(balanceSompi)
             Button(
@@ -1379,7 +1391,13 @@ fun IdentityAddressDetailScreen(
                 selectedIndex = selectedTab,
                 onSelect = { selectedTab = it },
             )
-            when (selectedTab) {
+            // Swipe sideways between the tabs, like Connection Settings (iOS KaPosts 0b9fd28).
+            androidx.compose.foundation.pager.HorizontalPager(
+                state = tabPager,
+                modifier = Modifier.fillMaxSize(),
+                verticalAlignment = Alignment.Top,
+            ) { page ->
+            when (page) {
                 0 -> AddressHistoryList(
                     txHistory = txHistory,
                     isLoading = isLoadingTxHistory,
@@ -1409,6 +1427,7 @@ fun IdentityAddressDetailScreen(
                     },
                     bottomPadding = barInset,
                 )
+            }
             }
         }
     }

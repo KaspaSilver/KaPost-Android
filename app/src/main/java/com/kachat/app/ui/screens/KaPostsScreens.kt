@@ -2351,7 +2351,16 @@ fun KaPostCell(
     val showingOriginal = translationSlice.showingOriginal
     val canTranslate = translationSlice.canTranslate
     LaunchedEffect(translationKey) { viewModel.considerTranslation(post) }
-    val bodyText = viewModel.displayText(post, translationState, showingOriginal)
+    val displayedText = viewModel.displayText(post, translationState, showingOriginal)
+    // A payment request link in the post: drawn as a card (KaPostPaymentRequestCard) under the
+    // text, and left out of the text itself (iOS KaPosts 0b9fd28).
+    val paymentRequestLink = remember(displayedText) {
+        KaChatLink.findFirst(displayedText)?.takeIf { it.ref is KaChatLinkRef.PaymentRequest }
+    }
+    // The text as drawn: the post without its payment request link.
+    val bodyText = remember(displayedText, paymentRequestLink) {
+        paymentRequestLink?.let { displayedText.replace(it.raw, "").trim() } ?: displayedText
+    }
 
     // Measured on what is actually rendered, so a translation that runs longer than its original
     // still folds. Same numbers as iOS's KaPostCellView.isLongPost.
@@ -2612,10 +2621,13 @@ fun KaPostCell(
                 // selectable turned a long-press anywhere in a feed into a selection handle
                 // fight, and scrolling past a post is far more common than quoting one; the
                 // focused post is the one you came to read. Matches iOS's selectableText(isRoot).
-                if (isRoot) {
-                    androidx.compose.foundation.text.selection.SelectionContainer { postBody() }
-                } else {
-                    postBody()
+                // A post that is only a payment request link has no text left to draw.
+                if (layoutText.isNotEmpty()) {
+                    if (isRoot) {
+                        androidx.compose.foundation.text.selection.SelectionContainer { postBody() }
+                    } else {
+                        postBody()
+                    }
                 }
                 // Half sheet rather than an alert dialog - see LinkActionsSheet.
                 tappedLinkUrl?.let { url ->
@@ -2645,6 +2657,11 @@ fun KaPostCell(
                         fontSize = 15.sp,
                         modifier = Modifier.clickable { textExpanded = !textExpanded },
                     )
+                }
+                // A payment request link: a card with a Pay button, not the link's text.
+                (paymentRequestLink?.ref as? KaChatLinkRef.PaymentRequest)?.let { link ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    KaPostPaymentRequestCard(request = link.request)
                 }
                 TranslateAffordance(
                     state = translationState,

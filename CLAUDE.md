@@ -47,7 +47,7 @@ What is still KaChat-shaped underneath:
 |---|---|---|
 | Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
 | Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once |
-| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`IdentityAddressDetailScreen`: balance, history, UTXOs, .kachat names) |
+| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`IdentityAddressDetailScreen`: balance, then History, UTXOs and .kachat names, which swipe; Receive and Send only on History) |
 | Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; a row opens its post on the Feed (a follow opens the follower's profile); the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
 | Settings | `settings` | `SettingsScreen`: Customization, Security, Connection (its tabs swipe; the .kachat names indexer URL is on Domains), KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency), Notifications, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Log Out (deleting an account is on the opening screen's Saved Accounts) |
 
@@ -96,6 +96,14 @@ comes anyway is ignored (`KaChatFirebaseMessagingService`). Only KaPosts, public
 are shown; a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
 #kaspa and #kachat-bugs start with their bells on, once per account; an address receiving KAS
 never notifies (`AddressActivityNotifier`).
+
+Payment requests (`kachat://pay/...`, `https://kachat.app/pay/...`) are paid in KaPay, KaChat's
+wallet app (KaChat-Wallet-Android, `com.kachat.wallet`): a post shows the link as a card
+(`KaPostPaymentRequestCard`), and a tap, a pasted link or one opened from outside goes through
+`PaymentRequestSheetHost`, which opens `kapay://pay/<same tail>` (`KaPayHandoff`). Your own request
+and a chat-payment request (`chat=1`, an encrypted chat payment KaPay can't make) open here.
+Without KaPay installed, the Play Store opens (`KaPayHandoff.STORE_URL`: a search for KaPay until
+it is listed). KaChat follows the same rule.
 
 Links: KaPosts opens `kaposts://` (same targets as `kachat://`), and `kachat://kapost/`,
 `kachat://broadcast/` and `https://kachat.app/post|broadcast/`, which KaChat no longer handles.

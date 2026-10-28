@@ -453,8 +453,9 @@ class MainActivity : AppCompatActivity() {
 
     /** kachat://pay/<address>?... or https://kachat.app/pay/<address>?... - someone's payment
      *  request (iOS c6851d6). Everything in it is checked - the address on this network, the exact
-     *  amount, the memo, a signature when it carries one - before Send Kaspa opens filled in (your
-     *  own shows it instead); nothing is ever sent without slide to send. */
+     *  amount, the memo, a signature when it carries one - before it opens: in KaPay for someone
+     *  else's ([com.kachat.app.ui.screens.KaPayHandoff]), Send Kaspa filled in for a chat payment,
+     *  the request itself for your own; nothing is ever sent without slide to send. */
     private fun handlePaymentRequestDeepLink(intent: Intent) {
         if (intent.action != Intent.ACTION_VIEW) return
         val uri = intent.data ?: return

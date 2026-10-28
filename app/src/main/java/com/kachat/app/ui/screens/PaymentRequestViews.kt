@@ -3,6 +3,13 @@ package com.kachat.app.ui.screens
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.filled.ArrowCircleUp
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -86,8 +93,8 @@ import kotlinx.coroutines.withContext
 /**
  * The payment request waiting to be shown - a tapped request card, a pasted link, a link opened
  * from outside the app (iOS `PaymentRequestRouter`). [PaymentRequestSheetHost], in MainShell,
- * presents it: Send Kaspa filled in for someone else's, the request itself for your own. Every
- * opening is its own sheet, even of the same request.
+ * opens it: in KaPay for someone else's, Send Kaspa filled in for a chat payment, the request
+ * itself for your own. Every opening is its own, even of the same request.
  */
 object PaymentRequestRouter {
     data class Pending(val request: PaymentRequest, val id: Long)
@@ -110,7 +117,7 @@ object PaymentRequestRouter {
 }
 
 /**
- * Pasting a payment request anywhere in KaChat opens Send Kaspa with it (iOS
+ * Pasting a payment request anywhere in KaChat opens it, as a tap does (iOS
  * `PaymentRequestPaste`): the chat composers (1:1, group, public), the KaPosts composer. Only text
  * that is the link and nothing else, and only someone else's request: your own pastes as text, so
  * you can send it to the person who should pay.
@@ -148,15 +155,55 @@ object PaymentRequestPaste {
 }
 
 /**
+ * Someone else's payment request is paid in KaPay (KaChat's wallet app, `com.kachat.wallet`): it
+ * opens there on Send, filled in, through KaPay's own scheme (`kapay://pay/...`, the same tail as
+ * `kachat://pay/`). Two stay here: your own (nothing to pay - [OwnPaymentRequestSheet]), and one
+ * asking for a chat payment ([PaymentRequest.toChattingAddress], made in a KaChat 1:1 chat), paid
+ * as an encrypted chat payment so it lands in the chat with them - KaPay can't. Without KaPay
+ * installed, the Play Store opens to get it. KaChat follows the same rule (iOS KaPosts 0b9fd28,
+ * 871bf34, 6238276 `KaPayHandoff`).
+ */
+object KaPayHandoff {
+    const val SCHEME = "kapay"
+
+    /** Where a request goes when KaPay isn't installed. KaPay isn't listed yet, so this is a Play
+     *  Store search for it; swap in its page (`details?id=com.kachat.wallet`) once it is (iOS
+     *  `appStoreURL`). */
+    const val STORE_URL = "market://search?q=KaPay&c=apps"
+    private const val STORE_WEB_URL = "https://play.google.com/store/search?q=KaPay&c=apps"
+
+    /** True when [request] is paid in KaPay rather than here. [isOwn] is [PaymentRequest.isOwn],
+     *  worked out off the main thread by the caller. */
+    fun paysInKaPay(request: PaymentRequest, isOwn: Boolean): Boolean = !isOwn && !request.toChattingAddress
+
+    /** Opens [request] in KaPay, or the store when KaPay isn't installed. */
+    fun open(context: android.content.Context, request: PaymentRequest) {
+        fun view(url: String): Boolean = try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            true
+        } catch (_: android.content.ActivityNotFoundException) {
+            false
+        }
+        if (view("$SCHEME://pay/${request.linkTail}")) return
+        if (!view(STORE_URL)) view(STORE_WEB_URL)
+    }
+}
+
+/**
  * Presents the payment request waiting in [PaymentRequestRouter] (iOS
- * `PaymentRequestSheetPresenter`): your own shows it ([OwnPaymentRequestSheet]); someone else's
- * opens Send Kaspa from the chatting address with the address locked and the amount and memo
- * filled in - every send check as always, and nothing goes out until slide to send.
+ * `PaymentRequestSheetPresenter`, `KaChatLinkRouter`'s payment case): someone else's is paid in
+ * KaPay ([KaPayHandoff]); your own shows it ([OwnPaymentRequestSheet]); a chat payment opens
+ * Send Kaspa from the chatting address with the address locked and the amount and memo filled in
+ * - every send check as always, and nothing goes out until slide to send.
+ *
+ * Its sheets are windows of their own, so they open over a profile or a thread too (iOS draws
+ * them from the post's card for that, `KaPostPaymentRequestCard`).
  */
 @Composable
 fun PaymentRequestSheetHost(walletViewModel: WalletViewModel, chatViewModel: ChatViewModel) {
     val pending by PaymentRequestRouter.pending.collectAsState()
     val current = pending ?: return
+    val context = LocalContext.current
     key(current.id) {
         var isOwn by remember { mutableStateOf<Boolean?>(null) }
         LaunchedEffect(Unit) {
@@ -165,7 +212,12 @@ fun PaymentRequestSheetHost(walletViewModel: WalletViewModel, chatViewModel: Cha
         when (isOwn) {
             null -> Unit
             true -> OwnPaymentRequestSheet(current.request, onDismissed = { PaymentRequestRouter.dismiss(current.id) })
-            false -> {
+            false -> if (KaPayHandoff.paysInKaPay(current.request, isOwn = false)) {
+                LaunchedEffect(Unit) {
+                    KaPayHandoff.open(context, current.request)
+                    PaymentRequestRouter.dismiss(current.id)
+                }
+            } else {
                 val address by walletViewModel.address.collectAsState()
                 val balanceSompi by walletViewModel.balanceSompi.collectAsState()
                 val from = address
@@ -365,6 +417,189 @@ private fun OwnPaymentRequestSheet(request: PaymentRequest, onDismissed: () -> U
                 )
                 PaymentRequestShareButton { sharePaymentRequestLink(context, request.shareUrlString) }
             }
+        }
+    }
+}
+
+// MARK: - In a KaPost
+
+/**
+ * A payment request link in a KaPost, drawn as a card instead of the link's long text (iOS
+ * `KaPostPaymentRequestCard`, KaPosts 0b9fd28): the amount (and what it comes to in the app's
+ * currency), the memo, who signed it, and a Pay button. A tap opens it as any payment request
+ * link does ([PaymentRequestRouter]): in KaPay ([KaPayHandoff]), or here for your own and for a
+ * chat payment. Long-press copies the link.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+fun KaPostPaymentRequestCard(request: PaymentRequest, modifier: Modifier = Modifier) {
+    val colors = LocalAppColors.current
+    val clipboard = LocalClipboardManager.current
+    val haptic = com.kachat.app.util.rememberHaptics()
+    var showMenu by remember { mutableStateOf(false) }
+
+    // Whether it is yours, worked out off the main thread (the wallet's addresses may need
+    // deriving once).
+    val isOwn by androidx.compose.runtime.produceState(initialValue = false, request) {
+        value = withContext(Dispatchers.Default) { request.isOwn }
+    }
+
+    val portfolioViewModel: com.kachat.app.viewmodels.PortfolioViewModel = hiltViewModel()
+    val currency by portfolioViewModel.currency.collectAsState()
+    // Read so the card redraws when the live price lands.
+    val livePrice by portfolioViewModel.currentPriceUsd.collectAsState()
+    val fiatText = remember(request.amountSompi, currency, livePrice) {
+        portfolioViewModel.priceIn(currency)?.takeIf { it > 0 }?.let { price ->
+            "≈ " + com.kachat.app.util.formatFiatAmount(request.amountSompi / 100_000_000.0 * price, currency)
+        }
+    }
+
+    // The maker, as the signature in the link proves: their name, else their short address.
+    val creator = request.creator
+    var creatorName by remember(creator) { mutableStateOf(creator?.let { com.kachat.app.models.addressDisplayName(it) }) }
+    if (creator != null) {
+        val resolver: AddressResolutionViewModel = hiltViewModel()
+        LaunchedEffect(creator) {
+            val contact = resolver.contactFor(creator)
+            creatorName = com.kachat.app.models.addressDisplayName(creator, contact?.alias)
+        }
+    }
+
+    val hint = stringResource(
+        when {
+            isOwn -> R.string.pr_card_hint_own
+            request.toChattingAddress -> R.string.pr_card_hint_chat
+            else -> R.string.pr_card_hint_kapay
+        }
+    )
+    val shape = RoundedCornerShape(16.dp)
+    Box(modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(KaspaTeal.copy(alpha = 0.08f))
+                .border(1.dp, KaspaTeal.copy(alpha = 0.35f), shape)
+                .combinedClickable(
+                    role = Role.Button,
+                    onLongClick = { showMenu = true },
+                    onClick = {
+                        haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                        PaymentRequestRouter.open(request)
+                    },
+                )
+                .semantics(mergeDescendants = true) { contentDescription = hint }
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                androidx.compose.foundation.Image(
+                    painter = androidx.compose.ui.res.painterResource(R.drawable.ic_kaspa_logo),
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        stringResource(R.string.pr_payment_request).uppercase(),
+                        color = KaspaTeal,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "${request.amountText} ${KaspaUnit.symbol}",
+                            color = colors.textPrimary,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = IosRoundedFontFamily,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false).alignByBaseline(),
+                        )
+                        fiatText?.let {
+                            Text(
+                                it,
+                                color = colors.textSecondary,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                modifier = Modifier.alignByBaseline(),
+                            )
+                        }
+                    }
+                    if (request.memo.isNotEmpty()) {
+                        Text(
+                            request.memo,
+                            color = colors.textPrimary,
+                            fontSize = 15.sp,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val name = creatorName
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (creator != null && name != null) {
+                        Icon(Icons.Filled.Verified, contentDescription = null, tint = colors.success, modifier = Modifier.size(14.dp))
+                        MiddleEllipsisText(
+                            name,
+                            color = colors.textSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    } else {
+                        Icon(Icons.Filled.Warning, contentDescription = null, tint = colors.warning, modifier = Modifier.size(14.dp))
+                        Text(
+                            stringResource(R.string.pr_card_not_signed),
+                            color = colors.warning,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(if (isOwn) KaspaTeal.copy(alpha = 0.15f) else KaspaTeal)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    val tint = if (isOwn) KaspaTeal else Color.White
+                    Icon(
+                        if (isOwn) Icons.Outlined.Visibility else Icons.Filled.ArrowCircleUp,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        stringResource(if (isOwn) R.string.pr_card_view else R.string.pr_card_pay),
+                        color = tint,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        androidx.compose.material3.DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            androidx.compose.material3.DropdownMenuItem(
+                text = { Text(stringResource(R.string.copy_link)) },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = {
+                    showMenu = false
+                    clipboard.setText(AnnotatedString(request.shareUrlString))
+                    haptic(com.kachat.app.util.IosHaptic.SUCCESS)
+                },
+            )
         }
     }
 }

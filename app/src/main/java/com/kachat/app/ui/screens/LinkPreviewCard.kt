@@ -927,7 +927,8 @@ fun openKaChatLink(ref: KaChatLinkRef) {
         }
         is KaChatLinkRef.BroadcastRoom -> BroadcastDeepLink.request(ref.channel)
         is KaChatLinkRef.Profile -> ProfileDeepLink.request(ref.address)
-        // Someone else's opens Send Kaspa filled in, your own shows it (MainShell presents both).
+        // Someone else's is paid in KaPay, your own and a chat payment open here (MainShell's
+        // PaymentRequestSheetHost, KaPayHandoff).
         is KaChatLinkRef.PaymentRequest -> PaymentRequestRouter.open(ref.request)
     }
 }

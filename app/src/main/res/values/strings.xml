@@ -1440,6 +1440,12 @@
     <string name="pr_not_signed">Not signed: who made this request can\'t be confirmed.</string>
     <string name="pr_your_payment_request">Your Payment Request</string>
     <string name="pr_your_request_tap_to_view">Your payment request. Tap to view.</string>
+    <string name="pr_card_not_signed">Not signed</string>
+    <string name="pr_card_pay">Pay</string>
+    <string name="pr_card_view">View</string>
+    <string name="pr_card_hint_own">Shows your payment request.</string>
+    <string name="pr_card_hint_chat">Opens Send Kaspa to pay it.</string>
+    <string name="pr_card_hint_kapay">Opens KaPay to pay it.</string>
     <string name="pr_paid_to_your_chatting">Paid to your address</string>
     <string name="pr_paid_to_your_spending">Paid to your spending address</string>
     <string name="pr_ask_contact_hint">Ask this contact for an exact amount, with what it\'s for.</string>
