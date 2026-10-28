@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">لا توجد مباريات 1v1 منتهية بعد.</string>
     <string name="chess_no_finished_tournaments_this_month">لا توجد بطولات منتهية هذا الشهر بعد.</string>
     <string name="chess_no_finished_tournaments">لا توجد بطولات منتهية بعد.</string>
+    <string name="no_testnet_indexer_yet">لا يوجد مفهرس للشبكة التجريبية بعد</string>
 </resources>

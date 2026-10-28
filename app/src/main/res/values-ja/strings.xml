@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">まだ終了した1v1の対局がありません。</string>
     <string name="chess_no_finished_tournaments_this_month">今月はまだ終了したトーナメントがありません。</string>
     <string name="chess_no_finished_tournaments">まだ終了したトーナメントがありません。</string>
+    <string name="no_testnet_indexer_yet">テストネット用インデクサはまだありません</string>
 </resources>

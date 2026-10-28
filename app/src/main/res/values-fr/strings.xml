@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">Aucune partie 1v1 terminée pour l\'instant.</string>
     <string name="chess_no_finished_tournaments_this_month">Aucun tournoi terminé ce mois-ci.</string>
     <string name="chess_no_finished_tournaments">Aucun tournoi terminé pour l\'instant.</string>
+    <string name="no_testnet_indexer_yet">Pas encore d\'indexeur testnet</string>
 </resources>

@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.kachat.app.R
+import androidx.compose.ui.res.stringResource
 import com.kachat.app.models.FeaturedBroadcastChannels
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.ui.theme.LocalAppColors
@@ -206,7 +207,13 @@ fun BroadcastRoomInfoScreen(
                 com.kachat.app.ui.theme.IosTextField(
                     value = indexerText,
                     onValueChange = { indexerText = it },
-                    placeholder = { Text(appWideIndexer, color = colors.textSecondary, fontSize = 13.sp) },
+                    placeholder = {
+                        Text(
+                            appWideIndexer.ifBlank { stringResource(R.string.no_testnet_indexer_yet) },
+                            color = colors.textSecondary,
+                            fontSize = 13.sp,
+                        )
+                    },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = colors.textPrimary,
@@ -221,9 +228,9 @@ fun BroadcastRoomInfoScreen(
                     // The honest explanation of why this is per room at all.
                     "A public chat lives on the Kaspa blockDAG, so any indexer watching the same " +
                         "network serves the same room. Point this one wherever you like - your own, " +
-                        "or someone else's - without changing the indexer every other room uses. " +
-                        if (appWideIndexer.isNotBlank()) "Leave it blank to follow $appWideIndexer."
-                        else "Testnet has no default indexer, so a blank one is none.",
+                        "or someone else's - without changing the indexer every other room uses." +
+                        // Testnet has none to follow (iOS KaPosts ae0b025).
+                        if (appWideIndexer.isNotBlank()) " Leave it blank to follow $appWideIndexer." else "",
                     color = colors.textSecondary,
                     fontSize = 12.sp,
                 )

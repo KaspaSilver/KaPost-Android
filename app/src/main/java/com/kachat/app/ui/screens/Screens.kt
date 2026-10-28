@@ -4477,6 +4477,8 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
     val broadcastIndexerUrl by viewModel.broadcastIndexerUrl.collectAsState()
     val pushIndexerUrl by viewModel.pushIndexerUrl.collectAsState()
     val onMainnetSettings = network.equals("mainnet", ignoreCase = true)
+    // The field hint: the network's default. Testnet has no indexer (iOS KaPosts ae0b025).
+    val testnetIndexerPlaceholder = if (onMainnetSettings) null else stringResource(R.string.no_testnet_indexer_yet)
 
     Scaffold(
         containerColor = LocalAppColors.current.background,
@@ -4540,16 +4542,17 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                 ConnectionUrlField(
                     label = "KaPost Indexer URL",
                     value = kapostIndexerUrl,
-                    onClick = { editingKapostIndexerUrl = true }
+                    onClick = { editingKapostIndexerUrl = true },
+                    placeholder = testnetIndexerPlaceholder,
                 )
             }
 
             SettingsFormSection(title = stringResource(R.string.broadcast_indexer), footer = stringResource(R.string.broadcast_indexer_footer)) {
-                ConnectionUrlField(label = "Public Chats Indexer URL", value = broadcastIndexerUrl)
+                ConnectionUrlField(label = "Public Chats Indexer URL", value = broadcastIndexerUrl, placeholder = testnetIndexerPlaceholder)
             }
 
             SettingsFormSection(title = "Push Registration", footer = "Used only for push registration and updates") {
-                ConnectionUrlField(label = "Push Indexer URL", value = pushIndexerUrl)
+                ConnectionUrlField(label = "Push Indexer URL", value = pushIndexerUrl, placeholder = testnetIndexerPlaceholder)
             }
 
             // Verbose API Logging lives in Settings > Diagnostics, as on iOS.
@@ -4590,6 +4593,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     label = ".kachat Names Indexer URL",
                     value = indexerUrl,
                     onClick = { editingNamesIndexerUrl = true },
+                    placeholder = testnetIndexerPlaceholder,
                 )
                 SettingsDivider()
                 Row(
@@ -4647,7 +4651,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     Text(
                         if (rejected) "The URL must start with https://"
                         else if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_INDEXER_URL}"
-                        else "Testnet has no default indexer. Leave blank for none.",
+                        else stringResource(R.string.no_testnet_indexer_yet),
                         color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -4694,7 +4698,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                         if (rejected) "The URL must start with https://"
                         // The network's default: none on testnet.
                         else if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_KAPOST_INDEXER_URL}"
-                        else "Testnet has no default indexer. Leave blank for none.",
+                        else stringResource(R.string.no_testnet_indexer_yet),
                         color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -4752,7 +4756,13 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
 
 /** Read-only for now — editing these let a mistyped URL crash the whole app (fixed at the NetworkService layer too, but not editable at all is safer). */
 @Composable
-fun ConnectionUrlField(label: String, value: String, onClick: (() -> Unit)? = null) {
+fun ConnectionUrlField(
+    label: String,
+    value: String,
+    onClick: (() -> Unit)? = null,
+    /** Shown, dimmed, while [value] is blank (iOS's field placeholder). */
+    placeholder: String? = null,
+) {
     Column(
         modifier = Modifier
             .let { if (onClick != null) it.clickable { onClick() } else it }
@@ -4761,9 +4771,10 @@ fun ConnectionUrlField(label: String, value: String, onClick: (() -> Unit)? = nu
         Text(label, color = LocalAppColors.current.textSecondary, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(6.dp))
         // iOS shows an address in the body font, monospaced.
+        val showsPlaceholder = value.isBlank() && placeholder != null
         Text(
-            text = value,
-            color = LocalAppColors.current.textPrimary,
+            text = if (showsPlaceholder) placeholder.orEmpty() else value,
+            color = if (showsPlaceholder) LocalAppColors.current.textSecondary else LocalAppColors.current.textPrimary,
             fontSize = 17.sp,
             fontFamily = FontFamily.Monospace,
         )

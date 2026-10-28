@@ -1420,4 +1420,5 @@
     <string name="chess_no_finished_duels">هنوز بازی 1v1 تمام‌شده‌ای نیست.</string>
     <string name="chess_no_finished_tournaments_this_month">هنوز تورنمنت تمام‌شده‌ای در این ماه نیست.</string>
     <string name="chess_no_finished_tournaments">هنوز تورنمنت تمام‌شده‌ای نیست.</string>
+    <string name="no_testnet_indexer_yet">هنوز نمایه‌ساز تست‌نت وجود ندارد</string>
 </resources>

@@ -766,6 +766,10 @@ class PushRegistrationManager @Inject constructor(
         internal fun supersededBase(storedBase: String?, currentBase: String): String? {
             val old = storedBase?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             val current = currentBase.trim().takeIf { it.isNotEmpty() } ?: return null
+            // kachat.duckdns.org -> indexer.kachat.app is the same server under a new name, so
+            // nothing is left there: a DELETE would drop the registration the new name shares
+            // (iOS KaPosts ae0b025).
+            if (com.kachat.app.repository.AppSettingsRepository.isLegacyKachatDuckDns(old)) return null
             return if (old.trimEnd('/').equals(current.trimEnd('/'), ignoreCase = true)) null else old
         }
 

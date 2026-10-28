@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">Chưa có ván 1v1 nào kết thúc.</string>
     <string name="chess_no_finished_tournaments_this_month">Chưa có giải đấu nào kết thúc trong tháng này.</string>
     <string name="chess_no_finished_tournaments">Chưa có giải đấu nào kết thúc.</string>
+    <string name="no_testnet_indexer_yet">Chưa có trình lập chỉ mục testnet</string>
 </resources>

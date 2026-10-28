@@ -25,6 +25,12 @@ class PushSupersededServiceTest {
     }
 
     @Test
+    fun `the old name of the same server is not left`() {
+        assertNull(PushRegistrationManager.supersededBase("https://kachat.duckdns.org", mainnet))
+        assertNull(PushRegistrationManager.supersededBase("https://kachat.duckdns.org/", mainnet))
+    }
+
+    @Test
     fun `nothing stored means nothing to leave`() {
         assertNull(PushRegistrationManager.supersededBase(null, testnet))
         assertNull(PushRegistrationManager.supersededBase("", testnet))

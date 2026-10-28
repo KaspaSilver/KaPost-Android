@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">Henüz biten 1v1 oyunu yok.</string>
     <string name="chess_no_finished_tournaments_this_month">Bu ay henüz biten turnuva yok.</string>
     <string name="chess_no_finished_tournaments">Henüz biten turnuva yok.</string>
+    <string name="no_testnet_indexer_yet">Henüz testnet dizinleyici yok</string>
 </resources>

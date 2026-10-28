@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">अभी तक कोई 1v1 गेम पूरा नहीं हुआ।</string>
     <string name="chess_no_finished_tournaments_this_month">इस महीने अभी तक कोई टूर्नामेंट पूरा नहीं हुआ।</string>
     <string name="chess_no_finished_tournaments">अभी तक कोई टूर्नामेंट पूरा नहीं हुआ।</string>
+    <string name="no_testnet_indexer_yet">अभी कोई टेस्टनेट इंडेक्सर नहीं</string>
 </resources>

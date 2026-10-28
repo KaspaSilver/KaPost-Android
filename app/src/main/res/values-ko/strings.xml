@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">끝난 1v1 게임이 아직 없습니다.</string>
     <string name="chess_no_finished_tournaments_this_month">이번 달에 끝난 토너먼트가 아직 없습니다.</string>
     <string name="chess_no_finished_tournaments">끝난 토너먼트가 아직 없습니다.</string>
+    <string name="no_testnet_indexer_yet">아직 테스트넷 인덱서가 없음</string>
 </resources>

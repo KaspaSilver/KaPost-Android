@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">还没有已结束的 1v1 对局。</string>
     <string name="chess_no_finished_tournaments_this_month">本月还没有已结束的锦标赛。</string>
     <string name="chess_no_finished_tournaments">还没有已结束的锦标赛。</string>
+    <string name="no_testnet_indexer_yet">尚无测试网索引器</string>
 </resources>

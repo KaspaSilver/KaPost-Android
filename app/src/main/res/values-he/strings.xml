@@ -1389,4 +1389,5 @@
     <string name="chess_no_finished_duels">עדיין אין משחקי 1v1 שהסתיימו.</string>
     <string name="chess_no_finished_tournaments_this_month">עדיין אין טורנירים שהסתיימו החודש.</string>
     <string name="chess_no_finished_tournaments">עדיין אין טורנירים שהסתיימו.</string>
+    <string name="no_testnet_indexer_yet">עדיין אין אינדקסר לטסטנט</string>
 </resources>

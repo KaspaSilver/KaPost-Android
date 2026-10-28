@@ -1658,4 +1658,5 @@
     <string name="chess_no_finished_duels">No finished 1v1 games yet.</string>
     <string name="chess_no_finished_tournaments_this_month">No finished tournaments this month yet.</string>
     <string name="chess_no_finished_tournaments">No finished tournaments yet.</string>
+    <string name="no_testnet_indexer_yet">No testnet indexer yet</string>
 </resources>

@@ -94,11 +94,15 @@ class AppSettingsRepository @Inject constructor(
          *  cleared), so every field reads it as the new name ([renamedIndexer]). */
         const val LEGACY_DEFAULT_INDEXER_URL_DUCKDNS = "https://kachat.duckdns.org"
 
-        /** [url], or the current default when it is KaChat's indexer under its old name. */
-        fun renamedIndexer(url: String): String {
-            val normalized = url.trim().trimEnd('/').lowercase()
-            return if (normalized == LEGACY_DEFAULT_INDEXER_URL_DUCKDNS) DEFAULT_INDEXER_URL else url
+        /** True when [url] is KaChat's indexer under its old name, with or without the scheme or
+         *  a trailing slash (iOS KaPosts ae0b025 `isLegacyKachatDuckDNS`). */
+        fun isLegacyKachatDuckDns(url: String): Boolean {
+            val bare = url.trim().trimEnd('/').lowercase()
+            return bare == LEGACY_DEFAULT_INDEXER_URL_DUCKDNS || bare == "kachat.duckdns.org"
         }
+
+        /** [url], or the current default when it is KaChat's indexer under its old name. */
+        fun renamedIndexer(url: String): String = if (isLegacyKachatDuckDns(url)) DEFAULT_INDEXER_URL else url
         const val DEFAULT_KNS_API_URL    = "https://api.knsdomains.org/mainnet/api/v1"
         const val DEFAULT_KASPA_REST_URL = "https://api.kaspa.org"
         /** Testnet-10 (Toccata covenants; the node pool's testnet seeds are on 16210). */
@@ -106,13 +110,12 @@ class AppSettingsRepository @Inject constructor(
         /** Retired TN11 (503) - migrated forward on read (iOS a67a1c2). */
         const val LEGACY_DEFAULT_KASPA_TESTNET_REST_URL = "https://api-tn11.kaspa.org"
         const val DEFAULT_KNS_TESTNET_API_URL = "https://api.knsdomains.org/tn10/api/v1"
-        /** The testnet-10 indexer KaPost used to ship. Testnet has no default indexer now: a
-         *  field saved on it reads as blank (no server), like one never set. */
-        private const val RETIRED_TESTNET_INDEXER_URL = "https://tnkachat.duckdns.org:7443"
-
-        /** [url], or blank when it is the retired testnet indexer. */
+        /** Testnet has no KaChat indexer: chat, push, KaPosts, public chats and `.kachat` names
+         *  are off there until one is published. Its old host (tnkachat.duckdns.org) is retired;
+         *  a field saved on it, at any port, reads as blank, like one never set (iOS KaPosts
+         *  ae0b025 `withoutRetiredTestnetIndexer`). */
         private fun withoutRetiredTestnetIndexer(url: String): String =
-            if (url.trim().trimEnd('/').lowercase() == RETIRED_TESTNET_INDEXER_URL) "" else url
+            if (url.lowercase().contains("tnkachat.duckdns.org")) "" else url
 
         fun defaultKaspaRestUrl(network: com.kachat.app.util.KaspaNetwork.Type) =
             if (network == com.kachat.app.util.KaspaNetwork.Type.MAINNET) DEFAULT_KASPA_REST_URL else DEFAULT_KASPA_TESTNET_REST_URL

@@ -13,6 +13,21 @@ def rrect(x, y, w, h, r):
 def circle(cx, cy, r):
     return f"M{cx-r},{cy} a{r},{r} 0 1,0 {2*r},0 a{r},{r} 0 1,0 -{2*r},0 z"
 
+# The backward K exactly as KaChat's app icon draws it, traced from KaChat's 1024 px icon: the
+# bent bar and the thick chevron, in that icon's pixels (iOS KaPosts 499275c `K_BAR`/`K_CHEVRON`).
+# Its bounding box is 360..665 x 254..690, centred on (512.9, 472).
+K_BAR = [(556, 268), (632, 254), (665.4, 472), (632, 690), (556, 676), (588.1, 472)]
+K_CHEVRON = [(407.9, 293.6), (636.2, 472), (407.9, 650.4), (360.4, 587.9), (508.8, 472), (360.4, 356.1)]
+K_CENTRE, K_HEIGHT = (512.9, 472), 436
+
+def k_mark(cx, cy, height, color):
+    # the backward K, `height` px tall, its bounding box centred on (cx, cy)
+    s = height / K_HEIGHT
+    def path(shape):
+        return "M" + " L".join(f"{cx + s*(x - K_CENTRE[0]):.1f},{cy + s*(y - K_CENTRE[1]):.1f}" for x, y in shape) + " Z"
+    return (f'<path android:fillColor="{color}" android:pathData="{path(K_BAR)}"/>\n        '
+            f'<path android:fillColor="{color}" android:pathData="{path(K_CHEVRON)}"/>')
+
 HEART = "M712,690 c-26,-34 -78,-14 -64,26 c8,24 40,44 64,62 c24,-18 56,-38 64,-62 c14,-40 -38,-60 -64,-26 Z"
 
 def art(include_bg):
@@ -34,10 +49,7 @@ def art(include_bg):
         </aapt:attr>
     </path>''')
     p.append(f'<path android:fillColor="#FFFFFF" android:pathData="{circle(316,462,86)}"/>')
-    p.append('''<group android:translateX="259.8" android:translateY="399.5" android:scaleX="1.25" android:scaleY="1.25">
-        <path android:strokeColor="#5BBDAC" android:strokeWidth="17" android:strokeMiterLimit="4" android:strokeLineJoin="miter" android:pathData="M8,15 L61,50 L8,85"/>
-        <path android:fillColor="#5BBDAC" android:pathData="M60,-3 L77,-5 L80,50 L74,105 L56,103 L58,50 Z"/>
-    </group>''')
+    p.append(k_mark(316, 462, 132, "#5BBDAC"))
     p.append(f'<path android:fillColor="#EBFFFFFF" android:pathData="{rrect(440,420,320,36,18)}"/>')
     for (x, y, w) in ((440, 482, 200), (246, 598, 532), (246, 660, 380)):
         p.append(f'<path android:fillColor="#94FFFFFF" android:pathData="{rrect(x,y,w,36,18)}"/>')

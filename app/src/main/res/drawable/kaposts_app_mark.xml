@@ -21,10 +21,8 @@
         </aapt:attr>
     </path>
         <path android:fillColor="#FFFFFF" android:pathData="M230,462 a86,86 0 1,0 172,0 a86,86 0 1,0 -172,0 z"/>
-        <group android:translateX="259.8" android:translateY="399.5" android:scaleX="1.25" android:scaleY="1.25">
-        <path android:strokeColor="#5BBDAC" android:strokeWidth="17" android:strokeMiterLimit="4" android:strokeLineJoin="miter" android:pathData="M8,15 L61,50 L8,85"/>
-        <path android:fillColor="#5BBDAC" android:pathData="M60,-3 L77,-5 L80,50 L74,105 L56,103 L58,50 Z"/>
-    </group>
+        <path android:fillColor="#5BBDAC" android:pathData="M329.0,400.2 L352.1,396.0 L362.2,462.0 L352.1,528.0 L329.0,523.8 L338.8,462.0 Z"/>
+        <path android:fillColor="#5BBDAC" android:pathData="M284.2,408.0 L353.3,462.0 L284.2,516.0 L269.8,497.1 L314.8,462.0 L269.8,426.9 Z"/>
         <path android:fillColor="#EBFFFFFF" android:pathData="M458,420 h284 a18,18 0 0 1 18,18 v0 a18,18 0 0 1 -18,18 h-284 a18,18 0 0 1 -18,-18 v-0 a18,18 0 0 1 18,-18 z"/>
         <path android:fillColor="#94FFFFFF" android:pathData="M458,482 h164 a18,18 0 0 1 18,18 v0 a18,18 0 0 1 -18,18 h-164 a18,18 0 0 1 -18,-18 v-0 a18,18 0 0 1 18,-18 z"/>
         <path android:fillColor="#94FFFFFF" android:pathData="M264,598 h496 a18,18 0 0 1 18,18 v0 a18,18 0 0 1 -18,18 h-496 a18,18 0 0 1 -18,-18 v-0 a18,18 0 0 1 18,-18 z"/>

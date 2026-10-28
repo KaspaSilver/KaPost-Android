@@ -1261,4 +1261,5 @@
     <string name="chess_no_finished_duels">Belum ada game 1v1 yang selesai.</string>
     <string name="chess_no_finished_tournaments_this_month">Belum ada turnamen yang selesai bulan ini.</string>
     <string name="chess_no_finished_tournaments">Belum ada turnamen yang selesai.</string>
+    <string name="no_testnet_indexer_yet">Belum ada pengindeks testnet</string>
 </resources>

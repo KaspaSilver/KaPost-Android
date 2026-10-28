@@ -68,7 +68,9 @@ There is no welcome guide: the shell lifts the onboarding sync hold itself.
 - applicationId `com.kachat.kaposts` (`.debug` suffix on debug builds), URL scheme `kaposts`
 - Version: `app/build.gradle.kts` (`versionName`, `versionCode`, `kachatBuildNumber`)
 - Flavours as KaChat: `play` (store, reports plain "1.0") and `github` (handed-out APK, "1.0 (n)")
-- The launcher icon is a vector drawn from the iOS icon design: `scripts/make_app_icon.py`
+- The launcher icon is a vector drawn from the iOS icon design: `scripts/make_app_icon.py`; the
+  avatar's backward K is KaChat's own, traced from its icon (iOS KaPosts 499275c).
+  `app/src/main/ic_launcher-playstore.png` is iOS's light icon at 512 px
 
 ## Build
 
@@ -84,7 +86,13 @@ and store builds are the owner's.
 ## Protocol and servers
 
 Same as KaChat: payloads under `kchat:1:`, the KaChat indexer for KaPosts and Public Chats, the
-node pool for transactions. The protocol and server docs live in KaChat-iPhone
+node pool for transactions. The mainnet default for the indexer, KaPosts, Public Chats, push and
+translation is `https://indexer.kachat.app` (`AppSettingsRepository.DEFAULT_INDEXER_URL`). Its old
+name, `kachat.duckdns.org`, is the same server; settings saved on it read as the new one
+(`renamedIndexer`), and push sends no unregister for the rename. Links on the old name are no
+longer recognized (only `kachat.app` and `kachat://`). Testnet has no indexer (blank, so chat,
+push, KaPosts and Public Chats are off there); a saved `tnkachat.duckdns.org` reads as blank
+(iOS KaPosts ae0b025). The protocol and server docs live in KaChat-iPhone
 (`KAPOSTS_INDEXER.md`, `PUBLIC_CHATS_INDEXER.md`, `PUSH_EXTENSIONS.md`, `TRANSLATION_SERVICE.md`).
 
 Push needs a Firebase app for `com.kachat.kaposts` (`app/google-services.json`, gitignored) and the
