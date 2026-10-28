@@ -90,7 +90,9 @@ node pool for transactions. The protocol and server docs live in KaChat-iPhone
 Push needs a Firebase app for `com.kachat.kaposts` (`app/google-services.json`, gitignored) and the
 push service accepting it; until then KaPosts notifies through its in-app poller only. Registration
 sends `apns_topic` = the app id (`com.kachat.kaposts`, as iOS sends its bundle id) so the shared
-push service knows which app the token is for. Only KaPosts, public chat and .kachat name pushes
+push service knows which app the token is for. It watches no chat address (`watched_addresses`
+empty, main address only), so the push service sends it no chat messages; any chat push that
+comes anyway is ignored (`KaChatFirebaseMessagingService`). Only KaPosts, public chat and .kachat name pushes
 are shown; a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
 #kaspa and #kachat-bugs start with their bells on, once per account; an address receiving KAS
 never notifies (`AddressActivityNotifier`).

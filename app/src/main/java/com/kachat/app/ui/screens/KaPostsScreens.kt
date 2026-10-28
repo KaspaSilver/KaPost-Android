@@ -5099,81 +5099,83 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
                 // Avatar overlapping the banner, X-style, with a 3dp ring in the page
                 // background so it reads as sitting on top of the banner. The slot is
                 // only as tall as the part below the banner (82 - 38), so nothing under
-                // it has to be offset back up.
-                Box(modifier = Modifier.padding(start = 16.dp).height(44.dp)) {
-                    Box(
-                        modifier = Modifier
-                            .offset(y = (-38).dp)
-                            // Taller than the 44dp slot on purpose: unbounded, or size() is clamped to the slot
-                            // and the circle comes out a squashed pill.
-                            .wrapContentSize(Alignment.TopStart, unbounded = true)
-                            .size(82.dp)
-                            .clip(CircleShape)
-                            .background(colors.background),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        ContactAvatar(
-                            imageUrl = profileAvatarUrl,
-                            fallbackText = name,
-                            size = 76.dp,
-                            backupPhotoBase64 = profilePhoto?.backupPhotoBase64,
-                            // The .kachat avatar - your own in your header too (iOS 3d6fb7c).
-                            address = address,
-                        )
+                // it has to be offset back up. Someone else's Follow and Chat sit beside it,
+                // above the name, so a long name never squeezes them (iOS KaPosts 472cb72).
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(44.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(modifier = Modifier.height(44.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .offset(y = (-38).dp)
+                                // Taller than the 44dp slot on purpose: unbounded, or size() is clamped to the slot
+                                // and the circle comes out a squashed pill.
+                                .wrapContentSize(Alignment.TopStart, unbounded = true)
+                                .size(82.dp)
+                                .clip(CircleShape)
+                                .background(colors.background),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            ContactAvatar(
+                                imageUrl = profileAvatarUrl,
+                                fallbackText = name,
+                                size = 76.dp,
+                                backupPhotoBase64 = profilePhoto?.backupPhotoBase64,
+                                // The .kachat avatar - your own in your header too (iOS 3d6fb7c).
+                                address = address,
+                            )
+                        }
+                    }
+                    if (!isMine) {
+                        Spacer(Modifier.weight(1f))
+                        if (!isOwnAddress) {
+                            val isFollowing = address in following
+                            Button(
+                                onClick = {
+                                    hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                                    viewModel.toggleFollow(address, pubkey)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isFollowing) colors.textSecondary.copy(alpha = 0.35f) else KaspaTeal,
+                                    contentColor = if (isFollowing) colors.textPrimary else Color.Black,
+                                ),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.height(30.dp),
+                            ) {
+                                Text(if (isFollowing) "Following" else "Follow", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                        val chatContext = LocalContext.current
+                        OutlinedButton(
+                            onClick = {
+                                hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                                openChatInKaChat(chatContext, address)
+                            },
+                            border = androidx.compose.foundation.BorderStroke(1.dp, KaspaTeal.copy(alpha = 0.5f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = KaspaTeal),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(30.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Chat", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
                 }
                 Column(
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    // Name with the actions in a single row: name - Follow - Chat. Your
-                    // own profile carries the name alone (iOS).
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            name,
-                            color = colors.textPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                        if (!isMine) {
-                            Spacer(Modifier.weight(1f))
-                            if (!isOwnAddress) {
-                                val isFollowing = address in following
-                                Button(
-                                    onClick = {
-                                        hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-                                        viewModel.toggleFollow(address, pubkey)
-                                    },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (isFollowing) colors.textSecondary.copy(alpha = 0.35f) else KaspaTeal,
-                                        contentColor = if (isFollowing) colors.textPrimary else Color.Black,
-                                    ),
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(30.dp),
-                                ) {
-                                    Text(if (isFollowing) "Following" else "Follow", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                }
-                            }
-                            val chatContext = LocalContext.current
-                            OutlinedButton(
-                                onClick = {
-                                    hapticView.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-                                    openChatInKaChat(chatContext, address)
-                                },
-                                border = androidx.compose.foundation.BorderStroke(1.dp, KaspaTeal.copy(alpha = 0.5f)),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = KaspaTeal),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                modifier = Modifier.height(30.dp),
-                            ) {
-                                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Chat", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-                        }
-                    }
+                    Text(
+                        name,
+                        color = colors.textPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         val followingCount = if (isMine) following.size else posterProfile?.followingCount ?: 0
                         val followersCount = if (isMine) (myFollowersCount ?: 0) else posterProfile?.followersCount ?: 0

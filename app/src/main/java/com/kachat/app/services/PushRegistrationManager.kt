@@ -422,16 +422,12 @@ class PushRegistrationManager @Inject constructor(
         // Child Mode, like the KaPosts identity itself (iOS collectKaPostsWatchAuthors).
         val kaPostsWatchAuthors = if (childMode) emptyList() else kaPostsWatchStore.watchedPubkeys()
 
-        // Own address included alongside active contacts, matching iOS's collectWatchedAddresses
-        // — the server routes by SENDER (find_devices_watching), so without it a handshake from a
-        // not-yet-known sender could never be pushed.
-        val activeContacts = chatRepository.getContacts().first()
-            .filter { it.conversationStatus == "active" }
-        val watchedAddresses = (activeContacts.map { it.id } + walletAddress).distinct()
-        // The aliases INCOMING messages from these contacts carry (same aliases the message sync
-        // fetches with). Registering them narrows the server's alias filter to OUR conversations,
-        // so a contact's messages to OTHER people don't match us (iOS: knownIncomingAliases).
-        val aliases = collectIncomingAliases(activeContacts, privateKey)
+        // KaPost has no 1:1 chats, so it watches no chat address: watching one made the push
+        // service send that chat's messages here, as bare "New message" banners. It registers on
+        // its main address (primary_address) instead, and its KaPosts key and rooms ride along
+        // with it (iOS KaPosts 472cb72 collectWatchedAddresses). No contacts, so no aliases.
+        val watchedAddresses = emptyList<String>()
+        val aliases = emptyList<String>()
         val broadcastChannels = if (childMode) emptyList() else broadcastRepository.getNotifyEnabledChannelNames().first().toList()
         val hiddenSenders = collectHiddenBroadcastSenders(broadcastChannels)
         // Blinded group ids to be pushed for (per group, per other non-muted member) — iOS parity.
