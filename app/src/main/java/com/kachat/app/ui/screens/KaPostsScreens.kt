@@ -2908,23 +2908,20 @@ private fun EngagementRow(
     // them 18pt apart; each action here carries 4dp of touch padding either side of its icon,
     // which is already 8 of those 18, and the symbols' own frames run a little wider than these
     // glyphs, so a 10dp gap puts the icons as far apart as on the iPhone (measured side by side).
-    // The gap gives way first on narrow rows (10 -> 7 -> 4dp by available width), and only if
-    // that is still not enough does the row wrap to a second line, so nothing is ever clipped off
-    // the end. Tip keeps its intrinsic width throughout - iOS gives its label layoutPriority for
-    // the same reason.
-    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 2.dp)) {
-        val gap = when {
-            maxWidth >= 300.dp -> 10.dp
-            maxWidth >= 270.dp -> 7.dp
-            else -> 4.dp
-        }
+    // The gaps give way when the row's own contents don't fit - big counts beside Tip - rather
+    // than by screen width: 10, then 4, then 0dp, iOS's 18, 12 and 8pt (a714c97 ViewThatFits)
+    // once the 4dp touch padding is counted. Only if even that is not enough does the row wrap to
+    // a second line, so nothing is ever clipped off the end or pushes the post sideways. Tip keeps
+    // its intrinsic width throughout - iOS gives its label layoutPriority for the same reason.
+    Box(Modifier.fillMaxWidth().padding(top = 2.dp)) {
+        val gap = 10.dp
         Row(verticalAlignment = Alignment.CenterVertically) {
-            androidx.compose.foundation.layout.FlowRow(
+            FittingActionRow(
+                gaps = listOf(10.dp, 4.dp, 0.dp),
                 // iOS's buttons have no padding, so the comment bubble starts flush with the post
                 // text above it; pulled back by this row's 4dp touch padding to do the same.
                 modifier = Modifier.weight(1f).offset(x = (-4).dp),
-                horizontalArrangement = Arrangement.spacedBy(gap),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                lineSpacing = 2.dp,
             ) {
         if (onComment != null) {
             EngagementAction(
@@ -3101,6 +3098,61 @@ private fun EngagementRow(
             // once the K transaction is on the network (for a minute), spinner while submitting,
             // red Retry when it didn't go through (iOS).
             DeliveryState(post = post, onRetry = onRetry)
+        }
+    }
+}
+
+/**
+ * A post's action row: its items on one line with the widest of [gaps] that lets them all fit (iOS
+ * a714c97 `ViewThatFits` over 18, 12 and 8pt gaps), centred vertically. When even the last gap is
+ * too wide, it wraps onto further lines [lineSpacing] apart rather than run off the end.
+ */
+@Composable
+private fun FittingActionRow(
+    gaps: List<androidx.compose.ui.unit.Dp>,
+    modifier: Modifier = Modifier,
+    lineSpacing: androidx.compose.ui.unit.Dp = 0.dp,
+    content: @Composable () -> Unit,
+) {
+    androidx.compose.ui.layout.Layout(content = content, modifier = modifier) { measurables, constraints ->
+        val placeables = measurables.map { it.measure(constraints.copy(minWidth = 0, minHeight = 0)) }
+        val maxWidth = constraints.maxWidth
+        val widths = placeables.sumOf { it.width }
+        val between = (placeables.size - 1).coerceAtLeast(0)
+        val gapPx = gaps.map { it.roundToPx() }
+        val fitting = gapPx.firstOrNull { widths + it * between <= maxWidth }
+        val gap = fitting ?: gapPx.lastOrNull() ?: 0
+        // lines: all on one when a gap fits, else broken where the next item would overflow
+        val lines = mutableListOf<MutableList<androidx.compose.ui.layout.Placeable>>(mutableListOf())
+        var lineWidth = 0
+        for (p in placeables) {
+            val current = lines.last()
+            val needed = if (current.isEmpty()) p.width else lineWidth + gap + p.width
+            if (fitting == null && current.isNotEmpty() && needed > maxWidth) {
+                lines += mutableListOf(p)
+                lineWidth = p.width
+            } else {
+                current += p
+                lineWidth = needed
+            }
+        }
+        val spacing = lineSpacing.roundToPx()
+        val lineHeights = lines.map { line -> line.maxOfOrNull { it.height } ?: 0 }
+        val height = lineHeights.sum() + spacing * (lines.size - 1).coerceAtLeast(0)
+        val width = if (constraints.hasBoundedWidth) maxWidth else lines.maxOf { line ->
+            line.sumOf { it.width } + gap * (line.size - 1).coerceAtLeast(0)
+        }
+        layout(width, height.coerceIn(constraints.minHeight, constraints.maxHeight)) {
+            var y = 0
+            lines.forEachIndexed { i, line ->
+                var x = 0
+                val lineHeight = lineHeights[i]
+                for (p in line) {
+                    p.placeRelative(x, y + (lineHeight - p.height) / 2)
+                    x += p.width + gap
+                }
+                y += lineHeight + spacing
+            }
         }
     }
 }
