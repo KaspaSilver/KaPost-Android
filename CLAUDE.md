@@ -70,7 +70,9 @@ There is no welcome guide: the shell lifts the onboarding sync hold itself.
 - Flavours as KaChat: `play` (store, reports plain "1.0") and `github` (handed-out APK, "1.0 (n)")
 - The launcher icon is a vector drawn from the iOS icon design: `scripts/make_app_icon.py`; the
   avatar's backward K is KaChat's own, traced from its icon (iOS KaPosts 499275c).
-  `app/src/main/ic_launcher-playstore.png` is iOS's light icon at 512 px
+  `app/src/main/ic_launcher-playstore.png` is iOS's light icon at 512 px. The setup screen's logo is
+  the whole icon as one vector, light (`kaposts_app_mark`) and dark (`kaposts_app_mark_dark`, iOS
+  KaPostsLogo-dark); the welcome screen is dark in both themes, so it shows the dark one
 
 ## Build
 

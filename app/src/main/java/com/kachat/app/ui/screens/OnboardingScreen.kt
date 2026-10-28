@@ -345,8 +345,12 @@ fun WelcomeScreen(
                     // The icon as one picture (kaposts_app_mark), NOT R.mipmap.ic_launcher: on API 26+
                     // that id resolves to the adaptive-icon XML, which painterResource cannot
                     // load - it throws "Only VectorDrawables and rasterized asset types are
-                    // supported" and takes the whole welcome screen down with it.
-                    painter = painterResource(id = R.drawable.kaposts_app_mark),
+                    // supported" and takes the whole welcome screen down with it. The dark colours
+                    // get the icon's dark appearance (iOS KaPostsLogo-dark) - which is always, here:
+                    // this screen is dark in both themes, as iOS's OnboardingView is.
+                    painter = painterResource(
+                        id = if (LocalAppColors.current.isDark) R.drawable.kaposts_app_mark_dark else R.drawable.kaposts_app_mark
+                    ),
                     contentDescription = "KaPost logo",
                     modifier = Modifier.size(40.dp).clip(RoundedCornerShape(9.dp))
                 )
