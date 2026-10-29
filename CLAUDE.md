@@ -11,8 +11,8 @@ Kaspa address, used to sign and pay for every post, reply, like, follow and room
 
 The app is called **KaPost** wherever a person sees it: the launcher name (`app_name`, "KaPost
 APK" for the GitHub flavour), notification titles, every on-screen string and the translations
-(iOS KaPosts 4c0d5a8). The code, the package, the applicationId, the `kaposts://` scheme and log
-tags keep "KaPosts". Write "KaPost" in any new user-facing text.
+(iOS KaPosts 4c0d5a8). The code, the `kaposts://` scheme, the push topic and log tags keep
+"KaPosts". Write "KaPost" in any new user-facing text.
 
 The source started as a copy of KaChat-Android (`KaspaSilver/KaChat-Android`) at commit `9289fad8`
 (5.2.2 build 7, 2026-10-22), the point where KaChat-Android matched KaChat-iPhone `8b31f71`, which
@@ -65,7 +65,9 @@ There is no welcome guide: the shell lifts the onboarding sync hold itself.
 
 ## Identifiers
 
-- applicationId `com.kachat.kaposts` (`.debug` suffix on debug builds), URL scheme `kaposts`
+- applicationId `kapost.kachat.app` (`.debug` suffix on debug builds), the package registered for
+  KaPost in Play Console; it can never change once a bundle is uploaded. The iPhone app's bundle is
+  `com.kachat.kaposts`. URL scheme `kaposts`
 - Version: `app/build.gradle.kts` (`versionName`, `versionCode`, `kachatBuildNumber`)
 - Flavours as KaChat: `play` (store, reports plain "1.0") and `github` (handed-out APK, "1.0 (n)")
 - The launcher icon is a vector drawn from the iOS icon design: `scripts/make_app_icon.py`; the
@@ -133,10 +135,12 @@ push, KaPosts and Public Chats are off there); a saved `tnkachat.duckdns.org` re
 (iOS KaPosts ae0b025). The protocol and server docs live in KaChat-iPhone
 (`KAPOSTS_INDEXER.md`, `PUBLIC_CHATS_INDEXER.md`, `PUSH_EXTENSIONS.md`, `TRANSLATION_SERVICE.md`).
 
-Push needs a Firebase app for `com.kachat.kaposts` (`app/google-services.json`, gitignored) and the
-push service accepting it; until then KaPosts notifies through its in-app poller only. Registration
-sends `apns_topic` = the app id (`com.kachat.kaposts`, as iOS sends its bundle id) so the shared
-push service knows which app the token is for. It watches no chat address (`watched_addresses`
+Push needs the Firebase Android apps `kapost.kachat.app` and `kapost.kachat.app.debug` in project
+`kachat-fc22a` (`app/google-services.json`, gitignored) and the push service accepting them; without
+it KaPosts notifies through its in-app poller only. Registration sends `apns_topic` =
+`com.kachat.kaposts` (`PushRegistrationManager.KAPOSTS_APNS_TOPIC`, the iPhone app's bundle id, which
+iOS sends) whatever the Android package is, so the shared push service knows which app the token is
+for. It watches no chat address (`watched_addresses`
 empty, main address only), so the push service sends it no chat messages; any chat push that
 comes anyway is ignored (`KaChatFirebaseMessagingService`). Only KaPosts and public chat pushes
 are shown: KaPost has no notifications about domains. `.kachat` name pushes (`name_event`, routed

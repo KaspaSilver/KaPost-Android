@@ -10,9 +10,10 @@ Push stays **inactive until you add `app/google-services.json`** — the app sti
 
 ## 1. One-time Firebase setup
 
-1. In the [Firebase console](https://console.firebase.google.com), create/open your project and
-   **add an Android app** with package name **`com.kachat.app`**.
-   - For debug builds, also add **`com.kachat.app.debug`** (the debug `applicationIdSuffix`).
+1. In the [Firebase console](https://console.firebase.google.com), open project **`kachat-fc22a`**
+   (it serves every KaChat app's push) and **add an Android app** with package name
+   **`kapost.kachat.app`**.
+   - For debug builds, also add **`kapost.kachat.app.debug`** (the debug `applicationIdSuffix`).
 2. Download **`google-services.json`** and drop it at **`app/google-services.json`**.
    It is gitignored (per-operator config) — every developer/build machine adds their own.
 3. The **server side** (Firebase project id + service-account key) is set up separately — see
@@ -37,6 +38,9 @@ With `google-services.json` present, the `com.google.gms.google-services` plugin
   (the exact `kasia-push-auth:v1` / LegacyV1 shape the server verifies). It runs on wallet
   unlock / account switch (from `WalletViewModel`) and whenever FCM rotates the token
   (`onNewToken`).
+- Registration sends `apns_topic` = **`com.kachat.kaposts`** (the iPhone app's bundle id,
+  `PushRegistrationManager.KAPOSTS_APNS_TOPIC`), not the Android package, so the shared push service
+  knows the token is KaPosts'.
 - The push host is `AppSettingsRepository.kapostIndexerUrl` (default `https://indexer.kachat.app`),
   reached via a new `NetworkService.pushApi` Retrofit client.
 - **`POST_NOTIFICATIONS`** is requested at runtime in `MainActivity` (required on Android 13+).

@@ -84,11 +84,15 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.kachat.kaposts"
+        // KaPost's own package, the one registered for it in Play Console (the iPhone app's
+        // bundle is com.kachat.kaposts; push still names the app that way, see
+        // PushRegistrationManager). The Kotlin namespace stays com.kachat.app so the code still
+        // lines up with KaChat-Android's for porting fixes across.
+        applicationId = "kapost.kachat.app"
         minSdk = 26
         targetSdk = 36
         // ---- Version ----
-        // KaPosts 1.0, its own app (com.kachat.kaposts) split out of KaChat 5.2.2 - the same
+        // KaPosts 1.0, its own app (kapost.kachat.app) split out of KaChat 5.2.2 - the same
         // train the iPhone app runs (KaPosts/Version.xcconfig).
         //
         // KACHAT_BUILD_NUMBER is the number people see: About and the crash and diagnostics
