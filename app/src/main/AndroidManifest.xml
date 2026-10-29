@@ -55,8 +55,8 @@
          KaPosts 4c0d5a8): Android 11+ only hands out another app's launch intent for a package
          listed here. -->
     <queries>
-        <package android:name="com.kachat.wallet" />
-        <package android:name="com.kachat.wallet.debug" />
+        <package android:name="kapay.kachat.app" />
+        <package android:name="kapay.kachat.app.debug" />
     </queries>
 
     <application

@@ -31,7 +31,7 @@ What is still KaChat-shaped underneath:
 - `.kachat` names: the services, the profile editor and the name screens are kept; only the
   profile editor and the Wallet's Domains tab reach them. The Domains tab
   (`KaPostAddressDomainsTab`) only lists the names: registering, renewing, selling and editing
-  them is KaChat Wallet's, which its button opens (`com.kachat.wallet`, listed in the manifest's
+  them is KaChat Wallet's, which its button opens (KaPay, `kapay.kachat.app`, listed in the manifest's
   `<queries>`). `.kachat` is the
   only name service KaPosts reads: KNS (.kas), dotk (.k) and Kaspa Names (.kaspa) are switched
   off at their entry points (`KnsService.IS_ENABLED`, `NameServicesClient.OTHER_SERVICES_ENABLED`),
@@ -138,21 +138,20 @@ push, KaPosts and Public Chats are off there); a saved `tnkachat.duckdns.org` re
 Push needs the Firebase Android apps `kapost.kachat.app` and `kapost.kachat.app.debug` in project
 `kachat-fc22a` (`app/google-services.json`, gitignored) and the push service accepting them; without
 it KaPosts notifies through its in-app poller only. Registration sends `apns_topic` =
-`com.kachat.kaposts` (`PushRegistrationManager.KAPOSTS_APNS_TOPIC`, the iPhone app's bundle id, which
-iOS sends) whatever the Android package is, so the shared push service knows which app the token is
-for. It watches no chat address (`watched_addresses`
+`kapost.kachat.app`, the app's package (the iPhone app sends `com.kachat.kaposts`), so the shared push
+service knows which app the token is for. It watches no chat address (`watched_addresses`
 empty, main address only), so the push service sends it no chat messages; any chat push that
 comes anyway is ignored (`KaChatFirebaseMessagingService`). Only KaPosts and public chat pushes
 are shown: KaPost has no notifications about domains. `.kachat` name pushes (`name_event`, routed
 here by `primary_address`) are dropped, nothing runs `KachatNamesNotifier`, and the renewal
 reminders an earlier build scheduled are cancelled at launch (`KachatNameReminders.cancelAll`). A
 name push FCM draws by itself (one sent with a `notification` block) can only be stopped by the
-push service skipping `name_event` for `com.kachat.kaposts`; a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
+push service skipping `name_event` for `kapost.kachat.app` (and the iPhone app's `com.kachat.kaposts`); a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
 #kaspa and #kachat-bugs start with their bells on, once per account; an address receiving KAS
 never notifies (`AddressActivityNotifier`).
 
 Payment requests (`kachat://pay/...`, `https://kachat.app/pay/...`) are paid in KaPay, KaChat's
-wallet app (KaChat-Wallet-Android, `com.kachat.wallet`): a post shows the link as a card
+wallet app (KaChat-Wallet-Android, `kapay.kachat.app`): a post shows the link as a card
 (`KaPostPaymentRequestCard`), and a tap, a pasted link or one opened from outside goes through
 `PaymentRequestSheetHost`, which opens `kapay://pay/<same tail>` (`KaPayHandoff`). Your own request
 and a chat-payment request (`chat=1`, an encrypted chat payment KaPay can't make) open here.

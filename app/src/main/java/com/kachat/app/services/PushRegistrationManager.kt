@@ -525,10 +525,9 @@ class PushRegistrationManager @Inject constructor(
                     kaPostsNotifyReposts = kaPostsKinds.reposts,
                     kaPostsNotifyFollows = kaPostsKinds.follows,
                     kaPostsWatchAuthors = kaPostsWatchAuthors,
-                    // The push service knows KaPosts as com.kachat.kaposts, the iPhone app's
-                    // bundle (iOS sends its bundle id). The Android package is
-                    // kapost.kachat.app, so the topic is named outright rather than taken from it.
-                    apnsTopic = KAPOSTS_APNS_TOPIC,
+                    // The app's own package (kapost.kachat.app, debug builds included), so the
+                    // push service knows the token is KaPost's.
+                    apnsTopic = context.packageName.removeSuffix(".debug"),
                     auth = auth,
                 )
             )
@@ -759,8 +758,6 @@ class PushRegistrationManager @Inject constructor(
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     companion object {
-        /** KaPosts' name on the push service (`apns_topic`, the iOS repo's PUSH_EXTENSIONS.md). */
-        const val KAPOSTS_APNS_TOPIC = "com.kachat.kaposts"
 
         /**
          * The push service this device must leave before registering at [currentBase]: the base

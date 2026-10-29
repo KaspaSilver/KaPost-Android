@@ -38,9 +38,8 @@ With `google-services.json` present, the `com.google.gms.google-services` plugin
   (the exact `kasia-push-auth:v1` / LegacyV1 shape the server verifies). It runs on wallet
   unlock / account switch (from `WalletViewModel`) and whenever FCM rotates the token
   (`onNewToken`).
-- Registration sends `apns_topic` = **`com.kachat.kaposts`** (the iPhone app's bundle id,
-  `PushRegistrationManager.KAPOSTS_APNS_TOPIC`), not the Android package, so the shared push service
-  knows the token is KaPosts'.
+- Registration sends `apns_topic` = **`kapost.kachat.app`** (the app's package; the iPhone app sends
+  `com.kachat.kaposts`), so the shared push service knows the token is KaPost's.
 - The push host is `AppSettingsRepository.kapostIndexerUrl` (default `https://indexer.kachat.app`),
   reached via a new `NetworkService.pushApi` Retrofit client.
 - **`POST_NOTIFICATIONS`** is requested at runtime in `MainActivity` (required on Android 13+).

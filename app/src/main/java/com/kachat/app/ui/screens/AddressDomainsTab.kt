@@ -317,8 +317,8 @@ private fun AddressDomainServiceNames(address: String, tld: NameServiceTLD, vm: 
     }
 }
 
-/** KaChat Wallet's app id (its debug build adds ".debug"), for the Domains tab's Open button. */
-private const val KACHAT_WALLET_PACKAGE = "com.kachat.wallet"
+/** KaPay's app id (its debug build adds ".debug"), for the Domains tab's Open button. */
+private const val KACHAT_WALLET_PACKAGE = "kapay.kachat.app"
 
 /**
  * A wallet's Domains tab in KaPost: the `.kachat` names the address holds, to look at only. Names

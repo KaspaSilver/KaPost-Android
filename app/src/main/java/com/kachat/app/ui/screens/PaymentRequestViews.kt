@@ -155,7 +155,7 @@ object PaymentRequestPaste {
 }
 
 /**
- * Someone else's payment request is paid in KaPay (KaChat's wallet app, `com.kachat.wallet`): it
+ * Someone else's payment request is paid in KaPay (KaChat's wallet app, `kapay.kachat.app`): it
  * opens there on Send, filled in, through KaPay's own scheme (`kapay://pay/...`, the same tail as
  * `kachat://pay/`). Two stay here: your own (nothing to pay - [OwnPaymentRequestSheet]), and one
  * asking for a chat payment ([PaymentRequest.toChattingAddress], made in a KaChat 1:1 chat), paid
@@ -167,7 +167,7 @@ object KaPayHandoff {
     const val SCHEME = "kapay"
 
     /** Where a request goes when KaPay isn't installed. KaPay isn't listed yet, so this is a Play
-     *  Store search for it; swap in its page (`details?id=com.kachat.wallet`) once it is (iOS
+     *  Store search for it; swap in its page (`details?id=kapay.kachat.app`) once it is (iOS
      *  `appStoreURL`). */
     const val STORE_URL = "market://search?q=KaPay&c=apps"
     private const val STORE_WEB_URL = "https://play.google.com/store/search?q=KaPay&c=apps"
