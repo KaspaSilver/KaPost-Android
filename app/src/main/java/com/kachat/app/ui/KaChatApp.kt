@@ -684,6 +684,7 @@ fun MainShell(
                         fun goToDockTab(screen: Screen) {
                             // Every KaPosts full-screen screen closes, so the tab is what shows.
                             com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
+                            com.kachat.app.ui.screens.KaPostsDock.tabTapped(screen)
                             val onOwnRoute = currentDestination?.hierarchy?.any { it.route == screen.route } == true
                             if (onOwnRoute) {
                                 walletViewModel.notifyTabReselected(screen.route)
@@ -889,6 +890,7 @@ fun MainShell(
                                                 // Every KaPosts full-screen screen closes, so the tab is
                                                 // what shows (iOS `.kaPostsCloseCovers`).
                                                 com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
+                                                com.kachat.app.ui.screens.KaPostsDock.tabTapped(screen)
                                                 // Already there — let that screen know it was re-tapped (so it can
                                                 // dismiss its own transient UI, e.g. a full-screen QR overlay) rather
                                                 // than running the popBackStack/navigate logic below, which for a tab
@@ -979,26 +981,10 @@ fun MainShell(
                                                 }
                                             }
                                             Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
+                                            // 10sp, shrinking only to fit its slot (iOS's tab bar).
+                                            com.kachat.app.ui.screens.DockTabLabel(
                                                 text = screen.label,
                                                 color = if (selected) KaspaTeal else LocalAppColors.current.textPrimary,
-                                                // Longer labels ("Public Chats") don't fit at 10sp once there are
-                                                // enough tabs that each weight(1f) slot narrows below their natural
-                                                // width — shrink just those instead of letting them clip/wrap and
-                                                // get cut off by the fixed-height Box. Twelve characters need a third
-                                                // step: at six tabs on a 320dp screen a slot is ~53dp, which 8sp
-                                                // would run past, and softWrap = false clips rather than wraps.
-                                                fontSize = when {
-                                                    screen.label.length > 11 -> 7.sp
-                                                    screen.label.length > 9 -> 8.sp
-                                                    else -> 10.sp
-                                                },
-                                                maxLines = 1,
-                                                softWrap = false,
-                                                overflow = TextOverflow.Ellipsis,
-                                                // iOS 26's tab labels are medium weight, selected or not -
-                                                // only the colour marks the selected tab.
-                                                fontWeight = FontWeight.Medium
                                             )
                                         }
                                     }

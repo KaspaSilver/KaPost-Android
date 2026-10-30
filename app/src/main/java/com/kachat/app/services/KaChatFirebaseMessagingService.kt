@@ -115,14 +115,15 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
                         notificationHelper.showKaPosts(
                             text = body.ifEmpty { title },
                             actionTxId = txId,
-                            // A reply targets the reply ITSELF, as the foreground poller does:
-                            // the landing rule then opens its parent's thread with the reply
-                            // spliced in and scrolled to - even before the indexer's reply page
-                            // has it. Anything else opens the post that was acted on.
+                            // A reply or a quote targets the action ITSELF, as the foreground
+                            // poller does: the landing rule then opens its parent's thread with
+                            // it spliced in and scrolled to - even before the indexer's reply
+                            // page has it (iOS 093fe4d). Anything else opens the post that was
+                            // acted on.
                             postTxId = txId.takeIf {
-                                it.isNotBlank() && postTxId != null &&
-                                    com.kachat.app.ui.screens.KaPostsDeepLink.isReplyPush(data["kaposts_kind"], body)
-                            } ?: postTxId,
+                                com.kachat.app.ui.screens.KaPostsDeepLink.isTxId(it) &&
+                                    com.kachat.app.ui.screens.KaPostsDeepLink.pushOpensAction(data["kaposts_kind"], body)
+                            }?.lowercase() ?: postTxId,
                         )
                     }
 

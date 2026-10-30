@@ -208,9 +208,11 @@ fun MainPageHeader(
             .background(colors.background)
             .statusBarsPadding(),
     ) {
-        // iOS's bar: leading items, the balance as the principal item (see IosToolbarRow),
-        // trailing items on one piece of glass, then the green connection dot top right - iOS
-        // KaPosts moved it right on every screen, leaving the left side to Back (865c9ab).
+        // iOS's bar: leading items, the balance as the principal item (see IosToolbarRow), then
+        // the trailing items and the green connection dot top right on one piece of glass - iOS
+        // 26 groups neighbouring items into one capsule ("Select" and the dot on Public Chats), a
+        // lone dot on its own disc. iOS KaPosts moved the dot right on every screen, leaving the
+        // left side to Back (865c9ab).
         IosToolbarRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -227,12 +229,11 @@ fun MainPageHeader(
             },
             principal = { if (showStatus) BalanceTopBarLabel() },
             trailing = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    ToolbarGlassGroup(content = actions)
-                    if (showStatus && showsConnectionDot) ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
+                ToolbarGlassGroup {
+                    actions()
+                    if (showStatus && showsConnectionDot) {
+                        ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() }, ownGlass = false)
+                    }
                 }
             },
         )

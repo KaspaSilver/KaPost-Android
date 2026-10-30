@@ -101,8 +101,8 @@ android {
         //
         // versionCode only ever goes up (Play's high-water mark is permanent and per app), so it
         // goes up with every handed-out build too, alongside the build number.
-        val kachatBuildNumber = 2
-        versionCode = 2
+        val kachatBuildNumber = 3
+        versionCode = 3
         versionName = "1.0"
         buildConfigField("int", "KACHAT_BUILD_NUMBER", kachatBuildNumber.toString())
         // KACHAT_IS_RELEASE is set per flavour below rather than once here, because on Android the
@@ -121,26 +121,28 @@ android {
     }
 
     signingConfigs {
-        if (keystorePropertiesFile.exists()) {
+        // Each key is optional on its own: keystore.properties may hold only the Play upload key
+        // (KaPost's does), and then the GitHub APK keeps the debug key it has always had.
+        if (keystoreProperties.getProperty("storeFile") != null) {
             create("release") {
                 storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
             }
-            // The Play upload key, which is NOT the key the GitHub APK is signed with: Play
-            // knows the app by the certificate of its first upload, and an APK already installed
-            // from GitHub can only be updated by something signed the same way as itself. So the
-            // play flavour's release build is signed with this one (see androidComponents below)
-            // and everything else keeps the key above. Optional: a checkout without it still
-            // builds the GitHub APK.
-            if (keystoreProperties.getProperty("uploadStoreFile") != null) {
-                create("upload") {
-                    storeFile = rootProject.file(keystoreProperties.getProperty("uploadStoreFile"))
-                    storePassword = keystoreProperties.getProperty("uploadStorePassword")
-                    keyAlias = keystoreProperties.getProperty("uploadKeyAlias")
-                    keyPassword = keystoreProperties.getProperty("uploadKeyPassword")
-                }
+        }
+        // The Play upload key, which is NOT the key the GitHub APK is signed with: Play
+        // knows the app by the certificate of its first upload, and an APK already installed
+        // from GitHub can only be updated by something signed the same way as itself. So the
+        // play flavour's release build is signed with this one (see androidComponents below)
+        // and everything else keeps the key above. Optional: a checkout without it still
+        // builds the GitHub APK.
+        if (keystoreProperties.getProperty("uploadStoreFile") != null) {
+            create("upload") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("uploadStoreFile"))
+                storePassword = keystoreProperties.getProperty("uploadStorePassword")
+                keyAlias = keystoreProperties.getProperty("uploadKeyAlias")
+                keyPassword = keystoreProperties.getProperty("uploadKeyPassword")
             }
         }
     }
@@ -152,10 +154,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
-            if (keystorePropertiesFile.exists()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
         debug {
             isDebuggable = true

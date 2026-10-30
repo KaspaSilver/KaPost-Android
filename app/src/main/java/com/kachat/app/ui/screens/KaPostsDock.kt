@@ -26,9 +26,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -70,10 +74,49 @@ object KaPostsDock {
     /** A tab tapped on the copy, for MainShell to select. */
     val tabRequests = MutableSharedFlow<Screen>(extraBufferCapacity = 1)
 
+    /**
+     * The Feed tab tapped on either dock, whether it was already showing or you came from another
+     * tab: the feed goes back to its top (iOS 45de945 `.kaPostsScrollFeedToTop`). A flag rather
+     * than an event, so it still lands when the feed is composed only after the tap.
+     */
+    val scrollFeedToTop = MutableStateFlow(false)
+
+    /** A tab tapped on either dock (iOS `KaPostsDockRouter.select`). */
+    fun tabTapped(screen: Screen) {
+        if (screen == Screen.KaPosts) scrollFeedToTop.value = true
+    }
+
     fun select(screen: Screen) {
         closeCovers.tryEmit(Unit)
+        tabTapped(screen)
         tabRequests.tryEmit(screen)
     }
+}
+
+/**
+ * A dock tab's label: 10sp medium, as iOS's tab bar, shrinking only when it does not fit its slot
+ * (iOS shrinks a label to fit rather than by its length - "Notifications" stays 10 where there is
+ * room for it). Medium weight selected or not: only the colour marks the selected tab.
+ */
+@Composable
+fun DockTabLabel(text: String, color: Color) {
+    var fontSize by remember(text) { mutableStateOf(10.sp) }
+    var fits by remember(text) { mutableStateOf(false) }
+    Text(
+        text = text,
+        color = color,
+        fontSize = fontSize,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip,
+        fontWeight = FontWeight.Medium,
+        onTextLayout = { layout ->
+            if (layout.didOverflowWidth && fontSize.value > 7f) fontSize = (fontSize.value - 0.5f).sp
+            else fits = true
+        },
+        // Nothing is drawn while it is still shrinking, so no frame shows it clipped.
+        modifier = Modifier.drawWithContent { if (fits) drawContent() },
+    )
 }
 
 /** The dock's height, as MainShell's real one. */
@@ -200,18 +243,9 @@ fun BoxScope.KaPostsDockCopy() {
                             }
                         }
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(
+                        DockTabLabel(
                             text = screen.label,
                             color = if (selected) KaspaTeal else colors.textPrimary,
-                            fontSize = when {
-                                screen.label.length > 11 -> 7.sp
-                                screen.label.length > 9 -> 8.sp
-                                else -> 10.sp
-                            },
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                            fontWeight = FontWeight.Medium,
                         )
                     }
                 }

@@ -87,6 +87,13 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 Claude may build debug variants and run them on an emulator. Release signing (`keystore.properties`)
 and store builds are the owner's.
 
+Signing: the GitHub APK (`assembleGithubRelease`) has always been signed with the debug key, so
+installed copies keep updating in place. The Play bundle (`bundlePlayRelease`) is signed with the
+upload key `kapost-upload.jks` (alias `kapost-upload`, made 2026-10-30, SHA-256 AD:08:55:92:...),
+named in `keystore.properties` as `uploadStoreFile`. Both files are gitignored and exist only on the
+owner's Mac: back them up together. Once the first bundle is uploaded, Play takes updates only
+signed with this key, and losing it means asking Play support to reset the upload key.
+
 ## Sending Kaspa
 
 Every send is the step-by-step flow iOS KaPosts took from KaPay (da3e953: `WithdrawKaspaView`,

@@ -379,6 +379,12 @@ fun BroadcastListScreen(
                     LaunchedEffect(last?.senderAddress) {
                         last?.senderAddress?.let { broadcastViewModel.ensureSenderProfileFetched(it) }
                     }
+                    // iOS's List separator, inset to the room name (16 + the 50 avatar + 12).
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 78.dp, end = 16.dp),
+                        color = LocalAppColors.current.divider,
+                        thickness = 0.5.dp,
+                    )
                     PublicChatRow(
                         channelName = channel.channelName,
                         notifyOff = !channel.notifyEnabled,
@@ -745,7 +751,8 @@ private fun PublicChatRow(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            // iOS: the row's 4 inside a List row's own insets, 88pt from one room to the next.
+            .padding(horizontal = 16.dp, vertical = 19.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (selected != null) {
@@ -768,8 +775,9 @@ private fun PublicChatRow(
                 Text(
                     "#$channelName",
                     color = colors.textPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
+                    // iOS .headline
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 17.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
@@ -781,12 +789,13 @@ private fun PublicChatRow(
                 Spacer(Modifier.weight(1f))
                 if (timeText != null) Text(timeText, color = colors.textSecondary, fontSize = 12.sp)
             }
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     preview ?: emptyText,
                     color = colors.textSecondary,
-                    fontSize = 14.sp,
+                    // iOS .subheadline
+                    fontSize = 15.sp,
                     fontStyle = if (preview == null) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -794,23 +803,18 @@ private fun PublicChatRow(
                 )
                 if (unread > 0) {
                     Spacer(Modifier.width(8.dp))
-                    // The same badge the Chats and Group Chats rows carry: a teal circle with the
-                    // count in white, the number itself uncapped (only the tab badges say 99+) -
-                    // iOS draws all three lists' badges from one piece of code.
-                    Box(
+                    // iOS PublicChatRow's badge: the count in white caption2 bold on a teal
+                    // capsule, 6 either side and 2 above and below, the number uncapped (only
+                    // the tab badges say 99+).
+                    Text(
+                        unread.toString(),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
                         modifier = Modifier
-                            .defaultMinSize(minWidth = 24.dp, minHeight = 24.dp)
-                            .background(KaspaTeal, CircleShape)
-                            .padding(horizontal = 6.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            unread.toString(),
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                        )
-                    }
+                            .background(KaspaTeal, RoundedCornerShape(percent = 50))
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
                 }
             }
         }
@@ -1146,8 +1150,8 @@ fun BroadcastChannelScreen(
                     Spacer(Modifier.weight(1f))
                     // A room you made yourself: what "public" does and does not mean here. Rooms
                     // the indexer tracks keep their history there, so they need no such warning
-                    // (iOS ac34790, 21c480d). iOS 26 puts neighbouring trailing items on one
-                    // piece of glass, a lone bell on its own disc.
+                    // (iOS ac34790, 21c480d). iOS 26 puts neighbouring trailing items - the
+                    // bell and the connection dot - on one piece of glass.
                     ToolbarGlassGroup {
                         if (!isIndexedRoom) {
                             ToolbarIconButton(Icons.Outlined.Info, "About this room", onClick = { showOwnRoomExplainer = true })
@@ -1159,9 +1163,8 @@ fun BroadcastChannelScreen(
                             if (roomNotifyEnabled) "Notifications on" else "Notifications off",
                             onClick = { showNotifySheet = true },
                         )
+                        ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() }, ownGlass = false)
                     }
-                    Spacer(Modifier.width(8.dp))
-                    ConnectionDotButton(onClick = { ConnectionStatusOverlayState.open() })
                 }
                 // iOS PublicChatRoomTitleChip: the 1:1/group header chip measure for measure, the
                 // circle carrying the room glyph (accent at 20%, "number" 18 semibold) where they

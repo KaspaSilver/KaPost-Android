@@ -282,12 +282,19 @@ object KaPostsDeepLink {
     val pendingPostTxId = MutableStateFlow<String?>(null)
 
     /**
-     * Whether a KaPosts push is a reply, so its own transaction id is the comment a tap should
-     * land on inside the post's thread rather than just the top of it. Read from the push's
+     * Whether a tap on a KaPosts push opens the action itself - a reply or a quote - rather than
+     * the post it was made on (iOS 093fe4d `kaPostsPushOpensAction`): the landing rule opens its
+     * parent's thread with it already in, before the indexer lists it. Read from the push's
      * `kaposts_kind` when the server sends one, and otherwise from its server-written wording.
      */
-    fun isReplyPush(kind: String?, body: String?): Boolean =
-        kind == "reply" || (kind == null && body.orEmpty().lowercase().contains("replied to your"))
+    fun pushOpensAction(kind: String?, body: String?): Boolean {
+        if (kind != null) return kind == "reply" || kind == "quote"
+        val lowered = body.orEmpty().lowercase()
+        return lowered.contains("replied to your") || lowered.contains("quoted your")
+    }
+
+    /** A post or an action is a transaction id: 64 hex characters. */
+    fun isTxId(value: String?): Boolean = value != null && value.length == 64 && value.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
 
     /** For reply notifications: the reply's own txid, so the opened PARENT thread (which is
      *  what [pendingPostTxId] carries) can scroll to the new comment. */
@@ -801,6 +808,17 @@ private fun KaPostsFeedScreen(
     val popularListState = rememberLazyListState()
     val feedListStates = remember(followingListState, feedListState, popularListState) {
         listOf(followingListState, feedListState, popularListState)
+    }
+    // Feed tapped on a dock: back to the top of the feed being read (iOS 45de945). Collected
+    // rather than keyed on, since clearing the flag would restart a keyed effect and cancel the
+    // scroll it had just begun.
+    LaunchedEffect(rootMode) {
+        if (rootMode != KaPostsRootMode.FEED) return@LaunchedEffect
+        KaPostsDock.scrollFeedToTop.collect { pending ->
+            if (!pending) return@collect
+            KaPostsDock.scrollFeedToTop.value = false
+            feedListStates[feedPagerState.currentPage].animateScrollToItem(0)
+        }
     }
     // Two-way sync. Each direction no-ops once the other has caught up, so they can't ping-pong:
     // a swipe selects the tab (which then finds the pager already there), a tab tap animates the
@@ -1777,14 +1795,19 @@ private fun ancestorsFromMemory(
  * repaint this 32dp circle only, instead of recomposing the whole KaPosts screen body.
  */
 @Composable
-internal fun ConnectionDotButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun ConnectionDotButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** False inside a [ToolbarGlassGroup], which iOS 26 draws as one capsule with its neighbours. */
+    ownGlass: Boolean = true,
+) {
     val colors = LocalAppColors.current
     val dotColorHex by hiltViewModel<com.kachat.app.viewmodels.ConnectionViewModel>().dotColorHex.collectAsState()
     // iOS ConnectionStatusIndicator as a toolbar item: a 44pt glass disc, a 12pt status dot.
     Box(
         modifier = modifier
             .size(44.dp)
-            .toolbarGlass()
+            .then(if (ownGlass) Modifier.toolbarGlass() else Modifier)
             .clip(CircleShape)
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
@@ -2826,12 +2849,13 @@ private fun QuotedEmbedCard(
                 size = avatarSize,
                 address = quoted.posterAddress,
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = displayName,
                 color = colors.textPrimary,
+                // iOS caption bold
                 fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
@@ -2839,13 +2863,14 @@ private fun QuotedEmbedCard(
             // No time on a quoted card's name line - the quote is context, and its own card
             // carries the moment it was written (iOS b31ff59).
         }
-        Spacer(modifier = Modifier.height(3.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         Text(
             // Styled markdown preview, links inert. A plain repost has no text and renders as
             // an empty body, as on iOS.
             text = remember(quoted.text) { markdownPreview(quoted.text) },
             color = colors.textPrimary,
-            fontSize = 14.sp,
+            // iOS subheadline
+            fontSize = 15.sp,
             maxLines = 5,
             overflow = TextOverflow.Ellipsis,
         )
@@ -5056,9 +5081,10 @@ private fun KaPostsProfileHeaderButton(title: String, icon: ImageVector, onClick
             .padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(16.dp))
+        // iOS profileHeaderButtonLabel: subheadline semibold, the symbol at the text's size.
+        Icon(icon, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(17.dp))
         Spacer(Modifier.width(6.dp))
-        Text(title, color = KaspaTeal, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text(title, color = KaspaTeal, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
     }
 }
 
@@ -5357,24 +5383,27 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
                     } else {
                         // Your own profile says whose posts these would be; another
                         // person's carries the title alone (iOS).
+                        // iOS profileFeedPage: square.and.pencil or bubble.left at 40, the title
+                        // in headline and the line under it in subheadline, 12 apart.
                         Icon(
-                            if (repliesPage) Icons.Outlined.ChatBubbleOutline else Icons.Default.Edit,
+                            if (repliesPage) Icons.Outlined.ChatBubbleOutline else SquareAndPencil,
                             contentDescription = null,
                             tint = colors.textSecondary,
-                            modifier = Modifier.size(44.dp),
+                            modifier = Modifier.size(40.dp),
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             if (repliesPage) "No replies yet" else "No posts yet",
                             color = colors.textPrimary,
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 17.sp,
                         )
                         if (isMine) {
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
                             Text(
                                 if (repliesPage) "Replies you post will show up here." else "Your posts will show up here.",
                                 color = colors.textSecondary,
-                                fontSize = 13.sp,
+                                fontSize = 15.sp,
                                 textAlign = TextAlign.Center,
                             )
                         }
@@ -5751,19 +5780,19 @@ private fun KaPostsNotificationsList(
             // Wrapped in a LazyColumn purely so the empty state can be pulled to refresh too.
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 item {
+                    // iOS emptyState: 120 below the top, a 40pt bell, "Nothing yet" in headline and
+                    // the line under it in subheadline, 12 apart, the line 40 in from each side.
                     Column(
-                        modifier = Modifier.fillParentMaxSize().padding(horizontal = 40.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 120.dp, start = 40.dp, end = 40.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Icon(Icons.Default.NotificationsNone, null, tint = colors.textSecondary, modifier = Modifier.size(44.dp))
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text("Nothing yet", color = colors.textPrimary, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Icon(Icons.Default.NotificationsNone, null, tint = colors.textSecondary, modifier = Modifier.size(40.dp))
+                        Text("Nothing yet", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
                         Text(
                             "When someone likes, replies to or shares your posts, it shows up here.",
                             color = colors.textSecondary,
-                            fontSize = 13.sp,
+                            fontSize = 15.sp,
                             textAlign = TextAlign.Center,
                         )
                     }

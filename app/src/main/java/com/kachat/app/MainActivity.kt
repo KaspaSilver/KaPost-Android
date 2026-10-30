@@ -385,16 +385,17 @@ class MainActivity : AppCompatActivity() {
                 val postId = FCM_KEYS_POST_ID.firstNotNullOfOrNull {
                     intent.getStringExtra(it)?.takeIf { value -> value.isNotBlank() }
                 }
-                // A reply targets the reply ITSELF - the push's tx_id is the reply's own - and the
-                // landing rule opens its parent's thread with it spliced in and scrolled to, the
-                // same as a tap on the foreground banner. Anything else opens the acted-on post.
+                // A reply or a quote targets the action ITSELF - the push's tx_id is its own - and
+                // the landing rule opens its parent's thread with it spliced in and scrolled to,
+                // the same as a tap on the foreground banner (iOS 093fe4d). Anything else opens
+                // the acted-on post.
                 val actionTxId = intent.getStringExtra("tx_id")?.takeIf { it.isNotBlank() }
                 val replyTxId = actionTxId?.takeIf {
-                    postId != null && KaPostsDeepLink.isReplyPush(
+                    KaPostsDeepLink.isTxId(it) && KaPostsDeepLink.pushOpensAction(
                         intent.getStringExtra("kaposts_kind"),
                         intent.getStringExtra("body"),
                     )
-                }
+                }?.lowercase()
                 KaPostsDeepLink.pendingFocusReplyTxId.value = null
                 // No post id (a follow, or a payload that omitted it): the Notifications list,
                 // never the action's own txid — that is a vote/follow transaction, not a post,
