@@ -5171,13 +5171,18 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
             Column {
                 val bannerUrl = profileBannerUrl
                 if (bannerUrl != null) {
-                    // The whole banner at the full width (its own proportions, no crop);
-                    // the plain canvas only when there is no banner (iOS c66bfc7).
+                    // The whole banner at the full width (its own proportions, no crop).
                     WholeBanner(model = bannerUrl, placeholderHeight = 140.dp) {
                         Box(Modifier.fillMaxSize().background(colors.surfaceVariant))
                     }
                 } else {
-                    Box(Modifier.fillMaxWidth().height(140.dp).background(colors.surfaceVariant))
+                    // No banner: iOS bannerFallback, the accent at 55% fading to 15% from the
+                    // top leading corner to the bottom trailing one.
+                    Box(
+                        Modifier.fillMaxWidth().height(140.dp).background(
+                            Brush.linearGradient(listOf(KaspaTeal.copy(alpha = 0.55f), KaspaTeal.copy(alpha = 0.15f)))
+                        )
+                    )
                 }
                 // Avatar overlapping the banner, X-style, with a 3dp ring in the page
                 // background so it reads as sitting on top of the banner. The slot is
@@ -5266,14 +5271,14 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             modifier = Modifier.clickable(enabled = onOpenFollowList != null) { onOpenFollowList?.invoke(false) },
                         ) {
-                            Text("$followingCount", color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text(java.text.NumberFormat.getIntegerInstance().format(followingCount), color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                             Text("Following", color = colors.textSecondary, fontSize = 15.sp)
                         }
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             modifier = Modifier.clickable(enabled = onOpenFollowList != null) { onOpenFollowList?.invoke(true) },
                         ) {
-                            Text("$followersCount", color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text(java.text.NumberFormat.getIntegerInstance().format(followersCount), color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                             Text("Followers", color = colors.textSecondary, fontSize = 15.sp)
                         }
                     }
