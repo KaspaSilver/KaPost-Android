@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">अस्वीकृत - नाम का मालिक बदल गया, आपको लौट रहा है</string>
     <string name="kn_offer_declined_earlier_owner">अस्वीकृत - पिछले मालिक को दिया गया</string>
     <string name="kn_err_offer_declined">यह ऑफ़र नाम का मालिक बदलने से पहले दिया गया था, इसलिए अस्वीकृत है और खरीदार को लौट रहा है।</string>
+    <string name="kn_err_offer_amount_changed">इस ऑफ़र में दिखाई गई रकम से अलग रकम है। कुछ भी नहीं भेजा गया।</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">यह नाम पहले से सबसे लंबी अवधि तक भुगतान किया हुआ है। नवीनीकरण %1$s को खुलेगा।</string>
     <string name="kn_err_offer_own_name">आप अपने ही नाम पर ऑफ़र नहीं दे सकते।</string>

@@ -117,7 +117,10 @@ fun LinkPreviewCard(
      *  group messages, and the user's own sent messages. False renders a "Tap to load preview"
      *  placeholder instead and only fetches after an explicit tap — for non-accepted 1:1
      *  senders and ALL broadcast messages (broadcast senders are always strangers). */
-    autoFetch: Boolean = true
+    autoFetch: Boolean = true,
+    /** Space held while the preview loads, so the card doesn't push the content below it down
+     *  when it lands (iOS e5a9b11). Null draws nothing until then. */
+    loadingHeight: androidx.compose.ui.unit.Dp? = null,
 ) {
     // An in-app KaChat link (a shared KaPosts post or broadcast room) is previewed LOCALLY: no
     // metadata fetch, and therefore no stranger tap-to-load gate either. Handled here rather than
@@ -181,6 +184,15 @@ fun LinkPreviewCard(
         }
     } else if (hasFinishedLoading && fallbackText != null) {
         LinkPreviewFallbackBubble(text = fallbackText, url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDoubleTap = onDoubleTap)
+    } else if (!hasFinishedLoading && loadingHeight != null) {
+        Box(
+            modifier = Modifier
+                .widthIn(max = 260.dp)
+                .fillMaxWidth()
+                .height(loadingHeight)
+                .clip(RoundedCornerShape(14.dp))
+                .background(LocalAppColors.current.textPrimary.copy(alpha = 0.06f))
+        )
     }
 }
 
@@ -789,10 +801,74 @@ sealed class KaChatLinkRef {
     data class PaymentRequest(val request: com.kachat.app.models.PaymentRequest) : KaChatLinkRef()
 }
 
+/**
+ * A link to KaChat's own site (`home.kachat.app`, any page, iOS f81c467 `KaChatSiteLink`). Unlike a
+ * stranger's link it previews by itself: fetching it tells nobody but us who is reading, so a post
+ * draws it as a card, and a public chat room doesn't wait for a tap as it does for other links.
+ */
+object KaChatSiteLink {
+    const val HOST = "home.kachat.app"
+
+    /** Exactly this host over the web. `home.kachat.app.evil.com` and `home.kachat.app@evil.com`
+     *  are other hosts, and so is any port. */
+    fun isSiteLink(url: String): Boolean {
+        val uri = runCatching { android.net.Uri.parse(url) }.getOrNull() ?: return false
+        val scheme = uri.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return false
+        return uri.host.equals(HOST, ignoreCase = true) && uri.userInfo == null && uri.port == -1
+    }
+
+    /** [matchedText] is the exact substring matched, which a post leaves out of its text. */
+    data class Match(val url: String, val matchedText: String)
+
+    /** With or without a scheme, as "home.kachat.app/news/" is how people write it. The lookbehind
+     *  and lookahead keep it from matching inside a longer host, an email or another site's path. */
+    private val LINK = Regex(
+        """(?<![\w.@/-])(?:https?://)?home\.kachat\.app(?![\w@:-]|\.\w)(?:[/?#][^\s<>"']*)?""",
+        RegexOption.IGNORE_CASE,
+    )
+    /** Trailing prose punctuation is not part of the link ("... home.kachat.app/news/."). */
+    private const val TRAILING_TRIM = ".,;:!?)]}'\"*"
+
+    /** The first link to the site in a post's text. */
+    fun match(text: String): Match? {
+        if (!text.contains(HOST, ignoreCase = true)) return null
+        LINK.findAll(text).forEach { found ->
+            val candidate = found.value.trimEnd { it in TRAILING_TRIM }
+            val url = if (candidate.startsWith("http", ignoreCase = true)) candidate else "https://$candidate"
+            if (isSiteLink(url)) return Match(url, candidate)
+        }
+        return null
+    }
+}
+
 /** [raw] is the exact link substring as it appears in the message, [range] where it sits in it. */
 data class KaChatLinkMatch(val range: IntRange, val raw: String, val ref: KaChatLinkRef)
 
 object KaChatLink {
+    /**
+     * The post in a `kaposts://compose?text=...` link, for the composer to open with (iOS 9e22075
+     * `composeText`). Nothing is sent until the person taps Post, but the text is someone else's:
+     * no control or direction marks they could not see in the editor, and no longer than a post
+     * can be. Other apps hand this link to KaPost through Android, so it has no share form and no
+     * preview, and does nothing tapped inside a post or a chat.
+     */
+    fun composeText(uri: android.net.Uri): String? {
+        if (!uri.scheme.equals("kaposts", ignoreCase = true) || !uri.host.equals("compose", ignoreCase = true)) return null
+        if (!uri.isHierarchical || uri.pathSegments.isNotEmpty()) return null
+        val raw = uri.getQueryParameter("text") ?: return null
+        val kept = buildString {
+            var index = 0
+            while (index < raw.length) {
+                val point = raw.codePointAt(index)
+                val type = Character.getType(point).toByte()
+                if (point == '\n'.code || (type != Character.CONTROL && type != Character.FORMAT)) appendCodePoint(point)
+                index += Character.charCount(point)
+            }
+        }.trim()
+        return kept.takeIf { it.isNotEmpty() }?.take(com.kachat.app.models.KaPostDraft.POST_CHARACTER_LIMIT)
+    }
+
     /** The only host the app ever writes into a share. With KaChat installed the link opens
      *  the app; without it the site shows the post, or the room invite, with download buttons -
      *  and it unfurls a preview in every chat app, which a bare kachat:// line does nowhere. */
@@ -811,7 +887,7 @@ object KaChatLink {
     // The trailing segment deliberately excludes '/', '?' and '#' so a link can never carry a
     // second path component, a query string or a fragment into the app.
     private val LINK_REGEX = Regex(
-        """(?:(?:kachat|kaposts)://(kapost|broadcast|profile)/|https?://kachat\.app/(post|broadcast|u)/)([^\s/?#]+)""",
+        """(?:(?:kachat|kaposts)://(kapost|broadcast|profile)/|https?://(?:www\.)?kachat\.app/(post|broadcast|u)/)([^\s/?#]+)""",
         RegexOption.IGNORE_CASE
     )
     // A payment request carries a query, so it has its own pattern: everything up to whitespace
@@ -821,7 +897,17 @@ object KaChatLink {
         RegexOption.IGNORE_CASE
     )
     private val TRAILING_PUNCTUATION = setOf('.', ',', '!', '?', ';', ':', '\'', '"', ')', ']', '}', '>')
-    private val TX_ID_REGEX = Regex("[0-9a-fA-F]{6,64}")
+    /** iOS LinkPreviewService.kaPostLink: the id charset is the indexer's to define, so letters,
+     *  digits, `-` and `_`, 8 to 128 of them. */
+    private val POST_ID_REGEX = Regex("[A-Za-z0-9_-]{8,128}")
+    private val HEX_ID_REGEX = Regex("[0-9a-fA-F]+")
+
+    /** A post id from a link: [POST_ID_REGEX], a hex txid lowercased as the indexer writes it. */
+    fun postIdOrNull(raw: String): String? {
+        val id = raw.trim()
+        if (!POST_ID_REGEX.matches(id)) return null
+        return if (HEX_ID_REGEX.matches(id)) id.lowercase() else id
+    }
 
     /** True when [raw] is nothing but one of these links (no surrounding text). */
     fun parse(raw: String): KaChatLinkRef? {
@@ -861,7 +947,12 @@ object KaChatLink {
     fun sanitizeChannelName(raw: String): String? {
         val name = MessageProtocol.normalizeChannelName(raw.trim().removePrefix("#"))
         if (!MessageProtocol.isValidChannelName(name)) return null
-        if (name.any { it in "/?#%&\\" || it.isISOControl() }) return null
+        // iOS `normalizeAndValidateChannel`: no path-like "..", no URL-structural characters,
+        // and no control, bidi or zero-width characters - the way to make an invite render as a
+        // different room than the one it joins.
+        if (".." in name) return null
+        if (name.any { it in "/?#%&\\@\"'<>" || it.isISOControl() }) return null
+        if (name.any { Character.getType(it) == Character.FORMAT.toInt() || it.code in 0x200B..0x200F || it.code in 0x202A..0x202E || it.code in 0x2066..0x2069 || it.code == 0xFEFF }) return null
         return name
     }
 
@@ -876,7 +967,7 @@ object KaChatLink {
         } ?: return null
         return when (kind) {
             "kapost", "post" ->
-                segment.takeIf { TX_ID_REGEX.matches(it) }?.lowercase()?.let(KaChatLinkRef::KaPost)
+                postIdOrNull(segment)?.let(KaChatLinkRef::KaPost)
             "broadcast" ->
                 sanitizeChannelName(segment)?.let(KaChatLinkRef::BroadcastRoom)
             "profile", "u" -> profileAddress(segment)?.let(KaChatLinkRef::Profile)
@@ -904,6 +995,25 @@ object KaChatLink {
         val trimmed = raw.trim()
         if (trimmed.length > 100) return null
         return runCatching { com.kachat.app.util.KaspaAddress.onActiveNetwork(trimmed) }.getOrNull()
+    }
+}
+
+/**
+ * The app's [androidx.compose.ui.platform.UriHandler] (iOS `openAnywhere` / `isSafeExternalLink`):
+ * a KaChat link opens its post, room or profile here; http, https and mailto go out to whatever
+ * app takes them; any other scheme (`kachat://` forms this app doesn't route, `kaposts://compose`,
+ * `intent:`...) does nothing, as iOS. With no app to take a link, nothing happens - the default
+ * handler threw and closed the app.
+ */
+class SafeUriHandler(private val context: android.content.Context) : androidx.compose.ui.platform.UriHandler {
+    override fun openUri(uri: String) {
+        KaChatLink.parse(uri)?.let { openKaChatLink(it); return }
+        val parsed = runCatching { android.net.Uri.parse(uri.trim()) }.getOrNull() ?: return
+        if (parsed.scheme?.lowercase() !in setOf("http", "https", "mailto")) return
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, parsed)
+            .addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+        if (context !is android.app.Activity) intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }
     }
 }
 

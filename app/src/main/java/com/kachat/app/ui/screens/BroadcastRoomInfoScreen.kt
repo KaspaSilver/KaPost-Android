@@ -27,6 +27,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -84,16 +86,22 @@ fun BroadcastRoomInfoScreen(
     val context = LocalContext.current
     val normalized = remember(channelName) { channelName.trim().lowercase() }
 
-    val messages by broadcastViewModel.getMessages(normalized).collectAsState(initial = emptyList())
+    // The room's window, as iOS counts it, and built once: a flow made inside composition would
+    // restart its query on every recomposition.
+    val windowFlow = remember(normalized) { broadcastViewModel.getMessageWindow(normalized) }
+    val messages = windowFlow
+        .collectAsState(initial = com.kachat.app.repository.BroadcastRepository.RoomWindow(emptyList(), false))
+        .value.messages
     val joinedChannels by broadcastViewModel.joinedChannels.collectAsState()
     val hiddenSenders by broadcastViewModel.hiddenSenders.collectAsState()
     // The network's default when nothing is set: blank (no server) on testnet.
     val appWideIndexer by broadcastViewModel.appWideBroadcastIndexer.collectAsState()
-    val storedOverride by broadcastViewModel.indexerOverrideFor(normalized)
-        .collectAsState(initial = "")
+    val storedOverrideFlow = remember(normalized) { broadcastViewModel.indexerOverrideFor(normalized) }
+    val storedOverride by storedOverrideFlow.collectAsState(initial = "")
 
     val senderKnsNames by broadcastViewModel.senderKnsNames.collectAsState()
     val contactAliases by broadcastViewModel.contactAliases.collectAsState()
+    val indexerCheck by broadcastViewModel.indexerCheck.collectAsState()
     var indexerText by remember { mutableStateOf("") }
     // Seeded once the stored value arrives, never on every emission - retyping would fight the
     // user mid-edit.
@@ -120,13 +128,8 @@ fun BroadcastRoomInfoScreen(
             CenterAlignedTopAppBar(
                 title = { Text("Room Info", color = colors.textPrimary, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    SheetBarBackButton(
-                        onClick = {
-                            saveIndexer(broadcastViewModel, normalized, indexerText, storedOverride)
-                            onBack()
-                        },
-                        modifier = Modifier.padding(start = 12.dp),
-                    )
+                    // Back never saves: only Save (or Done on the keyboard) does, as on iOS.
+                    SheetBarBackButton(onClick = onBack, modifier = Modifier.padding(start = 12.dp))
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = colors.background),
             )
@@ -215,6 +218,14 @@ fun BroadcastRoomInfoScreen(
                         )
                     },
                     singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri,
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                        autoCorrect = false,
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onDone = { broadcastViewModel.saveIndexerOverride(normalized, indexerText, storedOverride) },
+                    ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = colors.textPrimary,
                         unfocusedTextColor = colors.textPrimary,
@@ -223,6 +234,43 @@ fun BroadcastRoomInfoScreen(
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                // What the last Save found (iOS indexerCheckRow).
+                when (val check = indexerCheck) {
+                    BroadcastViewModel.IndexerCheck.Idle -> Unit
+                    BroadcastViewModel.IndexerCheck.Checking -> Row(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = colors.textSecondary,
+                        )
+                        Text("Checking the indexer...", color = colors.textSecondary, fontSize = 12.sp)
+                    }
+                    is BroadcastViewModel.IndexerCheck.Reachable -> Row(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = colors.success, modifier = Modifier.size(14.dp))
+                        Text(
+                            if (check.count == 0) "Connected. It holds nothing for this room yet."
+                            else "Connected, and it has this room's messages.",
+                            color = colors.success,
+                            fontSize = 12.sp,
+                        )
+                    }
+                    is BroadcastViewModel.IndexerCheck.Failed -> Row(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = colors.warning, modifier = Modifier.size(14.dp))
+                        Text(check.reason, color = colors.warning, fontSize = 12.sp)
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 Text(
                     // The honest explanation of why this is per room at all.
@@ -239,14 +287,16 @@ fun BroadcastRoomInfoScreen(
                     if (indexerText.isNotBlank()) {
                         TextButton(onClick = {
                             indexerText = ""
-                            broadcastViewModel.setIndexerOverride(normalized, "")
+                            broadcastViewModel.saveIndexerOverride(normalized, "", storedOverride)
                         }) {
                             Text("Use the app's indexer", color = colors.textSecondary)
                         }
                     }
                     Button(
-                        onClick = { saveIndexer(broadcastViewModel, normalized, indexerText, storedOverride) },
-                        enabled = indexerText.trim() != storedOverride.trim(),
+                        onClick = { broadcastViewModel.saveIndexerOverride(normalized, indexerText, storedOverride) },
+                        // Not while the last Save is still being checked (iOS).
+                        enabled = indexerCheck != BroadcastViewModel.IndexerCheck.Checking &&
+                            indexerText.trim() != storedOverride.trim(),
                         shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = KaspaTeal,
@@ -266,16 +316,6 @@ fun BroadcastRoomInfoScreen(
 @Composable
 private fun stringResourceSave(): String =
     androidx.compose.ui.res.stringResource(R.string.save)
-
-private fun saveIndexer(
-    viewModel: BroadcastViewModel,
-    channel: String,
-    typed: String,
-    stored: String,
-) {
-    if (typed.trim() == stored.trim()) return
-    viewModel.setIndexerOverride(channel, typed)
-}
 
 @Composable
 private fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
@@ -346,7 +386,7 @@ fun BroadcastHiddenUsersScreen(
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
-                    Text("Hidden in #$normalized", color = colors.textPrimary, fontWeight = FontWeight.Bold)
+                    Text("Hidden Users - #$normalized", color = colors.textPrimary, fontWeight = FontWeight.Bold)
                 },
                 navigationIcon = {
                     SheetBarBackButton(onClick = onBack, modifier = Modifier.padding(start = 12.dp))
@@ -361,7 +401,8 @@ fun BroadcastHiddenUsersScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    "Nobody is hidden here. Hide someone from their avatar in the room.",
+                    // iOS HiddenPublicChatSendersView's words.
+                    "No hidden users in #$normalized. Long-press a message to hide its sender.",
                     color = colors.textSecondary,
                     textAlign = TextAlign.Center,
                 )
@@ -382,15 +423,22 @@ fun BroadcastHiddenUsersScreen(
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        com.kachat.app.models.addressDisplayName(address, contactAliases[address], senderKnsNames[address]),
-                        color = colors.textPrimary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
+                    // The name over the full address, cut in the middle (iOS).
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            com.kachat.app.models.addressDisplayName(address, contactAliases[address], senderKnsNames[address]),
+                            color = colors.textPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        MiddleEllipsisText(
+                            address,
+                            color = colors.textSecondary,
+                            fontSize = 11.sp,
+                        )
+                    }
                     TextButton(onClick = { broadcastViewModel.unhideSender(address, normalized) }) {
                         Text(
                             androidx.compose.ui.res.stringResource(R.string.unhide),

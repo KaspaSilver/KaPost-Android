@@ -71,13 +71,17 @@ data class KaPostDraft(
      *  voting closes (KAPOSTS_INDEXER.md section 5.9). */
     val poll: KaPostPoll? = null,
 ) {
-    enum class Delivery { PENDING, SENT, FAILED }
+    /** [UNCONFIRMED]: the network never answered, so the post may have landed. It offers no Retry,
+     *  which could post and pay twice (iOS e5a9b11, `SendOutcomeUnknownException`). */
+    enum class Delivery { PENDING, SENT, FAILED, UNCONFIRMED }
 
     /** Milliseconds left to edit this post, or null once it is permanent. Only on-chain posts
      *  of our own can be edited at all; the caller checks the author. */
     val editTimeRemainingMs: Long?
         get() {
-            if (remoteId == null) return null
+            // Only a settled post (iOS `isStillEditable`): not while an edit or a delete is still
+            // counting down, or a second edit would save the first one's text as the original.
+            if (remoteId == null || deliveryStatus != Delivery.SENT || pendingDeletion) return null
             val left = timestamp + com.kachat.app.services.KaPostsService.EDIT_WINDOW_MS - System.currentTimeMillis()
             return left.takeIf { it > 0 }
         }

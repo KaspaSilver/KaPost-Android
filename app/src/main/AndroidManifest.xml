@@ -3,15 +3,15 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Network access for Kaspa node connections -->
+    <!-- NFC card backup (beta APK): the card is optional, so phones without NFC can install. -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Push notifications -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Lets the app show the OS "ignore battery optimizations" dialog so data-only encrypted
-         DM/group push can wake a force-closed app (see MainActivity.maybeRequestBatteryExemption). -->
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Voice messages -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -48,9 +48,12 @@
          does not reliably consult the platform's cleartext policy anyway, so tightening the
          flag would only give a false sense of coverage. Everything HTTP in the app (indexer,
          KNS, REST API, push registration, Nextcloud, link previews) is https-only at the
-         application layer instead: the URL settings fields are read-only, and the one
-         user-editable server input (Nextcloud) rejects explicit http:// in the UI and again in
-         NextcloudService.normalizeServer. -->
+         application layer instead: every editable URL in Connection Settings takes https:// only
+         (ConnectionViewModel, as iOS), and Nextcloud rejects explicit http:// in the UI and again
+         in NextcloudService.normalizeServer. grpc-okhttp 1.64 never consults
+         NetworkSecurityPolicy (its plaintext transport opens raw sockets), so the node pool would
+         survive the flag going false, but OkHttp, HttpURLConnection and WebView would then refuse
+         any http:// fetch, which is untested. -->
     <!-- The Wallet's Domains tab opens KaChat Wallet, where .kachat names are managed (iOS
          KaPosts 4c0d5a8): Android 11+ only hands out another app's launch intent for a package
          listed here. -->
@@ -62,6 +65,7 @@
     <application
         android:name=".KaChatApplication"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -95,6 +99,7 @@
                 <data android:scheme="kaposts" android:host="broadcast" />
                 <data android:scheme="kaposts" android:host="profile" />
                 <data android:scheme="kaposts" android:host="pay" />
+                <data android:scheme="kaposts" android:host="compose" />
             </intent-filter>
             <!-- Shared posts and rooms are still written as kachat://kapost/ and kachat://broadcast/.
                  KaChat stopped handling those two once posts and public chats left it (KaChat iOS

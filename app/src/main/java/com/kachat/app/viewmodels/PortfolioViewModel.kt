@@ -429,6 +429,24 @@ class PortfolioViewModel @Inject constructor(
         return repository.readPersistedPrice(currencyCode)?.price
     }
 
+    /**
+     * [priceIn], but only a price fetched in the last [maxAgeMillis]: what a tip sends without
+     * asking can't rest on a price that is days old (iOS e5a9b11 `freshPrice`). Otherwise it starts
+     * a fetch, so a moment later there is one.
+     */
+    fun freshPriceIn(currencyCode: String, maxAgeMillis: Long = 10 * 60 * 1000L): Double? {
+        val saved = repository.readPersistedPrice(currencyCode)
+        if (saved != null && System.currentTimeMillis() - saved.fetchedAtMillis <= maxAgeMillis) {
+            return if (currencyCode == currency.value) (_currentPriceUsd.value ?: saved.price) else saved.price
+        }
+        if (currencyCode == currency.value) {
+            refreshPrice()
+        } else {
+            viewModelScope.launch { repository.getCurrentPriceUsd(currencyCode) }
+        }
+        return null
+    }
+
     fun refreshSpotPriceIfStale() {
         val currencyCode = currency.value
         val persisted = repository.readPersistedPrice(currencyCode)

@@ -22,6 +22,21 @@ interface BroadcastDao {
     @Query("DELETE FROM broadcast_channels WHERE channelName = :channelName AND walletAddress = :walletAddress")
     suspend fun leaveChannel(channelName: String, walletAddress: String)
 
+    /** A deleted account's joined rooms and hidden senders (iOS `PublicChatStore.clearAll`). */
+    @Query("DELETE FROM broadcast_channels WHERE walletAddress = :walletAddress")
+    suspend fun deleteChannelsForWallet(walletAddress: String)
+
+    @Query("DELETE FROM broadcast_hidden_senders WHERE walletAddress = :walletAddress")
+    suspend fun deleteHiddenSendersForWallet(walletAddress: String)
+
+    /** Rooms no account on this device has joined any more: their cached messages go too. */
+    @Query("DELETE FROM broadcast_messages WHERE channelName NOT IN (SELECT channelName FROM broadcast_channels)")
+    suspend fun deleteMessagesOfUnjoinedChannels()
+
+    /** How many accounts on this device still have [channelName] joined. */
+    @Query("SELECT COUNT(*) FROM broadcast_channels WHERE channelName = :channelName")
+    suspend fun countJoinedAccounts(channelName: String): Int
+
     @Query("UPDATE broadcast_channels SET alwaysListen = :alwaysListen WHERE channelName = :channelName AND walletAddress = :walletAddress")
     suspend fun setAlwaysListen(channelName: String, walletAddress: String, alwaysListen: Boolean)
 
@@ -73,6 +88,25 @@ interface BroadcastDao {
     @Query("SELECT * FROM broadcast_messages WHERE channelName = :channelName ORDER BY blockTimestamp DESC LIMIT :limit")
     fun getLatestMessagesForChannel(channelName: String, limit: Int): Flow<List<BroadcastMessageEntity>>
 
+    /** Only a room's rows that can be reactions: the JSON type marker, filtered in SQL so the
+     *  room's other rows are never read or parsed (iOS keeps reactions apart and loads them on
+     *  change, PublicChatService `loadReactions`). The caller still parses each row. */
+    @Query("SELECT * FROM broadcast_messages WHERE channelName = :channelName AND content LIKE '%\"reaction\"%' ORDER BY blockTimestamp ASC")
+    fun getReactionRowsForChannel(channelName: String): Flow<List<BroadcastMessageEntity>>
+
+    /** Only a room's rows that can be edits - see [getReactionRowsForChannel] (iOS `loadEdits`). */
+    @Query("SELECT * FROM broadcast_messages WHERE channelName = :channelName AND content LIKE '%\"edit\"%' ORDER BY blockTimestamp ASC")
+    fun getEditRowsForChannel(channelName: String): Flow<List<BroadcastMessageEntity>>
+
+    /** The rows with these ids - the messages a room's edits name. Keep [ids] under SQLite's
+     *  999-variable limit. */
+    @Query("SELECT * FROM broadcast_messages WHERE id IN (:ids)")
+    suspend fun getMessagesByIds(ids: List<String>): List<BroadcastMessageEntity>
+
+    /** The newest chain time stored for a room, for its read marker (iOS `markChannelRead`). */
+    @Query("SELECT MAX(blockTimestamp) FROM broadcast_messages WHERE channelName = :channelName")
+    suspend fun newestBlockTimestamp(channelName: String): Long?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: BroadcastMessageEntity)
 
@@ -98,6 +132,20 @@ interface BroadcastDao {
     /** Flips a message's own delivery status in place (pending -> sent/failed) — used by sendBroadcast/retryBroadcast, mirroring ChatRepository.updateMessageStatus for 1:1 chats. */
     @Query("UPDATE broadcast_messages SET deliveryStatus = :status WHERE id = :id")
     suspend fun updateMessageStatus(id: String, status: String)
+
+    /** Failed -> pending, only if it is still failed: returns 0 when another tap already took it. */
+    @Query("UPDATE broadcast_messages SET deliveryStatus = 'pending' WHERE id = :id AND deliveryStatus = 'failed'")
+    suspend fun claimFailedForRetry(id: String): Int
+
+    /** A room's rows still marked pending - for settling the ones an earlier run left behind
+     *  (BroadcastRepository.settlePendingSendsFromBeforeThisRun, iOS e5a9b11). */
+    @Query("SELECT * FROM broadcast_messages WHERE channelName = :channelName AND deliveryStatus = 'pending'")
+    suspend fun getPendingMessages(channelName: String): List<BroadcastMessageEntity>
+
+    /** How many delivered rows match a pending one: same sender and content, sent, and no older
+     *  than [sinceMillis] (iOS e5a9b11 `settlePendingMessages`). */
+    @Query("SELECT COUNT(*) FROM broadcast_messages WHERE channelName = :channelName AND senderAddress = :senderAddress AND content = :content AND deliveryStatus = 'sent' AND blockTimestamp >= :sinceMillis")
+    suspend fun countDeliveredCopies(channelName: String, senderAddress: String, content: String, sinceMillis: Long): Int
 
     @Query("DELETE FROM broadcast_messages WHERE channelName = :channelName AND blockTimestamp < :cutoffMillis")
     suspend fun deleteOlderThan(channelName: String, cutoffMillis: Long)

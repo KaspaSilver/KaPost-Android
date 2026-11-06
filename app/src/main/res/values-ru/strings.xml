@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">Отклонено - у имени сменился владелец, возвращается вам</string>
     <string name="kn_offer_declined_earlier_owner">Отклонено - сделано прежнему владельцу</string>
     <string name="kn_err_offer_declined">Это предложение сделано до смены владельца имени, поэтому оно отклонено и возвращается покупателю.</string>
+    <string name="kn_err_offer_amount_changed">В этом предложении другая сумма, чем была показана. Ничего не отправлено.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">Это имя уже оплачено на максимальный срок. Продление откроется %1$s.</string>
     <string name="kn_err_offer_own_name">Нельзя сделать предложение на собственное имя.</string>

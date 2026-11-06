@@ -290,6 +290,9 @@ class AppSettingsRepository @Inject constructor(
         // behind device authentication unconditionally before these toggles existed.
         val KEY_BIOMETRIC_SEED_PHRASE_ENABLED = booleanPreferencesKey("biometric_seed_phrase_enabled")
         val KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED = booleanPreferencesKey("biometric_account_login_enabled")
+        /** Set once [KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] was written after it went off by default
+         *  (iOS e5a9b11 `kachat_account_login_biometrics_off_migrated`). */
+        val KEY_ACCOUNT_LOGIN_BIOMETRICS_OFF_MIGRATED = booleanPreferencesKey("account_login_biometrics_off_migrated")
         val KEY_BIOMETRIC_SPENDING_KEY_ENABLED = booleanPreferencesKey("biometric_spending_key_enabled")
         // One-time ChangeNOW terms/liability disclaimer shown the first time Swap is opened.
         val KEY_SWAP_DISCLAIMER_AGREED = booleanPreferencesKey("swap_disclaimer_agreed")
@@ -655,8 +658,14 @@ class AppSettingsRepository @Inject constructor(
     val currency: Flow<String> = dataStore.data.map { it[KEY_CURRENCY] ?: "usd" }
 
     val biometricSeedPhraseEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BIOMETRIC_SEED_PHRASE_ENABLED] ?: true }
-    // Account-login biometrics are opt-in (off by default) on every platform.
-    val biometricAccountLoginEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] ?: false }
+    // Asked when signing back in to a saved account: off by default, so a phone with no passcode can
+    // still get in and see its account (owner's call, iOS e5a9b11). Users can turn it on. The words,
+    // private keys and sends still need the phone's lock. It went from on to off by default, and a
+    // saved value from before that counts as off: only one written since counts, which switches it
+    // off once per install and lets turning it back on stick.
+    val biometricAccountLoginEnabled: Flow<Boolean> = dataStore.data.map {
+        it[KEY_ACCOUNT_LOGIN_BIOMETRICS_OFF_MIGRATED] == true && it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] == true
+    }
     /** Gates the "Export" button on a spending address's own screen - separate from
      *  [biometricSeedPhraseEnabled] since revealing one address's own derived key is lower-stakes
      *  than the wallet's whole seed phrase, but still sensitive enough to gate independently. */
@@ -768,6 +777,8 @@ class AppSettingsRepository @Inject constructor(
             "reply" -> "reply" to null
             "quote", "repost" -> "quote" to null
             "follow" -> "follow" to null
+            // iOS `kaPostsPushAllowed`: a mention follows the Mentions switch.
+            "mention" -> "mention" to null
             null -> {
                 val lowered = body.lowercase()
                 when {
@@ -776,7 +787,8 @@ class AppSettingsRepository @Inject constructor(
                     lowered.contains("replied to your") -> "reply" to null
                     lowered.contains("quoted your") || lowered.contains("reposted your") -> "quote" to null
                     lowered.contains("followed you") -> "follow" to null
-                    // A mention, or wording we do not recognise: notify rather than swallow.
+                    lowered.contains("mentioned you") -> "mention" to null
+                    // Wording we do not recognise: notify rather than swallow.
                     else -> return true
                 }
             }
@@ -1133,7 +1145,10 @@ class AppSettingsRepository @Inject constructor(
     suspend fun setAppearance(value: com.kachat.app.models.AppAppearance) = dataStore.edit { it[KEY_APPEARANCE] = value.name }
     suspend fun setCurrency(value: String) = dataStore.edit { it[KEY_CURRENCY] = value }
     suspend fun setBiometricSeedPhraseEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_SEED_PHRASE_ENABLED] = value }
-    suspend fun setBiometricAccountLoginEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] = value }
+    suspend fun setBiometricAccountLoginEnabled(value: Boolean) = dataStore.edit {
+        it[KEY_ACCOUNT_LOGIN_BIOMETRICS_OFF_MIGRATED] = true
+        it[KEY_BIOMETRIC_ACCOUNT_LOGIN_ENABLED] = value
+    }
     suspend fun setBiometricSpendingKeyEnabled(value: Boolean) = dataStore.edit { it[KEY_BIOMETRIC_SPENDING_KEY_ENABLED] = value }
     suspend fun setChildModeEnabled(value: Boolean) = dataStore.edit { it[KEY_CHILD_MODE_ENABLED] = value }
     /** Called right before the first-run guide auto-presents. Never downgrades an already-made

@@ -70,22 +70,9 @@ class MainActivity : AppCompatActivity() {
     // OwnAddressRoute.pending).
     private var pendingOwnAddress by mutableStateOf<String?>(null)
 
-    // Android 13+ requires an explicit runtime grant before ANY notification (local or FCM push)
-    // can be shown. Registered here (during construction, as required) and requested in onCreate.
-    private val requestNotificationPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            // The battery sheet waits for this answer: notifications off means there is nothing
-            // for the exemption to deliver, so it is not worth asking.
-            if (granted) refreshBatteryRationale()
-        }
-
-    private fun maybeRequestNotificationPermission() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-        val granted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.POST_NOTIFICATIONS
-        ) == PackageManager.PERMISSION_GRANTED
-        if (!granted) requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-    }
+    // Android 13+'s notification permission is asked only from Settings > Notifications, when
+    // Push Notifications is switched on (iOS PushNotificationManager asks only from
+    // NotificationsHubPage) - never at launch, over the Terms screen.
 
     /**
      * The battery-optimization exemption - Android's "Let KaChat always run in background?"
@@ -99,6 +86,10 @@ class MainActivity : AppCompatActivity() {
      * and Android's dialog only opens from its Allow. Asked once either way, as before.
      */
     private fun batteryExemptionDue(): Boolean {
+        // Never in KaPost: its pushes carry a notification the system draws itself, so nothing
+        // needs to wake a closed app, and iOS asks nothing like it. Play also limits the
+        // permission to apps that need it (removed from the manifest).
+        if (!KACHAT_DATA_ONLY_PUSH) return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -149,6 +140,7 @@ class MainActivity : AppCompatActivity() {
     private fun handleLaunchIntent(intent: Intent?) {
         if (intent == null) return
         guarded("notification target") { consumeNotificationTarget(intent) }
+        guarded("compose link") { handleComposeDeepLink(intent) }
         guarded("broadcast link") { handleBroadcastDeepLink(intent) }
         guarded("profile link") { handleProfileDeepLink(intent) }
         guarded("payment request link") { handlePaymentRequestDeepLink(intent) }
@@ -174,10 +166,9 @@ class MainActivity : AppCompatActivity() {
             setRecentsScreenshotEnabled(false)
         }
         enableEdgeToEdge()
-        // Everything up to setContent is a side step - a permission prompt, a notification or
-        // link to route. Each is guarded on its own: one that throws is
-        // logged, and the app still opens (KaChatApplication's startup rule).
-        guarded("notification permission") { maybeRequestNotificationPermission() }
+        // Everything up to setContent is a side step - a notification or link to route. Each is
+        // guarded on its own: one that throws is logged, and the app still opens
+        // (KaChatApplication's startup rule).
         guarded("battery rationale") { refreshBatteryRationale() }
         handleLaunchIntent(intent)
         setContent {
@@ -185,6 +176,12 @@ class MainActivity : AppCompatActivity() {
             // Settings > Customization > Appearance: System follows the device, as on iOS.
             val appearance by walletViewModel.appearance.collectAsState()
             val isLoggedIn by walletViewModel.isLoggedIn.collectAsState()
+            // Every link tap in the app goes through one opener (iOS `openAnywhere`): a KaChat
+            // link to its screen, http/https/mailto out, anything else ignored, never a crash.
+            val safeUriHandler = remember { com.kachat.app.ui.screens.SafeUriHandler(this@MainActivity) }
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalUriHandler provides safeUriHandler
+            ) {
             KaChatTheme(darkTheme = appearance.isDark(androidx.compose.foundation.isSystemInDarkTheme())) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -201,6 +198,7 @@ class MainActivity : AppCompatActivity() {
                     CrashNotice()
                     BatteryExemptionRationale(isLoggedIn = isLoggedIn)
                 }
+            }
             }
         }
     }
@@ -333,19 +331,26 @@ class MainActivity : AppCompatActivity() {
      * jumped the user back into whatever conversation the last tapped notification was for.
      */
     private fun consumeNotificationTarget(intent: Intent) {
-        pendingChannelName = intent.getStringExtra(NotificationHelper.EXTRA_CHANNEL_NAME)
-        pendingWalletActivityKind = intent.getStringExtra(NotificationHelper.EXTRA_WALLET_ACTIVITY_KIND)
+        // This Activity is exported for links, so any app can start it with these extras. Our
+        // own notifications' extras count only with the per-install token NotificationHelper
+        // puts on every intent it builds; without it they are ignored.
+        val internal = NotificationHelper.isInternalIntent(this, intent)
+        pendingChannelName = if (internal) intent.getStringExtra(NotificationHelper.EXTRA_CHANNEL_NAME) else null
+        pendingWalletActivityKind = if (internal) intent.getStringExtra(NotificationHelper.EXTRA_WALLET_ACTIVITY_KIND) else null
         // One address got the Kaspa: open that address's History rather than the wallet tab -
         // the kind is then only the fallback (iOS 13046ad).
-        pendingOwnAddress = intent.getStringExtra(NotificationHelper.EXTRA_WALLET_ACTIVITY_ADDRESS)?.takeIf { it.isNotEmpty() }
+        pendingOwnAddress = if (internal) {
+            intent.getStringExtra(NotificationHelper.EXTRA_WALLET_ACTIVITY_ADDRESS)?.takeIf { it.isNotEmpty() }
+        } else null
         if (pendingOwnAddress != null) pendingWalletActivityKind = null
-        val ownKaPostTarget = handleKaPostDeepLink(intent)
+        val ownKaPostTarget = handleKaPostDeepLink(intent, internal)
         if (!ownKaPostTarget && pendingChannelName == null && pendingWalletActivityKind == null &&
             pendingOwnAddress == null
         ) {
             applyFcmNotificationTarget(intent)
         }
         listOf(
+            NotificationHelper.EXTRA_INTERNAL_TOKEN,
             NotificationHelper.EXTRA_CONTACT_ID,
             NotificationHelper.EXTRA_CHANNEL_NAME,
             NotificationHelper.EXTRA_GROUP_ID,
@@ -365,6 +370,12 @@ class MainActivity : AppCompatActivity() {
      * `KaChatFirebaseMessagingService`). Every push type is mapped, not just the public ones, so
      * a server-side change to which of them carry a `notification` block cannot silently break
      * their taps.
+     *
+     * These keys can't carry our token (FCM builds the tap's intent from the push's data), and
+     * any app could send the same extras. So they do only what a public link could do anyway:
+     * open a tab, a room (its name sanitized in KaChatApp, as a link's) or a post (an id a link
+     * would take, KaChatLink.postIdOrNull) - never the wallet or anything else only our own
+     * notifications open.
      */
     private fun applyFcmNotificationTarget(intent: Intent) {
         // The push's own `type` names it; a KaPosts push also carries thread_id "kaposts" (the
@@ -384,7 +395,7 @@ class MainActivity : AppCompatActivity() {
                 // deep-linking to nothing.
                 val postId = FCM_KEYS_POST_ID.firstNotNullOfOrNull {
                     intent.getStringExtra(it)?.takeIf { value -> value.isNotBlank() }
-                }
+                }?.let { KaChatLink.postIdOrNull(it) }
                 // A reply or a quote targets the action ITSELF - the push's tx_id is its own - and
                 // the landing rule opens its parent's thread with it spliced in and scrolled to,
                 // the same as a tap on the foreground banner (iOS 093fe4d). Anything else opens
@@ -423,6 +434,13 @@ class MainActivity : AppCompatActivity() {
      * navigation happens. MainShell picks up a request that does pass, enforces Child Mode, and
      * opens the room (joining it first when it isn't one of the curated ones).
      */
+    /** kaposts://compose?text=... - a pre-written post from another app (iOS 9e22075). */
+    private fun handleComposeDeepLink(intent: Intent) {
+        if (intent.action != Intent.ACTION_VIEW) return
+        val text = com.kachat.app.ui.screens.KaChatLink.composeText(intent.data ?: return) ?: return
+        KaPostsDeepLink.pendingComposeText.value = text
+    }
+
     /** The host a KaChat link arrives on: kachat.app, the one the app writes. */
     private fun isKaChatWebHost(host: String?): Boolean {
         val clean = host?.lowercase()?.removePrefix("www.") ?: return false
@@ -436,10 +454,9 @@ class MainActivity : AppCompatActivity() {
         val uri = intent.data ?: return
         val raw = when {
             isAppLinkScheme(uri.scheme) &&
-                uri.host.equals("profile", ignoreCase = true) -> uri.lastPathSegment
+                uri.host.equals("profile", ignoreCase = true) -> linkTarget(uri, webPrefix = null)
             uri.scheme.equals("https", ignoreCase = true) &&
-                isKaChatWebHost(uri.host) &&
-                uri.pathSegments.firstOrNull() == "u" -> uri.pathSegments.getOrNull(1)
+                isKaChatWebHost(uri.host) -> linkTarget(uri, webPrefix = "u")
             else -> null
         } ?: return
         com.kachat.app.ui.screens.ProfileDeepLink.request(raw)
@@ -470,10 +487,9 @@ class MainActivity : AppCompatActivity() {
         val uri = intent.data ?: return
         val rawChannel = when {
             isAppLinkScheme(uri.scheme) &&
-                uri.host.equals("broadcast", ignoreCase = true) -> uri.lastPathSegment
+                uri.host.equals("broadcast", ignoreCase = true) -> linkTarget(uri, webPrefix = null)
             uri.scheme.equals("https", ignoreCase = true) &&
-                isKaChatWebHost(uri.host) &&
-                uri.pathSegments.firstOrNull() == "broadcast" -> uri.pathSegments.getOrNull(1)
+                isKaChatWebHost(uri.host) -> linkTarget(uri, webPrefix = "broadcast")
             else -> null
         } ?: return
         BroadcastDeepLink.request(rawChannel)
@@ -486,11 +502,12 @@ class MainActivity : AppCompatActivity() {
      * [KaPostsDeepLink]; KaChatApp navigates to the KaPosts tab and the screen opens the
      * post's thread.
      */
-    private fun handleKaPostDeepLink(intent: Intent): Boolean {
+    private fun handleKaPostDeepLink(intent: Intent, internal: Boolean): Boolean {
         // A KaPosts notification tap: deep-open the exact post/comment the notification was
         // about (EXTRA_KAPOST_TXID); with no post named (a follow) open the Notifications list
-        // instead of dropping the user on the feed with nothing explaining the ping.
-        if (intent.getBooleanExtra(NotificationHelper.EXTRA_OPEN_KAPOSTS, false)) {
+        // instead of dropping the user on the feed with nothing explaining the ping. Only our
+        // own notification's intent, carrying its token (see consumeNotificationTarget).
+        if (internal && intent.getBooleanExtra(NotificationHelper.EXTRA_OPEN_KAPOSTS, false)) {
             // Set the focus (the reply's own txid, for scroll-to-comment) and the notifications
             // flag BEFORE the post id - the post id is what KaPostsScreen's LaunchedEffect keys on.
             KaPostsDeepLink.pendingFocusReplyTxId.value =
@@ -508,25 +525,40 @@ class MainActivity : AppCompatActivity() {
         val host = uri.host?.lowercase()?.removePrefix("www.")
         val txId = when {
             isAppLinkScheme(uri.scheme) &&
-                uri.host.equals("kapost", ignoreCase = true) -> uri.lastPathSegment
+                uri.host.equals("kapost", ignoreCase = true) -> linkTarget(uri, webPrefix = null)
             (uri.scheme.equals("https", ignoreCase = true) || uri.scheme.equals("http", ignoreCase = true)) &&
-                isKaChatWebHost(host) &&
-                uri.pathSegments.firstOrNull() == "post" -> uri.pathSegments.getOrNull(1)
+                isKaChatWebHost(host) -> linkTarget(uri, webPrefix = "post")
             else -> null
         }
-        // A post is a transaction id: 64 hex characters. Anything else in the link goes nowhere.
-        if (txId != null && TX_ID_PATTERN.matches(txId)) {
+        // A post id as iOS LinkPreviewService.kaPostLink takes it: 8 to 128 letters, digits, `-`
+        // and `_`. Anything else in the link goes nowhere.
+        val postId = txId?.let { KaChatLink.postIdOrNull(it) }
+        if (postId != null) {
             KaPostsDeepLink.pendingOpenNotifications.value = false
-            KaPostsDeepLink.pendingPostTxId.value = txId.lowercase()
+            KaPostsDeepLink.pendingPostTxId.value = postId
         }
         return false
     }
 
+    /**
+     * The one thing a link names, only when the link has exactly its own parts (iOS
+     * `KaChatInternalLink.parse`): `kachat://broadcast/<room>` is one part after the host, and
+     * `https://kachat.app/broadcast/<room>` two with [webPrefix] first. Extra parts make it no
+     * link at all - `kachat://broadcast/a/b` used to join room "b".
+     */
+    private fun linkTarget(uri: android.net.Uri, webPrefix: String?): String? {
+        val parts = uri.pathSegments
+        return if (webPrefix == null) parts.singleOrNull()
+        else parts.takeIf { it.size == 2 && it[0] == webPrefix }?.get(1)
+    }
+
     companion object {
+        /** KaChat's encrypted chat push is data-only; KaPost has none (see [batteryExemptionDue]). */
+        private const val KACHAT_DATA_ONLY_PUSH = false
+
         /** FCM data-payload keys that reach us as Intent extras when the OS drew the
          *  notification itself — see [applyFcmNotificationTarget]. */
         private const val FCM_KEY_TYPE = "type"
         private val FCM_KEYS_POST_ID = listOf("post_id", "postId", "content_id")
-        private val TX_ID_PATTERN = Regex("^[0-9a-fA-F]{64}$")
     }
 }

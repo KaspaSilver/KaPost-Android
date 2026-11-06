@@ -186,6 +186,24 @@ fun IosToolbarRow(
     }
 }
 
+/** A dock tab's title, fixed above its scrolling content like the Feed's (iOS 9e22075
+ *  `kaPostsFixedTitle`). The backup strip sits above the title, as on the Feed (iOS e5a9b11);
+ *  [onOpenBackup] opens the backup steps. */
+@Composable
+fun KaPostsFixedTitle(title: String, onOpenBackup: (() -> Unit)? = null) {
+    val colors = LocalAppColors.current
+    if (onOpenBackup != null) AccountBackupBanner(onOpenBackup = onOpenBackup)
+    Text(
+        text = title,
+        color = colors.textPrimary,
+        fontSize = LargeTitleSize,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 6.dp),
+    )
+    androidx.compose.material3.HorizontalDivider(color = colors.surfaceVariant)
+}
+
 @Composable
 fun MainPageHeader(
     title: String,
@@ -199,6 +217,10 @@ fun MainPageHeader(
     leading: (@Composable () -> Unit)? = null,
     /** False hides only the connection dot (Public Chats while selecting rooms, iOS eec2e30). */
     showsConnectionDot: Boolean = true,
+    /** The rule under a fixed title (Public Chats, iOS 9e22075 `kaPostsFixedTitle`). */
+    showsDivider: Boolean = false,
+    /** Under the bar, above the title: the dock tabs' [AccountBackupBanner] (iOS e5a9b11). */
+    banner: @Composable () -> Unit = {},
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val colors = LocalAppColors.current
@@ -237,6 +259,7 @@ fun MainPageHeader(
                 }
             },
         )
+        banner()
         Text(
             text = title,
             color = colors.textPrimary,
@@ -246,6 +269,7 @@ fun MainPageHeader(
             // measured on the iPhone: the title's cap 43 below the bar's centre, 5 below it
             modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 5.dp),
         )
+        if (showsDivider) androidx.compose.material3.HorizontalDivider(color = colors.surfaceVariant)
     }
 }
 

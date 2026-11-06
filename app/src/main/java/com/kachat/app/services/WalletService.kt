@@ -168,13 +168,17 @@ class WalletService @Inject constructor(
         manualUtxos: List<UtxoEntry>? = null,
         extraFeeSompi: Long = 0L
     ): String {
-        val result = walletEngine.sendKaspa(
-            toAddress, amountSompi, payloadBytes,
-            feeRateOverride = feeRateOverride,
-            manualUtxos = manualUtxos,
-            allowReducedAmount = allowReducedAmount,
-            extraFeeSompi = extraFeeSompi
-        )
+        // Off the main thread: the key is derived again (PBKDF2) and every input signed here, which
+        // stuttered the screen when a post, tip or room message went out from the UI.
+        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            walletEngine.sendKaspa(
+                toAddress, amountSompi, payloadBytes,
+                feeRateOverride = feeRateOverride,
+                manualUtxos = manualUtxos,
+                allowReducedAmount = allowReducedAmount,
+                extraFeeSompi = extraFeeSompi
+            )
+        }
 
         if (result.isSuccess) {
             refreshBalance()
@@ -561,6 +565,12 @@ class WalletService @Inject constructor(
     /** One batched balances call, degrading to a chunked-concurrent sweep when the configured REST
      *  host doesn't implement the batch endpoint. Missing/failed addresses simply come back absent
      *  (treated as zero by the caller). */
+    /** Address -> balance for an import's passphrase step; null when they couldn't be checked. */
+    suspend fun balancesOrNull(addresses: List<String>): Map<String, Long>? {
+        if (readyApi() == null) return null
+        return fetchBalancesBatched(addresses).takeIf { it.isNotEmpty() }
+    }
+
     private suspend fun fetchBalancesBatched(addresses: List<String>): Map<String, Long> = coroutineScope {
         val api = readyApi() ?: return@coroutineScope emptyMap()
         try {

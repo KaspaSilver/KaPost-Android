@@ -100,6 +100,7 @@ class WalletManager @Inject constructor(
         private const val SECURE_PREFS_NAME = "kachat_secure_prefs"
         private const val PREF_ACCOUNTS = "accounts"
         private const val PREF_ACTIVE_ADDRESS = "active_address"
+        private const val PREF_LOGGED_OUT = "logged_out"
         private const val PREF_HIDDEN_SPENDING_ADDRESSES = "hidden_spending_addresses"
         private const val PREF_SPENDING_ADDRESS_LABELS = "spending_address_labels"
         private const val PREF_SPENDING_UTXO_LABELS = "spending_utxo_labels"
@@ -420,17 +421,80 @@ class WalletManager @Inject constructor(
     fun accountAddedAt(address: String): Long? =
         sharedPrefs.getLong(addedAtKey(address), 0L).takeIf { it > 0L }
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    /**
+     * Why the account store could not be opened at launch, or null (iOS
+     * `walletNeedingKeyRecovery`). A phone restored without this app's Keystore key, or a Keystore
+     * that refuses the key, made EncryptedSharedPreferences throw right here - inside a Hilt
+     * singleton, so the app closed before any screen. The app now opens on an empty in-memory
+     * store, and the recovery screen (WalletRecoveryScreen) asks for the 12 or 24 words. Declared
+     * before [sharedPrefs], whose initializer sets it.
+     */
+    @Volatile var secureStoreFailure: Throwable? = null
+        private set
 
-    private val sharedPrefs = EncryptedSharedPreferences.create(
-        context,
-        SECURE_PREFS_NAME,
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    @Volatile private var sharedPrefs: android.content.SharedPreferences = openSecureStoreOrInMemory()
+
+    /** The account store, made exactly as it always was (default AES256-GCM master key,
+     *  AES256-SIV keys, AES256-GCM values). Throws when the Keystore refuses. */
+    private fun createSecureStore(): android.content.SharedPreferences {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        return EncryptedSharedPreferences.create(
+            context,
+            SECURE_PREFS_NAME,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+
+    /** [createSecureStore], or an empty in-memory store when the Keystore refuses - the file on
+     *  disk is left as it is (see [secureStoreFailure]). */
+    private fun openSecureStoreOrInMemory(): android.content.SharedPreferences = try {
+        createSecureStore()
+    } catch (e: Exception) {
+        // GeneralSecurityException (KeyStoreException, AEADBadTagException), IOException and
+        // RuntimeException (ProviderException) are all Exceptions (as StartupSafety).
+        android.util.Log.e("WalletManager", "The account store could not be opened; asking for the 12 or 24 words", e)
+        secureStoreFailure = e
+        com.kachat.app.util.InMemorySharedPreferences()
+    }
+
+    /**
+     * The recovery screen's way on: the account store opened again, so an import is saved. Tried
+     * as it is first - a Keystore that only refused at launch opens now, and every account is
+     * back. Otherwise the unreadable file is copied aside (its bytes kept in no-backup storage,
+     * never read again) and a new, empty store is made. True when a real store is open.
+     */
+    @Synchronized
+    fun resetUnreadableSecureStore(): Boolean {
+        if (secureStoreFailure == null) return true
+        val reopened = try {
+            createSecureStore()
+        } catch (e: Exception) {
+            android.util.Log.w("WalletManager", "The account store still can't be opened; setting it aside", e)
+            try {
+                val file = java.io.File(context.applicationInfo.dataDir, "shared_prefs/$SECURE_PREFS_NAME.xml")
+                if (file.exists()) {
+                    file.copyTo(java.io.File(context.noBackupFilesDir, "$SECURE_PREFS_NAME.unreadable-${System.currentTimeMillis()}.xml"))
+                }
+                context.deleteSharedPreferences(SECURE_PREFS_NAME)
+                createSecureStore()
+            } catch (e2: Exception) {
+                android.util.Log.e("WalletManager", "A new account store could not be made", e2)
+                return false
+            }
+        }
+        sharedPrefs = reopened
+        secureStoreFailure = null
+        accountsCache = null
+        spendingAddressCacheMemo = null
+        usedAddressesMemo = null
+        quantumSpentMemo = null
+        refreshActiveAddressFlow()
+        return true
+    }
 
     /**
      * Returns true if at least one wallet has been created/imported.
@@ -761,6 +825,25 @@ class WalletManager @Inject constructor(
     }
 
     /**
+     * The name a new account gets, renameable later: "My Account", then "My Account 2" and on,
+     * skipping any name a saved account already has (iOS 9e22075 `nextDefaultAccountName`).
+     */
+    fun nextDefaultAccountName(): String {
+        val base = "My Account"
+        val taken = getAccounts().map { it.name.trim().lowercase() }.toSet()
+        if (base.lowercase() !in taken) return base
+        var number = 2
+        while ("$base $number".lowercase() in taken) number++
+        return "$base $number"
+    }
+
+    /** Log Out was the last thing done, so a cold start stays on the sign-in screen (iOS
+     *  `logoutFlagKey`); its biometric gate is what stands in front of the saved accounts. */
+    var isLoggedOut: Boolean
+        get() = sharedPrefs.getBoolean(PREF_LOGGED_OUT, false)
+        set(value) = sharedPrefs.edit().putBoolean(PREF_LOGGED_OUT, value).apply()
+
+    /**
      * Generate + commit in one shot with no passphrase. Retained for any non-interactive caller;
      * the onboarding UI uses [generateMnemonic]/[commitCreatedWallet] separately so it can insert
      * the passphrase step in between.
@@ -861,16 +944,54 @@ class WalletManager @Inject constructor(
     }
 
     /**
-     * Deletes a specific account.
+     * Deletes a specific account. The last one goes with everything this store holds - [wipe]:
+     * receive indices, hidden addresses and labels, the spending cache, the Manage Addresses
+     * snapshots and the used / quantum-spent address sets (iOS WalletManager.deleteWallet's
+     * `clearAll` for the last account). With others left, only this account's own entries go.
      */
     fun deleteAccount(address: String) {
         val accounts = getAccounts().filterNot { com.kachat.app.util.KaspaNetwork.isSameAccount(it.address, address) }
+        if (accounts.isEmpty()) {
+            wipe()
+            return
+        }
         saveAccounts(accounts)
         val active = sharedPrefs.getString(PREF_ACTIVE_ADDRESS, null)
         if (active != null && com.kachat.app.util.KaspaNetwork.isSameAccount(active, address)) {
             sharedPrefs.edit().remove(PREF_ACTIVE_ADDRESS).apply()
         }
+        removeAccountEntries(address)
         refreshActiveAddressFlow()
+    }
+
+    /** [address]'s per-account entries, on both networks' encodings (iOS removes only that
+     *  account's keys and snapshot while others remain). The used / quantum-spent sets are
+     *  address-keyed and shared, so they stay until the last account goes. */
+    private fun removeAccountEntries(address: String) {
+        val variants = com.kachat.app.util.KaspaNetwork.accountAddressVariants(address)
+        val cached = getAllCachedSpendingAddresses()
+        val ownSpending = cached.filter { it.walletAddress in variants }.map { it.address }.toSet()
+        val keptCache = cached.filterNot { it.walletAddress in variants }
+        spendingAddressCacheMemo = keptCache
+        val editor = sharedPrefs.edit()
+        for (variant in variants) {
+            editor.remove("receive_index_$variant")
+            editor.remove("${PREF_MANAGE_ADDRESSES_SNAPSHOT}_$variant")
+        }
+        editor.putString(PREF_SPENDING_ADDRESS_CACHE, gson.toJson(keptCache))
+        editor.putString(
+            PREF_HIDDEN_SPENDING_ADDRESSES,
+            gson.toJson(getAllHiddenSpendingAddresses().filterNot { it.walletAddress in variants })
+        )
+        editor.putString(
+            PREF_SPENDING_ADDRESS_LABELS,
+            gson.toJson(getAllSpendingAddressLabels().filterNot { it.walletAddress in variants })
+        )
+        editor.putString(
+            PREF_SPENDING_UTXO_LABELS,
+            gson.toJson(getAllSpendingUtxoLabels().filterNot { it.address in ownSpending || it.address in variants })
+        )
+        editor.apply()
     }
 
     // --- Identity (chatting) derivation, family-aware -----------------------------------------
@@ -1790,6 +1911,28 @@ class WalletManager @Inject constructor(
         }
         return indices.mapNotNull { index ->
             if (index < 0) return@mapNotNull null
+            val privateKey = identityPrivateKeyBytes(baseNode, index, family) ?: return@mapNotNull null
+            index to addressFromPrivateKeyBytes(privateKey)
+        }
+    }
+
+    /**
+     * For an import's passphrase step, before there's an account: the identity chain's addresses
+     * at [indices] for these words and this passphrase (iOS 9653c04 `chattingAddresses`). Empty
+     * when the words can't be derived.
+     */
+    fun previewIdentityAddresses(
+        mnemonic: List<String>,
+        passphrase: String,
+        family: WalletSourceFamily,
+        indices: IntRange,
+    ): List<Pair<Int, String>> {
+        val baseNode = try {
+            identityBaseNode(mnemonic, passphrase, family)
+        } catch (e: Exception) {
+            return emptyList()
+        }
+        return indices.mapNotNull { index ->
             val privateKey = identityPrivateKeyBytes(baseNode, index, family) ?: return@mapNotNull null
             index to addressFromPrivateKeyBytes(privateKey)
         }

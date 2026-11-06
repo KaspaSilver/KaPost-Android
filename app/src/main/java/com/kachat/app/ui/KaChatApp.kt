@@ -407,10 +407,22 @@ fun KaChatApp(
     onPendingOwnAddressHandled: () -> Unit = {}
 ) {
     val isLoggedIn by walletViewModel.isLoggedIn.collectAsState()
-    val mnemonic by walletViewModel.mnemonic.collectAsState()
     val startupResolved by walletViewModel.startupResolved.collectAsState()
+    // The account store couldn't be opened: the 12 or 24 words first (iOS LaunchRouter `.recovery`).
+    val needsKeyRecovery by walletViewModel.needsKeyRecovery.collectAsState()
+    // The Terms of Use come before everything else, until the current ones are agreed to on this
+    // device (iOS 9e22075 ContentView).
+    val termsContext = androidx.compose.ui.platform.LocalContext.current
+    var acceptedTermsVersion by remember { mutableStateOf(com.kachat.app.ui.screens.KaPostTerms.acceptedVersion(termsContext)) }
 
-    if (!startupResolved) {
+    if (acceptedTermsVersion < com.kachat.app.ui.screens.KaPostTerms.CURRENT_VERSION) {
+        com.kachat.app.ui.screens.TermsAcceptanceScreen(onAgree = {
+            com.kachat.app.ui.screens.KaPostTerms.accept(termsContext)
+            acceptedTermsVersion = com.kachat.app.ui.screens.KaPostTerms.CURRENT_VERSION
+        })
+    } else if (needsKeyRecovery) {
+        com.kachat.app.ui.screens.WalletRecoveryScreen(walletViewModel)
+    } else if (!startupResolved) {
         // Cold start, routing decision still loading (the async biometrics-for-login read that
         // gates auto-login into the last-used account). Compose NOTHING yet — composing the
         // Onboarding/accounts screen as a transient default flashed the account list for a few
@@ -418,7 +430,7 @@ fun KaChatApp(
         // keeps the window seamlessly on the background color, iOS-style; the wait is a few
         // milliseconds of DataStore read.
         Box(modifier = Modifier.fillMaxSize())
-    } else if (!isLoggedIn || mnemonic != null) {
+    } else if (!isLoggedIn) {
         OnboardingScreen(walletViewModel)
     } else {
         MainShell(
@@ -481,11 +493,16 @@ fun MainShell(
             // uses - an unnormalized or hostile name would otherwise be pasted raw into the
             // route and land on nothing.
             val channel = com.kachat.app.ui.screens.KaChatLink.sanitizeChannelName(pendingChannelName)
+            // A thread or profile open over the tabs would sit on top of the room, so they close
+            // first, as for a tap on the dock copy (iOS 9e22075).
+            com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
             if (channel == null) {
                 showTab(Screen.Broadcasts)
             } else {
                 // Newest rows first, alongside the navigation rather than after it.
                 notificationBroadcastViewModel.prefetchNewest(channel)
+                // On the Public Chats tab, as a tapped room link (iOS KaPostsTabView).
+                showTab(Screen.Broadcasts)
                 navController.navigate("broadcast_channel/$channel")
             }
             onPendingChannelHandled()
@@ -573,6 +590,16 @@ fun MainShell(
         }
     }
 
+    // A pre-written post from another app (kaposts://compose): every cover closes and the Feed
+    // tab shows, where KaPostsScreen opens the composer with it (iOS 9e22075 openComposer).
+    val pendingComposeText by KaPostsDeepLink.pendingComposeText.collectAsState()
+    LaunchedEffect(pendingComposeText) {
+        if (pendingComposeText != null) {
+            com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
+            showTab(Screen.KaPosts)
+        }
+    }
+
     // Broadcast room share/deep links (kachat://broadcast/<channel>,
     // https://kachat.app/broadcast/…) and taps on an in-app room-invite card. The name has
     // already been normalized and validated by BroadcastDeepLink.request; a room that isn't one of
@@ -597,6 +624,7 @@ fun MainShell(
     LaunchedEffect(pendingBroadcastLinkChannel) {
         val channel = pendingBroadcastLinkChannel ?: return@LaunchedEffect
         BroadcastDeepLink.consumePending()
+        com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
         showTab(Screen.Broadcasts)
         navController.navigate("broadcast_channel/$channel")
     }
@@ -1054,8 +1082,11 @@ fun MainShell(
                 popEnterTransition = { EnterTransition.None },
                 popExitTransition = { ExitTransition.None }
             ) {
-                Box(modifier = Modifier.background(LocalAppColors.current.background).padding(bottom = innerPadding.calculateBottomPadding())) {
-                    SettingsScreen(navController, walletViewModel = walletViewModel)
+                // The list runs on under the dock, as on iOS.
+                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
+                    Box(modifier = Modifier.background(LocalAppColors.current.background)) {
+                        SettingsScreen(navController, walletViewModel = walletViewModel)
+                    }
                 }
             }
             // Your Wallet, pushed from the Wallet button on your Profile, so the dock stays
@@ -1063,10 +1094,10 @@ fun MainShell(
             // lifted above it (LocalDockInset).
             composable(Screen.Wallet.route) {
                 CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
-                    IdentityAddressDetailScreen(
-                        onBack = { navController.popBackStack() },
+                    // KaChat's and KaPay's Wallet tab (iOS e5a9b11 `KaPostWalletView`).
+                    com.kachat.app.ui.screens.KaPostWalletScreen(
+                        navController = navController,
                         viewModel = walletViewModel,
-                        title = "Wallet",
                     )
                 }
             }
@@ -1106,12 +1137,49 @@ fun MainShell(
                 }
             }
 
-            composable("seed_phrase") {
+            composable("seed_phrase") { entry ->
+                com.kachat.app.ui.screens.SecretRoute(entry.id, onClose = { navController.popBackStack() }) {
                 AboveDock(pushedDockPad) {
                     SeedPhraseScreen(
                         viewModel = walletViewModel,
                         onBack = { navController.popBackStack() }
                     )
+                }
+                }
+            }
+
+            // Sheets on iOS: over everything, the dock included (see AccountBackupRoute).
+            composable("account_backup") { entry ->
+                com.kachat.app.ui.screens.SecretRoute(entry.id, onClose = { navController.popBackStack() }) {
+                com.kachat.app.ui.screens.AccountBackupRoute(walletViewModel) {
+                    com.kachat.app.ui.screens.AccountBackupScreen(
+                        viewModel = walletViewModel,
+                        onClose = { navController.popBackStack() }
+                    )
+                }
+                }
+            }
+            composable("backup_hygiene") {
+                com.kachat.app.ui.screens.AccountBackupRoute(walletViewModel) {
+                    com.kachat.app.ui.screens.BackupHygieneScreen(
+                        viewModel = walletViewModel,
+                        onClose = { navController.popBackStack() }
+                    )
+                }
+            }
+            composable("nfc_card_backup") { entry ->
+                com.kachat.app.ui.screens.SecretRoute(entry.id, onClose = { navController.popBackStack() }) {
+                com.kachat.app.ui.screens.AccountBackupRoute(walletViewModel) {
+                    com.kachat.app.ui.screens.NfcCardBackupScreen(
+                        viewModel = walletViewModel,
+                        onClose = { navController.popBackStack() }
+                    )
+                }
+                }
+            }
+            composable("terms_of_use") {
+                AboveDock(pushedDockPad) {
+                    com.kachat.app.ui.screens.TermsOfUseScreen(onBack = { navController.popBackStack() })
                 }
             }
 

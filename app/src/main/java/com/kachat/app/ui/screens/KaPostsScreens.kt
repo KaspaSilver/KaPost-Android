@@ -125,6 +125,8 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.PhoneIphone
+import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Tab
@@ -198,6 +200,7 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.ArrowCircleUp
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Person
@@ -227,6 +230,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import com.kachat.app.util.authenticateWithDeviceCredential
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
@@ -299,6 +303,10 @@ object KaPostsDeepLink {
     /** For reply notifications: the reply's own txid, so the opened PARENT thread (which is
      *  what [pendingPostTxId] carries) can scroll to the new comment. */
     val pendingFocusReplyTxId = MutableStateFlow<String?>(null)
+
+    /** A pre-written post from another app (`kaposts://compose`, iOS 9e22075), for the new-post
+     *  composer. Pending for a cold start or a link that arrives before sign-in. */
+    val pendingComposeText = MutableStateFlow<String?>(null)
 
     /** Set alongside a blank [pendingPostTxId] when a KaPosts notification names no post to open
      *  (a follow, or a push whose payload carried no post id): KaPostsScreen opens its
@@ -641,6 +649,8 @@ private fun KaPostsFeedScreen(
     val selectedFeed by viewModel.selectedFeed.collectAsState()
     val visiblePosts by viewModel.visiblePosts.collectAsState()
     val visibleFollowingPosts by viewModel.visibleFollowingPosts.collectAsState()
+    // Popular's ranking, computed off the main thread in the view model (not during composition).
+    val popularPosts by viewModel.popularPosts.collectAsState()
     val isLoading by viewModel.isLoadingFeed.collectAsState()
     val feedError by viewModel.feedError.collectAsState()
     // Toasts and the connection dot deliberately collect inside their own composables
@@ -737,7 +747,11 @@ private fun KaPostsFeedScreen(
      * still be made by hand.
      */
     val tipFailedContext = LocalContext.current
-    val tip: (KaPostDraft) -> Unit = { post ->
+    /** Posts whose instant tip is going out now, by post id (iOS e5a9b11 `tipsInFlight`). */
+    var tipsInFlight by remember { mutableStateOf(setOf<String>()) }
+    val tip: (KaPostDraft) -> Unit = tip@{ post ->
+        // A second tap while this post's instant tip is going out would send a second tip.
+        if (post.id in tipsInFlight) return@tip
         val address = post.posterAddress
         val name = viewModel.posterDisplayName(address)
         // A tip names the post it is for, so the post counts it (KAPOSTS_INDEXER.md 5.11).
@@ -746,25 +760,34 @@ private fun KaPostsFeedScreen(
         // 4c0d5a8); with no price yet, the amount screen opens with the reason.
         val fiat = defaultTipFiat
         val fiatText = fiat?.let { formatFiatAmount(it.first, it.second) }
-        val fiatPrice = fiat?.let { tipPriceViewModel.priceIn(it.second) }?.takeIf { it > 0 }
+        // Only a recent price: a tip that goes out without asking can't rest on an old one.
+        val fiatPrice = fiat?.let { tipPriceViewModel.freshPriceIn(it.second) }?.takeIf { it > 0 }
         val amount = when {
             fiat != null && fiatPrice != null -> Math.round(fiat.first / fiatPrice * 100_000_000.0)
             fiat != null -> null
             else -> defaultTipSompi
         }
         if (fiat != null && fiatPrice == null) {
-            tipPriceViewModel.refreshPrice()
             tipTarget = KaPostTipTarget(
                 address, name, target,
-                failure = "Tip didn't send: there is no KAS price yet to turn $fiatText into KAS.",
+                failure = "Tip didn't send: there is no recent KAS price to turn $fiatText into KAS.",
             )
         } else if (amount == null || amount <= 0) {
             tipTarget = KaPostTipTarget(address, name, target)
+        } else if (amount > KAPOST_INSTANT_TIP_LIMIT_SOMPI) {
+            // Instant tips skip the device lock, so they stay small: a bigger one goes through
+            // the swipe (iOS e5a9b11).
+            tipTarget = KaPostTipTarget(address, name, target, failure = KAPOST_INSTANT_TIP_LIMIT_NOTICE)
         } else {
             chatViewModel.addContact(address, null)
             val kasText = kasAmountText(amount)
+            tipsInFlight = tipsInFlight + post.id
             chatViewModel.sendPayment(address, kasText, tip = target) { ok, error, txId ->
-                if (ok) {
+                tipsInFlight = tipsInFlight - post.id
+                if (!ok && error == com.kachat.app.services.SendOutcomeUnknownException.MESSAGE) {
+                    // It may have gone through: no amount screen, which would invite a second tip.
+                    viewModel.showTipToast(error, "")
+                } else if (ok) {
                     viewModel.countTip(target)
                     val amountText = fiatText?.let { "$kasText ${KaspaUnit.symbol} ($it)" } ?: "$kasText ${KaspaUnit.symbol}"
                     viewModel.showTipToast("Tipped $amountText to $name", txId.orEmpty())
@@ -957,6 +980,25 @@ private fun KaPostsFeedScreen(
         }
     }
 
+    // A pre-written post from another app opens the new-post composer. A composer already open
+    // keeps what is being written, and the link's post opens when it closes. A confirmed 0 KAS
+    // gets the funding card, as the compose button does (iOS 9e22075 presentPendingComposeLink).
+    val pendingComposeText by KaPostsDeepLink.pendingComposeText.collectAsState()
+    LaunchedEffect(pendingComposeText, handlesDeepLinks, showComposer, quoteTarget, replyComposerTarget) {
+        if (!handlesDeepLinks) return@LaunchedEffect
+        val text = pendingComposeText ?: return@LaunchedEffect
+        if (showComposer || quoteTarget != null || replyComposerTarget != null) return@LaunchedEffect
+        KaPostsDeepLink.pendingComposeText.value = null
+        if (fundingGate.active) {
+            showFundingGate = true
+        } else {
+            restoredComposerText = text
+            restoredComposerSegments = emptyList()
+            restoredPollOptions = emptyList()
+            showComposer = true
+        }
+    }
+
     // Someone's profile from outside the feed - a profile link, or View Profile on a public chat
     // member - opens over the feed (iOS KaPosts `.openKaPostsProfile`).
     val pendingProfileAddress by KaPostsDeepLink.pendingProfileAddress.collectAsState()
@@ -1023,6 +1065,7 @@ private fun KaPostsFeedScreen(
                 // The Profile tab: your own profile at the root, under the dot and the balance.
                 Column(modifier = Modifier.fillMaxSize()) {
                     KaPostsOverlayStatusBar()
+                    KaPostsFixedTitle("Profile", onOpenBackup = { navController.navigate("account_backup") })
                     KaPostsProfilePage(
                         address = viewModel.myAddress() ?: "",
                         pubkey = null,
@@ -1058,6 +1101,8 @@ private fun KaPostsFeedScreen(
                     )
                     BalanceTopBarLabel(modifier = Modifier.align(Alignment.Center))
                 }
+                // The backup strip, above the Feed's own title (iOS e5a9b11).
+                AccountBackupBanner(viewModel = walletViewModel, onOpenBackup = { navController.navigate("account_backup") })
                 // The hamburger before the title, which is fixed chrome above the feed so a
                 // pull-to-refresh moves nothing but the feed (iOS KaPosts feedMenuButton).
                 Row(
@@ -1076,10 +1121,8 @@ private fun KaPostsFeedScreen(
                                 KaPostsFeedMenuItem.BOOKMARKS -> showBookmarks = true
                                 KaPostsFeedMenuItem.MUTED -> moderationKind = false
                                 KaPostsFeedMenuItem.BLOCKED -> moderationKind = true
-                                KaPostsFeedMenuItem.SCHEDULED -> {
-                                    viewModel.refreshScheduledPosts()
-                                    showScheduled = true
-                                }
+                                // The overlay's own LaunchedEffect sends and refreshes (iOS `.task`).
+                                KaPostsFeedMenuItem.SCHEDULED -> showScheduled = true
                             }
                         },
                     )
@@ -1108,12 +1151,12 @@ private fun KaPostsFeedScreen(
                     key = { KaPostsFeedTabs[it] },
                 ) { page ->
                     val tab = KaPostsFeedTabs[page]
-                    // Keyed on ONLY the stream this tab renders: Popular's re-sort no longer
-                    // re-runs when just the Following stream ticks, and vice versa.
-                    val tabSource =
-                        if (tab == KaPostsViewModel.FeedTab.FOLLOWING) visibleFollowingPosts else visiblePosts
-                    val pageFeed = remember(tab, tabSource) {
-                        viewModel.feedFor(tab, visiblePosts, visibleFollowingPosts)
+                    // Each tab reads only its own stream; Popular arrives already ranked
+                    // ([KaPostsViewModel.popularPosts], sorted on Dispatchers.Default).
+                    val pageFeed = when (tab) {
+                        KaPostsViewModel.FeedTab.FOLLOWING -> visibleFollowingPosts
+                        KaPostsViewModel.FeedTab.FEED -> visiblePosts
+                        KaPostsViewModel.FeedTab.POPULAR -> popularPosts
                     }
                     val feedPaging = pagingStateOf(
                         viewModel,
@@ -1254,8 +1297,12 @@ private fun KaPostsFeedScreen(
                                     viewModel.ensureSenderProfileFetched(post.posterAddress)
                                 }
                                 // Thread-root probe: once per commented post, so "View thread"
-                                // can appear on other people's threads too.
-                                LaunchedEffect(post.remoteId) { viewModel.probeThreadRoot(post) }
+                                // can appear on other people's threads too. Only in the feed being
+                                // read: the pages beside it are drawn too (iOS e5a9b11).
+                                val isReadFeed = selectedFeed == tab
+                                LaunchedEffect(post.remoteId, isReadFeed) {
+                                    if (isReadFeed) viewModel.probeThreadRoot(post)
+                                }
                                 KaPostCell(
                                     post = post,
                                     viewModel = viewModel,
@@ -1892,6 +1939,7 @@ private fun FeedEmptyState(
  * cancelled, which releases the coins it was holding; one that has gone out or failed can be
  * cleared off the list. Mirrors iOS's Scheduled screen.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun KaPostsScheduledOverlay(viewModel: KaPostsViewModel, onClose: () -> Unit) {
     val colors = LocalAppColors.current
@@ -1917,6 +1965,21 @@ private fun KaPostsScheduledOverlay(viewModel: KaPostsViewModel, onClose: () -> 
             }
             return@KaPostsOverlayScaffold
         }
+        // Pull to refresh: send what is due from this phone, then take the indexer's word on
+        // the rest (iOS KaPostsView.swift scheduledSheet `.refreshable`).
+        val pullRefreshState = rememberPullToRefreshState()
+        LaunchedEffect(pullRefreshState.isRefreshing) {
+            if (pullRefreshState.isRefreshing) {
+                viewModel.refreshScheduledPostsNow()
+                pullRefreshState.endRefresh()
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBounds()
+                .nestedScroll(pullRefreshState.nestedScrollConnection),
+        ) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(vertical = 8.dp),
@@ -1931,25 +1994,30 @@ private fun KaPostsScheduledOverlay(viewModel: KaPostsViewModel, onClose: () -> 
                         overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.height(6.dp))
+                    // iOS scheduledIcon / scheduledTint: the icon and the line share the tint.
+                    val statusTint = when (entry.status) {
+                        com.kachat.app.services.KaPostScheduledEntry.STATUS_SUBMITTED -> colors.success
+                        com.kachat.app.services.KaPostScheduledEntry.STATUS_FAILED -> colors.danger
+                        com.kachat.app.services.KaPostScheduledEntry.STATUS_CANCELLED -> colors.textSecondary
+                        else -> KaspaTeal
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             when (entry.status) {
                                 com.kachat.app.services.KaPostScheduledEntry.STATUS_SUBMITTED -> Icons.Default.CheckCircle
                                 com.kachat.app.services.KaPostScheduledEntry.STATUS_FAILED -> Icons.Default.Error
-                                else -> Icons.Default.Schedule
+                                com.kachat.app.services.KaPostScheduledEntry.STATUS_CANCELLED -> Icons.Outlined.Cancel
+                                // Only this phone holds it (iOS "iphone"); the indexer's clock otherwise.
+                                else -> if (entry.onServer) Icons.Default.Schedule else Icons.Default.PhoneIphone
                             },
                             contentDescription = null,
-                            tint = when (entry.status) {
-                                com.kachat.app.services.KaPostScheduledEntry.STATUS_SUBMITTED -> colors.success
-                                com.kachat.app.services.KaPostScheduledEntry.STATUS_FAILED -> colors.danger
-                                else -> KaspaTeal
-                            },
+                            tint = statusTint,
                             modifier = Modifier.size(14.dp),
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
                             scheduledStatusLine(entry, com.kachat.app.util.is24HourClock()),
-                            color = colors.textSecondary,
+                            color = statusTint,
                             fontSize = 12.sp,
                             modifier = Modifier.weight(1f),
                         )
@@ -1971,13 +2039,20 @@ private fun KaPostsScheduledOverlay(viewModel: KaPostsViewModel, onClose: () -> 
                             )
                         }
                     }
-                    entry.error?.takeIf { it.isNotBlank() }?.let { error ->
+                    // Only on a failed post (iOS: caption2, secondary).
+                    entry.error?.takeIf {
+                        it.isNotBlank() && entry.status == com.kachat.app.services.KaPostScheduledEntry.STATUS_FAILED
+                    }?.let { error ->
                         Spacer(Modifier.height(4.dp))
-                        Text(error, color = colors.danger, fontSize = 12.sp)
+                        Text(error, color = colors.textSecondary, fontSize = 11.sp)
                     }
                 }
                 HorizontalDivider(color = colors.surfaceVariant)
             }
+        }
+        if (pullRefreshState.verticalOffset > 0f || pullRefreshState.isRefreshing) {
+            PullToRefreshContainer(state = pullRefreshState, modifier = Modifier.align(Alignment.TopCenter))
+        }
         }
     }
 }
@@ -2297,6 +2372,9 @@ fun KaPostCell(
 ) {
     val colors = LocalAppColors.current
     val context = LocalContext.current
+    // A report that couldn't go to a mail app.
+    var unsentReport by remember { mutableStateOf(false) }
+    if (unsentReport) ContentReportFallback(onDismiss = { unsentReport = false })
     // Per-address / per-post SLICES of the view model's whole-map stores (see
     // collectSelectedAsState): this cell recomposes only when ITS avatar, name, follow state
     // or countdowns change. Collecting the whole maps here subscribed every visible cell to
@@ -2380,9 +2458,20 @@ fun KaPostCell(
     val paymentRequestLink = remember(displayedText) {
         KaChatLink.findFirst(displayedText)?.takeIf { it.ref is KaChatLinkRef.PaymentRequest }
     }
-    // The text as drawn: the post without its payment request link.
-    val bodyText = remember(displayedText, paymentRequestLink) {
-        paymentRequestLink?.let { displayedText.replace(it.raw, "").trim() } ?: displayedText
+    // A KaPlay bot challenge link in the post: drawn as a card (KaPostBotChallengeCard) under the
+    // text, and left out of the text itself (iOS 9e22075).
+    val botChallengeLink = remember(displayedText) { KaPlayBotChallenge.match(displayedText) }
+    // A link to KaChat's own site in the post: drawn as a preview card under the text, and left
+    // out of the text itself (iOS f81c467).
+    val siteLink = remember(displayedText) { KaChatSiteLink.match(displayedText) }
+    // The text as drawn: the post without the links drawn as cards.
+    val bodyText = remember(displayedText, paymentRequestLink, botChallengeLink, siteLink) {
+        var text = displayedText
+        paymentRequestLink?.let { text = text.replace(it.raw, "") }
+        botChallengeLink?.let { text = text.replace(it.matchedText, "") }
+        // Only this one: the same text can also be the start of a longer link to another page.
+        siteLink?.let { text = text.replaceFirst(it.matchedText, "") }
+        if (paymentRequestLink != null || botChallengeLink != null || siteLink != null) text.trim() else displayedText
     }
 
     // Measured on what is actually rendered, so a translation that runs longer than its original
@@ -2513,10 +2602,25 @@ fun KaPostCell(
                     // matching iOS - no duplicate entry here.
                     if (showOverflow) {
                         ActionSheetContainer(
-                            title = "Post",
+                            // iOS: "Your post", or the author's name.
+                            title = if (isMine) "Your post" else name,
                             subtitle = null,
                             onDismiss = { showOverflow = false },
                         ) {
+                            // Editable only while the window is open, and only our own: the
+                            // indexer enforces the same rules, so anything else would be
+                            // written to the chain and then ignored. Edit first, as iOS.
+                            val editLeftMs = if (isMine) post.editTimeRemainingMs else null
+                            if (editLeftMs != null) {
+                                ActionSheetRow(
+                                    icon = Icons.Default.Edit,
+                                    title = "Edit",
+                                    subtitle = "Change the text. Posts can be edited for two hours; after that they stay as they are. ${editWindowLeftText(editLeftMs)} left.",
+                                ) {
+                                    showOverflow = false
+                                    editing = true
+                                }
+                            }
                             if (post.remoteId != null) {
                                 ActionSheetRow(
                                     icon = Icons.Outlined.BarChart,
@@ -2527,22 +2631,8 @@ fun KaPostCell(
                                     onViewEngagement()
                                 }
                             }
-                            // Editable only while the window is open, and only our own: the
-                            // indexer enforces the same rules, so anything else would be
-                            // written to the chain and then ignored.
-                            val editLeftMs = if (isMine) post.editTimeRemainingMs else null
-                            if (editLeftMs != null) {
-                                ActionSheetRow(
-                                    icon = Icons.Default.Edit,
-                                    title = "Edit",
-                                    subtitle = "Change the text. ${editWindowLeftText(editLeftMs)} left.",
-                                ) {
-                                    showOverflow = false
-                                    editing = true
-                                }
-                            }
                             // Any age, unlike an edit: what you posted is yours to withdraw.
-                            if (isMine && post.remoteId != null && post.deliveryStatus == KaPostDraft.Delivery.SENT) {
+                            if (isMine && post.remoteId != null && post.deliveryStatus == KaPostDraft.Delivery.SENT && !post.pendingDeletion) {
                                 ActionSheetRow(
                                     icon = Icons.Default.Delete,
                                     title = stringResource(R.string.delete),
@@ -2566,7 +2656,7 @@ fun KaPostCell(
                                     tint = LocalAppColors.current.danger,
                                 ) {
                                     showOverflow = false
-                                    reportPost(context, post)
+                                    unsentReport = !reportPost(post).send(context)
                                 }
                                 // Named, as on iOS: "Mute alice" says who this lands on.
                                 ActionSheetRow(
@@ -2580,7 +2670,7 @@ fun KaPostCell(
                                 ActionSheetRow(
                                     icon = Icons.Default.Block,
                                     title = "Block $name",
-                                    subtitle = "Hides their posts and stops them interacting with you.",
+                                    subtitle = "Hides their posts and room messages, and stops them interacting with you.",
                                     tint = LocalAppColors.current.danger,
                                 ) {
                                     showOverflow = false
@@ -2685,6 +2775,16 @@ fun KaPostCell(
                 (paymentRequestLink?.ref as? KaChatLinkRef.PaymentRequest)?.let { link ->
                     Spacer(modifier = Modifier.height(10.dp))
                     KaPostPaymentRequestCard(request = link.request)
+                }
+                // A KaPlay bot challenge: a card with a Challenge button, not the link's text.
+                botChallengeLink?.let { link ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    KaPostBotChallengeCard(challenge = link.challenge)
+                }
+                // A link to KaChat's site: its preview, or the link itself if that can't load.
+                siteLink?.let { link ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    LinkPreviewCard(url = link.url, txId = post.remoteId.orEmpty(), fallbackText = link.matchedText, loadingHeight = 190.dp)
                 }
                 TranslateAffordance(
                     state = translationState,
@@ -3224,6 +3324,17 @@ private fun DeliveryState(post: KaPostDraft, onRetry: (() -> Unit)?) {
             strokeWidth = 1.5.dp,
             color = colors.textSecondary,
         )
+        // It may have gone through: no Retry, which could post and pay twice (iOS e5a9b11).
+        KaPostDraft.Delivery.UNCONFIRMED -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .padding(2.dp)
+                .semantics { contentDescription = "Not confirmed. It may have gone through. Check before posting it again." },
+        ) {
+            Icon(Icons.AutoMirrored.Filled.Help, contentDescription = null, tint = LocalAppColors.current.warning, modifier = Modifier.size(14.dp))
+            Text("Not confirmed", color = LocalAppColors.current.warning, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        }
         KaPostDraft.Delivery.FAILED -> Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -3473,7 +3584,9 @@ fun KaPostComposerDialog(
     } else {
         totalSegments > 0 && charCount <= limit
     }
-    val threadingEnabled = onSubmitThread != null && quoted == null && !pollEnabled
+    // Not while a time is set or for a reply (iOS): a scheduled post is one post, and the
+    // stacked segments would be lost.
+    val threadingEnabled = onSubmitThread != null && quoted == null && !pollEnabled && scheduledAtMs == null && !isReply
     val editorFocus = remember { FocusRequester() }
     var editorFocused by remember { mutableStateOf(false) }
     val hapticView = LocalView.current
@@ -3805,7 +3918,9 @@ fun KaPostComposerDialog(
                             .background(if (pollEnabled) KaspaTeal else KaspaTeal.copy(alpha = 0.15f))
                             .clickable {
                                 pollEnabled = !pollEnabled
-                                if (pollEnabled) pollOptions = listOf("", "")
+                                // A poll goes out now: it can't keep a scheduled time (iOS), and
+                                // the options typed before stay.
+                                if (pollEnabled) scheduledAtMs = null
                             }
                             .padding(horizontal = 12.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -5314,9 +5429,9 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
                     if (isMine) {
                         // Everything above this - avatar, banner, name, bio - comes from your
                         // profile, so the way to change any of it belongs here. Beside it, the
-                        // Wallet: the address's balance, history and coins, the screen that used to
-                        // be the Wallet tab - pushed, so the dock stays underneath (iOS KaPosts
-                        // 865c9ab).
+                        // Wallet: the total, Send, Receive, Request and the chatting address's
+                        // history - pushed, so the dock stays underneath (iOS KaPosts 865c9ab,
+                        // e5a9b11).
                         Row(
                             modifier = Modifier.padding(top = 2.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -5713,6 +5828,7 @@ fun KaPostsNotificationsTab(
                 }
             },
         )
+        KaPostsFixedTitle("Notifications", onOpenBackup = { navController.navigate("account_backup") })
         Box(modifier = Modifier.weight(1f)) {
             KaPostsNotificationsList(
                 viewModel = viewModel,
@@ -5755,7 +5871,7 @@ private fun KaPostsNotificationsList(
         }
     }
 
-    LaunchedEffect(Unit) { viewModel.loadNotifications() }
+    LaunchedEffect(Unit) { viewModel.loadNotificationsOnAppear() }
     EndlessScroll(listState = listState) { viewModel.loadMoreNotifications() }
     // Pull-to-refresh reloads page one (iOS .refreshable on both the list and the empty state).
     val pullRefreshState = rememberPullToRefreshState()
@@ -5918,16 +6034,13 @@ private fun foldedLayoutText(text: String, folded: Boolean): String {
 /** Eight lines never need more than this, and a cell that lays out less scrolls better. */
 private const val FOLDED_POST_LAYOUT_CHARS = 1_200
 
-/** Where a KaPosts report is sent. */
-private const val KAPOSTS_REPORT_ADDRESS = "kaspasilver@gmail.com"
-
 /**
- * Opens an email to KaChat about [post]: its id, author and text, and a line for what is wrong
+ * A report about [post] ([ContentReport]): its id, author and text, and a line for what is wrong
  * with it. An email rather than a form because a person reads it, and nothing else can act on a
  * post that lives on a public chain.
  */
-private fun reportPost(context: android.content.Context, post: KaPostDraft) {
-    val body = buildString {
+private fun reportPost(post: KaPostDraft) = ContentReport(
+    buildString {
         appendLine("I want to report this post.")
         appendLine()
         appendLine("Post: ${post.remoteId ?: "not yet on chain"}")
@@ -5937,28 +6050,13 @@ private fun reportPost(context: android.content.Context, post: KaPostDraft) {
         appendLine("What is wrong with it:")
         appendLine()
     }
-    val intent = Intent(Intent.ACTION_SENDTO).apply {
-        data = android.net.Uri.parse("mailto:")
-        putExtra(Intent.EXTRA_EMAIL, arrayOf(KAPOSTS_REPORT_ADDRESS))
-        putExtra(Intent.EXTRA_SUBJECT, "KaPost report")
-        putExtra(Intent.EXTRA_TEXT, body)
-    }
-    runCatching { context.startActivity(intent) }.onFailure {
-        // No mail app on this phone: say where to write instead of doing nothing.
-        IosToasts.error("No email app found. Please write to $KAPOSTS_REPORT_ADDRESS")
-    }
-}
+)
 
 /** "1h 12m" / "8m" / "40s" - how long is left to edit, said the way a countdown is read. */
 private fun editWindowLeftText(remainingMs: Long): String {
-    val totalSeconds = (remainingMs / 1000).coerceAtLeast(0)
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    return when {
-        hours > 0 -> "${hours}h ${minutes}m"
-        minutes > 0 -> "${minutes}m"
-        else -> "${totalSeconds}s"
-    }
+    // iOS `editWindowText`: hours and minutes, never under "1m".
+    val minutes = (remainingMs / 60_000).coerceAtLeast(0)
+    return if (minutes >= 60) "${minutes / 60}h ${minutes % 60}m" else "${maxOf(minutes, 1)}m"
 }
 
 /** iOS Item.Kind.icon: the glyph stamped on the actor's avatar. */
@@ -6058,8 +6156,9 @@ fun KaPostTipSheet(
         resetPaymentState()
         onDismiss()
     }
-    /** A tip on a post comes from your address only, so From is skipped. */
-    val initialStep = if (tip != null) TipStep.AMOUNT else TipStep.FROM
+    /** Tips leave from the chatting address, like every send in KaPost, so there's no From step
+     *  (iOS e5a9b11). */
+    val initialStep = TipStep.AMOUNT
     /** The step on screen. */
     var step by remember { mutableStateOf(initialStep) }
     /** The From step's Choose an Address is on (its list shows), before or after a pick. */
@@ -6068,7 +6167,8 @@ fun KaPostTipSheet(
     LaunchedEffect(source, chattingAddress) {
         availableSompi = null
         val fromAddress = source.address(chattingAddress) ?: return@LaunchedEffect
-        availableSompi = walletViewModel.addressBalanceSompi(fromAddress)
+        // A failed read says nothing about the balance: left unknown, not shown as 0 (iOS e5a9b11).
+        availableSompi = walletViewModel.tipSpendableSompi(fromAddress)
     }
     /** The fee being typed on the fee step, in KAS. */
     var feeDraft by remember { mutableStateOf("") }
@@ -7060,15 +7160,24 @@ fun KaPostTippersSheet(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
             )
-            else -> Column(Modifier.fillMaxWidth()) {
-                tips.forEach { tip ->
+            // A lazy list (iOS `List`), so the spinner row - and the next page - comes only when it
+            // is scrolled to; in a plain Column it composed at once and pulled every page. Capped
+            // in height: the sheet's own column scrolls, and a lazy list needs a bounded height.
+            else -> LazyColumn(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.7f).dp),
+            ) {
+                items(tips, key = { it.id }) { tip ->
                     KaPostTipRow(tip = tip, viewModel = viewModel, amountColor = colors.textPrimary)
                 }
                 if (hasMore) {
-                    Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
-                        com.kachat.app.ui.theme.IosActivityIndicator(color = KaspaTeal)
+                    item(key = "tips-more") {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                            com.kachat.app.ui.theme.IosActivityIndicator(color = KaspaTeal)
+                        }
+                        LaunchedEffect(tips.size) { if (!loading) loadMoreRequests += 1 }
                     }
-                    LaunchedEffect(tips.size) { if (!loading) loadMoreRequests += 1 }
                 }
             }
         }
@@ -7131,6 +7240,11 @@ private fun KaPostTipRow(
  * tapped, in the app's currency (USD unless changed in Settings): then each tip sends that much
  * worth of KAS at the price of the moment. Mirrors iOS's KaPostsSettingsView (KaPosts 4c0d5a8).
  */
+/** Instant tips skip the device lock, so the most one may send: a bigger default tip opens the
+ *  tip screen, whose swipe asks first (iOS e5a9b11 `instantTipLimitSompi`). */
+internal const val KAPOST_INSTANT_TIP_LIMIT_SOMPI = 10L * 100_000_000L
+internal const val KAPOST_INSTANT_TIP_LIMIT_NOTICE = "Instant tips are limited to 10 KAS. Swipe up to send this one."
+
 @Composable
 fun KaPostsSettingsOverlay(
     onClose: () -> Unit,
@@ -7147,6 +7261,7 @@ fun KaPostsSettingsOverlay(
     val livePrice by portfolioViewModel.currentPriceUsd.collectAsState()
 
     var instantTipEnabled by remember { mutableStateOf(false) }
+    val tipToggleContext = LocalContext.current
     var tipText by remember { mutableStateOf("") }
     /** The default tip is typed in [tipCurrency] rather than KAS. */
     var tipInFiat by remember { mutableStateOf(false) }
@@ -7232,8 +7347,18 @@ fun KaPostsSettingsOverlay(
                     SettingsSwitchItem("Send a default tip instantly", instantTipEnabled) { enabled ->
                         instantTipEnabled = enabled
                         if (enabled) {
-                            if (tipText.isBlank()) tipText = "1"
-                            commitTip()
+                            // Sends without asking from then on, so turning it on asks once
+                            // (iOS e5a9b11).
+                            if (defaultTipSompi == null && defaultTipFiat == null) {
+                                tipToggleContext.authenticateWithDeviceCredential(
+                                    title = "Turn on instant tips",
+                                    onSuccess = {
+                                        if (tipText.isBlank()) tipText = "1"
+                                        commitTip()
+                                    },
+                                    onFailure = { instantTipEnabled = false },
+                                )
+                            }
                         } else {
                             seeded = true
                             settingsViewModel.setKaPostsDefaultTipSompi(null)
@@ -7305,7 +7430,7 @@ fun KaPostsSettingsOverlay(
                 if (instantTipEnabled) {
                     // What a tip sends: in KAS, or the currency amount with what it comes to in
                     // KAS today.
-                    val footer = if (!tipInFiat) {
+                    val amountFooter = if (!tipInFiat) {
                         "Tap the unit to set the tip in your currency instead."
                     } else {
                         val price = livePrice.let { portfolioViewModel.priceIn(tipCurrency) }
@@ -7316,7 +7441,7 @@ fun KaPostsSettingsOverlay(
                             "Each tip sends this much worth of KAS at the price of the moment."
                         }
                     }
-                    SettingsFormFooter(footer)
+                    SettingsFormFooter("$amountFooter Up to 10 KAS goes out without asking; a bigger tip opens the tip screen.")
                 }
             }
             // Which pings reach you is Settings > Notifications > KaPost, behind the cog on the

@@ -144,6 +144,13 @@ class KaPostsViewModel @Inject constructor(
         }
     }
 
+    /** Pull to refresh on the Scheduled list: send what is due from this phone, then take the
+     *  indexer's word on the rest - awaited, so the spinner ends when both have (iOS `.refreshable`). */
+    suspend fun refreshScheduledPostsNow() {
+        runCatching { scheduledStore.sendDueLocally() }
+        runCatching { scheduledStore.refreshFromServer() }
+    }
+
     /** How many KaPosts notifications have arrived since the bell was last opened. */
     val unseenNotifications: kotlinx.coroutines.flow.StateFlow<Int> = unseenStore.unseenCount
 
@@ -289,6 +296,9 @@ class KaPostsViewModel @Inject constructor(
      * than appended, so stale pages can never land in a list they no longer belong to.
      */
     private val generations = mutableMapOf<String, Int>()
+    /** Where generations are drawn from: never reused, so a surface forgotten on an account
+     *  switch and loaded again can't hand an old in-flight page a number that matches. */
+    private var generationSeq = 0
     private val loadMoreJobs = mutableMapOf<String, Job>()
 
     /** Replies written in this session, by local id. They sit at the top of their thread until
@@ -306,7 +316,8 @@ class KaPostsViewModel @Inject constructor(
     private fun surfaceLoaded(key: String): Boolean = generations.containsKey(key)
 
     private fun resetSurface(key: String): Int {
-        val generation = (generations[key] ?: 0) + 1
+        generationSeq += 1
+        val generation = generationSeq
         generations[key] = generation
         loadMoreJobs.remove(key)?.cancel()
         // A refresh or account change invalidates the window the sweep was extending; letting it
@@ -444,7 +455,9 @@ class KaPostsViewModel @Inject constructor(
                 settings.kapostsMuted(address)
             }
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+        // Eagerly: screens that never collect it (the Notifications tab) still filter by it
+        // (iOS `moderationStore.isHidden`), where a lazy flow sat at its empty start.
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     @OptIn(ExperimentalCoroutinesApi::class)
     val blocked: StateFlow<Set<String>> = walletManager.activeAddressFlow
         .flatMapLatest { address ->
@@ -453,7 +466,7 @@ class KaPostsViewModel @Inject constructor(
                 settings.kapostsBlocked(address)
             }
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     fun isHidden(address: String, mutedSet: Set<String> = muted.value, blockedSet: Set<String> = blocked.value): Boolean =
         address in mutedSet || address in blockedSet
@@ -466,7 +479,14 @@ class KaPostsViewModel @Inject constructor(
         remote: List<KaPostDraft>,
         hiddenSet: Set<String>,
     ): List<KaPostDraft> {
-        val combined = mergeNewestFirst(local, remote.filter { r ->
+        // A poll posted this session takes the server's counts, or other people's votes never
+        // show on it (iOS merges `remote.poll` into the local card).
+        val remotePolls = remote.mapNotNull { r -> r.remoteId?.let { id -> r.poll?.let { id to it } } }.toMap()
+        val localWithPolls = if (remotePolls.isEmpty()) local else local.map { l ->
+            val serverPoll = l.remoteId?.let(remotePolls::get)
+            if (l.poll != null && serverPoll != null) l.copy(poll = serverPoll) else l
+        }
+        val combined = mergeNewestFirst(localWithPolls, remote.filter { r ->
             local.none { it.remoteId != null && it.remoteId == r.remoteId }
         })
         return combined.filter { it.posterAddress !in hiddenSet }
@@ -538,6 +558,12 @@ class KaPostsViewModel @Inject constructor(
             )
             .map { it.first }
     }
+
+    /** The Popular tab's rows: [visiblePosts] re-scored and re-sorted off the main thread, so a
+     *  tab tap or a stream tick never ranks 300 posts during composition. */
+    val popularPosts: StateFlow<List<KaPostDraft>> = visiblePosts
+        .map { feedFor(FeedTab.POPULAR, it, emptyList()) }
+        .flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** The selected tab's feed - kept for callers that only care about what's on screen. */
     val visibleFeed: StateFlow<List<KaPostDraft>> = combine(
@@ -838,10 +864,14 @@ class KaPostsViewModel @Inject constructor(
             return
         }
         _undoDeadlines.value = _undoDeadlines.value + (key to System.currentTimeMillis() + UNDO_DELAY_MS)
+        // The account it was armed under: a switch inside the five seconds must never let it
+        // submit (and sign) as the new account. The switch collector in init cancels it too.
+        val armedFor = walletManager.activeAddressFlow.value
         undoJobs[key] = viewModelScope.launch {
             delay(UNDO_DELAY_MS)
             _undoDeadlines.value = _undoDeadlines.value - key
             undoJobs.remove(key)
+            if (walletManager.activeAddressFlow.value != armedFor) return@launch
             action()
         }
     }
@@ -1249,6 +1279,8 @@ class KaPostsViewModel @Inject constructor(
     private val pageOneLoadedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var popularSweptAt = 0L
     private var myProfileLoadedAt = 0L
+    /** When the Notifications tab last loaded on appearing ([loadNotificationsOnAppear]). */
+    private var notificationsAppearedAt = 0L
     private var posterProfileLoaded: Pair<String, Long>? = null
 
     private fun isLoadFresh(at: Long): Boolean = at > 0L && System.currentTimeMillis() - at < loadGateStaleAfterMs
@@ -1302,6 +1334,9 @@ class KaPostsViewModel @Inject constructor(
     }
 
     fun selectFeed(tab: FeedTab) {
+        // The new-posts pill belongs to the feed it was found for (iOS clears it when the feed
+        // changes): carried over, its posts were spliced into the other tab.
+        if (tab != _selectedFeed.value) _pendingNewPosts.value = emptyList()
         _selectedFeed.value = tab
         if (!surfaceLoaded(feedKey(tab))) {
             viewModelScope.launch {
@@ -1386,7 +1421,34 @@ class KaPostsViewModel @Inject constructor(
                 pageOneLoadedAt.clear()
                 popularSweptAt = 0L
                 myProfileLoadedAt = 0L
+                notificationsAppearedAt = 0L
                 posterProfileLoaded = null
+                // Nothing armed under the old account goes out as the new one: a pending
+                // 5-second post, like or edit is dropped with its countdown and toast.
+                undoJobs.values.forEach { it.cancel() }
+                undoJobs.clear()
+                _undoDeadlines.value = emptyMap()
+                _undoToast.value = null
+                pendingEditOriginals.clear()
+                // Every list and cursor belongs to the old identity (K responses are decorated per
+                // requester): drop them all and start over (iOS KaPostsView.swift onChange of the
+                // wallet's address). In-flight pages are dropped too - their surface's generation
+                // is gone, and a new one never reuses a number.
+                loadMoreJobs.values.forEach { it.cancel() }
+                loadMoreJobs.clear()
+                popularSweepJob?.cancel()
+                generations.clear()
+                _paging.value = emptyMap()
+                _localPosts.value = emptyList()
+                _globalPosts.value = emptyList()
+                _followingPosts.value = emptyList()
+                _pendingNewPosts.value = emptyList()
+                _chainPosts.value = emptyList()
+                _myProfilePosts.value = emptyList()
+                _myProfileReplies.value = emptyList()
+                _posterProfilePosts.value = emptyList()
+                _posterProfileReplies.value = emptyList()
+                _notifications.value = emptyList()
             }
         }
         // One-time cleanup of the legacy GLOBAL follow set, which leaked one account's follows
@@ -1764,6 +1826,12 @@ class KaPostsViewModel @Inject constructor(
         fun strip(list: List<KaPostDraft>): List<KaPostDraft> =
             list.filterNot { it.id == id }.map { it.copy(comments = strip(it.comments)) }
         for (flow in allPostLists()) flow.value = strip(flow.value)
+        // And from open thread chains and the new-posts pill, or "Show N new posts" brought a
+        // deleted post back (iOS removes it from `threadChains` and `pendingNewPosts` too).
+        if (_threadChains.value.values.any { chain -> chain.any { it.id == id } }) {
+            _threadChains.value = _threadChains.value.mapValues { (_, chain) -> strip(chain) }
+        }
+        if (_pendingNewPosts.value.any { it.id == id }) _pendingNewPosts.value = strip(_pendingNewPosts.value)
     }
 
     private suspend fun submitScheduledPost(localId: String, text: String) {
@@ -1771,7 +1839,7 @@ class KaPostsViewModel @Inject constructor(
             val txId = kaPostsService.submitPost(text, mentionedPubkeys(text))
             mutateEverywhere(localId) { it.copy(remoteId = txId, deliveryStatus = KaPostDraft.Delivery.SENT) }
         } catch (e: Exception) {
-            mutateEverywhere(localId) { it.copy(deliveryStatus = KaPostDraft.Delivery.FAILED) }
+            mutateEverywhere(localId) { it.copy(deliveryStatus = failureStatus(e)) }
             Log.w(TAG, "Post submit failed", e)
         }
     }
@@ -1811,7 +1879,7 @@ class KaPostsViewModel @Inject constructor(
                 val txId = kaPostsService.submitPoll(question, clean, closesAtMs, mentionedPubkeys(question))
                 mutateEverywhere(newPost.id) { it.copy(remoteId = txId, deliveryStatus = KaPostDraft.Delivery.SENT) }
             } catch (e: Exception) {
-                mutateEverywhere(newPost.id) { it.copy(deliveryStatus = KaPostDraft.Delivery.FAILED) }
+                mutateEverywhere(newPost.id) { it.copy(deliveryStatus = failureStatus(e)) }
                 Log.w(TAG, "Poll submit failed", e)
             }
         }
@@ -2081,17 +2149,24 @@ class KaPostsViewModel @Inject constructor(
                 threadRemainders.remove(localId)
                 mutateEverywhere(localId) { it.copy(deliveryStatus = KaPostDraft.Delivery.SENT) }
             } catch (e: Exception) {
-                mutateEverywhere(localId) { it.copy(deliveryStatus = KaPostDraft.Delivery.FAILED) }
+                mutateEverywhere(localId) { it.copy(deliveryStatus = failureStatus(e)) }
                 Log.w(TAG, "Thread submit failed (resumable)", e)
             }
         }
     }
 
     /** Rapid sequential sends spend change the node hasn't indexed yet - retry with settle gaps. */
+    /** How a post that didn't go through is shown: failed with Retry, or not confirmed with none
+     *  (iOS e5a9b11 `failureStatus`). */
+    private fun failureStatus(e: Throwable): KaPostDraft.Delivery =
+        if (e is com.kachat.app.services.SendOutcomeUnknownException) KaPostDraft.Delivery.UNCONFIRMED else KaPostDraft.Delivery.FAILED
+
     private suspend fun submitWithUtxoRetry(op: suspend () -> String): String {
         var attempt = 0
         while (true) {
             try { return op() } catch (e: Exception) {
+                // Never after an unknown outcome: the first one may have landed (iOS e5a9b11).
+                if (e is com.kachat.app.services.SendOutcomeUnknownException) throw e
                 attempt += 1
                 if (attempt > 4) throw e
                 Log.w(TAG, "Thread segment retry $attempt", e)
@@ -2131,12 +2206,14 @@ class KaPostsViewModel @Inject constructor(
      * twice - and the claim is a PLAIN store, not compose state: the flags map only ticks when a
      * post actually IS a thread root, so composing each commented row does not recompose the tab.
      */
-    fun probeThreadRoot(post: KaPostDraft) {
+    /** Runs in the row's own effect (iOS: the row's `.task`): a row scrolled away cancels its
+     *  wait for a slot and gives the claim back, so a fling doesn't queue every row it passed. */
+    suspend fun probeThreadRoot(post: KaPostDraft) {
         val remoteId = post.remoteId ?: return
         if (_threadRootFlags.value.containsKey(remoteId)) return
         if (commentCount(post) <= 0) return
         if (!threadProbeStore.claim(remoteId)) return
-        viewModelScope.launch {
+        run {
             val page = try {
                 threadProbeLimit.withPermit { kaPostsService.fetchRepliesPage(remoteId, 10, null) }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2144,7 +2221,7 @@ class KaPostsViewModel @Inject constructor(
                 threadProbeStore.unclaim(remoteId)
                 throw e
             } catch (_: Exception) {
-                return@launch
+                return
             }
             val isThread = page.items.any { KaPostsService.kaspaAddressFromPubkey(it.userPublicKey) == post.posterAddress }
             if (isThread) {
@@ -2257,7 +2334,7 @@ class KaPostsViewModel @Inject constructor(
                 }
                 mutateEverywhere(post.id) { it.copy(remoteId = txId, deliveryStatus = KaPostDraft.Delivery.SENT) }
             } catch (e: Exception) {
-                mutateEverywhere(post.id) { it.copy(deliveryStatus = KaPostDraft.Delivery.FAILED) }
+                mutateEverywhere(post.id) { it.copy(deliveryStatus = failureStatus(e)) }
                 Log.w(TAG, "Retry failed", e)
             }
         }
@@ -2421,7 +2498,7 @@ class KaPostsViewModel @Inject constructor(
                 val txId = kaPostsService.submitReply(text, parentRemoteId, parent.posterPubkey, mentionedPubkeys(text))
                 mutateEverywhere(comment.id) { it.copy(remoteId = txId, deliveryStatus = KaPostDraft.Delivery.SENT) }
             } catch (e: Exception) {
-                mutateEverywhere(comment.id) { it.copy(deliveryStatus = KaPostDraft.Delivery.FAILED) }
+                mutateEverywhere(comment.id) { it.copy(deliveryStatus = failureStatus(e)) }
                 Log.w(TAG, "Reply submit failed", e)
             }
         }
@@ -2623,7 +2700,7 @@ class KaPostsViewModel @Inject constructor(
             }
         } catch (e: Exception) {
             if (localQuoteId != null) {
-                mutateEverywhere(localQuoteId) { it.copy(deliveryStatus = KaPostDraft.Delivery.FAILED) }
+                mutateEverywhere(localQuoteId) { it.copy(deliveryStatus = failureStatus(e)) }
             }
             Log.w(TAG, "Quote submit failed", e)
         }
@@ -2654,12 +2731,14 @@ class KaPostsViewModel @Inject constructor(
     fun mute(address: String) {
         if (address.isEmpty()) return
         val wallet = walletManager.activeAddressFlow.value ?: return
-        viewModelScope.launch { settings.setKapostsMuted(wallet, muted.value + address) }
+        // Read from the store, not [muted]: a screen's copy may not have loaded yet, and writing
+        // it back would replace the whole saved list with one entry.
+        viewModelScope.launch { settings.setKapostsMuted(wallet, settings.kapostsMuted(wallet).first() + address) }
     }
 
     fun unmute(address: String) {
         val wallet = walletManager.activeAddressFlow.value ?: return
-        viewModelScope.launch { settings.setKapostsMuted(wallet, muted.value - address) }
+        viewModelScope.launch { settings.setKapostsMuted(wallet, settings.kapostsMuted(wallet).first() - address) }
     }
 
     fun block(address: String) {
@@ -2667,14 +2746,14 @@ class KaPostsViewModel @Inject constructor(
         val wallet = walletManager.activeAddressFlow.value ?: return
         viewModelScope.launch {
             // Block supersedes mute - no need to track both.
-            settings.setKapostsBlocked(wallet, blocked.value + address)
-            settings.setKapostsMuted(wallet, muted.value - address)
+            settings.setKapostsBlocked(wallet, settings.kapostsBlocked(wallet).first() + address)
+            settings.setKapostsMuted(wallet, settings.kapostsMuted(wallet).first() - address)
         }
     }
 
     fun unblock(address: String) {
         val wallet = walletManager.activeAddressFlow.value ?: return
-        viewModelScope.launch { settings.setKapostsBlocked(wallet, blocked.value - address) }
+        viewModelScope.launch { settings.setKapostsBlocked(wallet, settings.kapostsBlocked(wallet).first() - address) }
     }
 
     fun toggleBookmark(post: KaPostDraft) {
@@ -3077,10 +3156,19 @@ class KaPostsViewModel @Inject constructor(
             prefs.copy(mentions = mentions)
         }.stateIn(viewModelScope, SharingStarted.Eagerly, KaPostsNotifyPrefs())
 
+    /** Muted and blocked accounts read from the store as a load starts, so the first page can't
+     *  slip past [muted]/[blocked] before they have loaded (iOS drops hidden actors). */
+    @Volatile private var notificationsHidden: Set<String> = emptySet()
+
+    private suspend fun refreshNotificationsHidden() {
+        val wallet = myAddress() ?: return
+        notificationsHidden = settings.kapostsMuted(wallet).first() + settings.kapostsBlocked(wallet).first()
+    }
+
     private fun mapNotification(n: com.kachat.app.services.KNotification): NotificationItem? {
         val my = myAddress()
         val address = KaPostsService.kaspaAddressFromPubkey(n.userPublicKey) ?: return null
-        if (address == my || isHidden(address)) return null
+        if (address == my || isHidden(address) || address in notificationsHidden) return null
         // A kind switched off in Settings does not belong in this list either. The switch reads
         // "do not tell me about this", and a list full of the thing you muted is the switch not
         // working.
@@ -3121,7 +3209,17 @@ class KaPostsViewModel @Inject constructor(
         notificationPoller.isNotificationsScreenVisible = visible
     }
 
+    /** Coming back to the Notifications tab keeps what was scrolled in for two minutes; pull to
+     *  refresh still reloads ([loadNotifications], iOS e5a9b11). */
+    suspend fun loadNotificationsOnAppear() {
+        val now = System.currentTimeMillis()
+        if (notificationsAppearedAt > 0L && now - notificationsAppearedAt < 120_000L) return
+        notificationsAppearedAt = now
+        loadNotifications()
+    }
+
     suspend fun loadNotifications() {
+        refreshNotificationsHidden()
         val key = PAGE_NOTIFICATIONS
         val generation = resetSurface(key)
         _isLoadingNotifications.value = true

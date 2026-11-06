@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">প্রত্যাখ্যাত - নামের মালিক বদলেছে, আপনার কাছে ফিরছে</string>
     <string name="kn_offer_declined_earlier_owner">প্রত্যাখ্যাত - আগের মালিককে দেওয়া</string>
     <string name="kn_err_offer_declined">নামের মালিক বদলানোর আগে এই অফার দেওয়া হয়েছিল, তাই এটি প্রত্যাখ্যাত এবং ক্রেতার কাছে ফিরে যাচ্ছে।</string>
+    <string name="kn_err_offer_amount_changed">এই অফারে যা দেখানো হয়েছিল তার চেয়ে ভিন্ন পরিমাণ আছে। কিছুই পাঠানো হয়নি।</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">এই নামটি ইতিমধ্যে সবচেয়ে দীর্ঘ মেয়াদ পর্যন্ত পরিশোধিত। নবায়ন খুলবে %1$s।</string>
     <string name="kn_err_offer_own_name">আপনি নিজের নামে প্রস্তাব দিতে পারবেন না।</string>

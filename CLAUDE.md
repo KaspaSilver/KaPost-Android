@@ -46,10 +46,10 @@ What is still KaChat-shaped underneath:
 | Tab | Route | Screen |
 |---|---|---|
 | Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
-| Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once; Select (top right) picks rooms for Read, Unread, Mute and Delete; the tab's badge is the unread count across the rooms (`KaPostsDock.unreadPublicChats`) |
-| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`IdentityAddressDetailScreen`: balance, then History, UTXOs and .kachat names, which swipe; Receive and Send only on History) |
+| Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once; Select (top right) picks rooms for Read, Unread, Mute and Delete; rows swipe (`SwipeActionsRow`; left: Delete, Mute, Pin; right: read state), and a pinned room moves into the circles row above the list, saved per account (`KaPostRoomPins`); the tab's badge is the unread count across the rooms (`KaPostsDock.unreadPublicChats`) |
+| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and Request, the backup hygiene card, then the chatting address's history) |
 | Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; a row opens its post on the Feed (a follow opens the follower's profile); the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
-| Settings | `settings` | `SettingsScreen`: Customization, Security, Connection (its tabs swipe; the .kachat names indexer URL is on Domains), KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency), Notifications, Cache, Diagnostics, Open Source Licenses, View Seed Phrase, Log Out (deleting an account is on the opening screen's Saved Accounts) |
+| Settings | `settings` | `SettingsScreen`, alphabetical (iOS e5a9b11): About (version, Terms of Use, Open Source Licenses), Account Name, Back Up Account (Complete Your Backup, View 12 or 24 Words, Back Up to NFC Card), Connection (its tabs swipe; the .kachat names indexer URL is on Domains), Customization, Diagnostics, KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency; instant tips are capped at 10 KAS and ask for the phone's lock once when turned on), Notifications, Security, Storage; then Delete Account (`DeleteAccountSheet`, the warning the opening screen's Delete also shows; both ask for the phone's lock first; `WalletViewModel.deleteCurrentAccount`), Log Out |
 
 The dock stays in reach on every screen and steps aside for the keyboard. Pushed screens keep the
 real one (`AboveDock` lays them out above it; the Wallet, a room and the tabs run on under it
@@ -60,15 +60,84 @@ a tap closes every cover (`KaPostsDock.closeCovers`) and selects the tab. The co
 menu card have no dock. The connection dot sits top right on every screen, leaving the left to
 Back.
 
-Account setup is KaChat's, unchanged: `OnboardingScreen` (create / import a seed) -> `MainShell`.
-There is no welcome guide: the shell lifts the onboarding sync hold itself.
+Account setup follows KaPay (iOS 9e22075): `OnboardingScreen` (create / import a seed) ->
+`MainShell`. There is no welcome guide: the shell lifts the onboarding sync hold itself. Create New
+Account makes an account in one tap: 24 words, no passphrase, the next free default name
+(`WalletManager.nextDefaultAccountName`). "Advanced: Create with a Passphrase" is the only other
+way. Import still takes 12 or 24 words. User-facing text says "12 or 24 words", never "seed phrase"
+or "recovery phrase" (iOS e5a9b11). Creating never shows the words: an account made here
+is owed a backup (`AccountBackupStatus`), and until the backup steps (`AccountBackupScreen`) are
+finished `AccountBackupBanner` sits above every tab's title (Feed, Public Chats, Profile,
+Notifications, Settings, the Wallet; red once the chatting or spending addresses hold funds) and
+the Delete Account warning leads with Back Up Account; deleting is never blocked. Imported and older accounts are never owed one. An import that answers Yes to the
+passphrase question checks the first 50 addresses, picks the first with funds and lets you pick
+another (Import waits until that search ends); one without a passphrase opens address #0.
+"Advanced: Create with a Passphrase" opens straight on the passphrase field. Importing or finishing the steps starts a
+six-month timer; when it runs out the same place shows `BackupHygieneCard`, and `BackupHygieneScreen` asks for
+five random words, then the passphrase if there is one. A cold start goes back into the active
+account unless Log Out was the last thing done (`WalletManager.isLoggedOut`). Biometrics when
+signing back in to a saved account are off by default (Settings > Security turns them on); an
+older saved "on" is switched off once per install (`KEY_ACCOUNT_LOGIN_BIOMETRICS_OFF_MIGRATED`).
+
+## Security rules (audit 2026-11-05)
+
+- Every link tap goes through `SafeUriHandler` (`LinkPreviewCard.kt`, provided as `LocalUriHandler`
+  in `MainActivity`; iOS `openAnywhere`): a KaChat link opens its screen, http/https/mailto go out,
+  anything else does nothing. Deep links in `MainActivity` take exactly their own path parts
+  (`linkTarget`), and room names from links pass `KaChatLink.sanitizeChannelName` (no bidi,
+  zero-width, `..` or URL characters).
+- The screens showing the words (`seed_phrase`, `account_backup`, `nfc_card_backup`) open only
+  straight after `unlockAccountBackup` (`SecretRouteGate`): a route Android restores after killing
+  the app closes instead of showing them unlocked.
+- The phone's lock (`util/DeviceAuth.kt`) takes the weak biometric tier on Android 9-10, where
+  androidx.biometric can't pair strong biometrics with the screen lock.
+- Signed out (`WalletManager.isLoggedOut`): push doesn't register, the KaPosts poller and the
+  scheduled-post sender do nothing. Deleting the active account with others saved opens the
+  sign-in screen.
+- No cloud backup or device transfer of app data (`res/xml/data_extraction_rules.xml`), and no
+  battery-exemption prompt or permission (KaPost's pushes are drawn by the system).
+- `MainActivity` is exported for links, so it honours our own notification extras only with
+  `NotificationHelper.EXTRA_INTERNAL_TOKEN` (a per-install random token on every intent it builds).
+  FCM's own taps can't carry it and only do what a public link could.
+- The notification permission is asked only from Settings > Notifications, as iOS.
+- Encrypted stores open through `StartupSafety.encryptedPrefsOrInMemory`, never
+  `EncryptedSharedPreferences.create` directly: a phone restored without the Keystore key must not
+  crash at launch. `WalletManager`'s own store failing shows `WalletRecoveryScreen`.
+- Sends pay a fixed 100 sompi/gram, as iOS `KaspaFeePolicy`; no preview reads the node's fee
+  estimate. Fast / Priority / custom are a flat extra on top. The Wallet's Send spends only
+  confirmed, non-coinbase coins (iOS `sendWithdrawal`).
+- Endpoint URLs refuse `http://` ("Use https. Unencrypted connections are not supported.") and add
+  `https://` to a bare host (`ConnectionViewModel.httpsUrlOrNull`).
+
+## NFC card backup (as iOS 9653c04)
+
+`services/NfcCard.kt`, `ui/screens/NfcCardScreens.kt`. The card commands and backup format are
+`docs/PROTOCOL.md` in KaChat-NFC, so a card works across apps; `family` uses iOS's names, and iOS's
+payload version 2 (the doc still shows version 1). In every build, Play too (iOS e5a9b11).
+Settings > Back Up Account > Back Up to NFC Card only exists for an account with a BIP39 passphrase,
+which is never written to the card. Import Account > Restore from NFC Card. Android has no system
+scan sheet, so the app draws `NfcScanSheet` while reader mode runs.
+
+## Moderation (as iOS 9e22075)
+
+- Terms: `KaChatApp` shows `TermsAcceptanceScreen` until `KaPostTerms.CURRENT_VERSION` is agreed to
+  on this device; bump it when the text changes. Settings > Terms of Use shows them again.
+- Report: a post's three dots, or in a room the message's long-press and the sender half sheet.
+  `ContentReport` emails support in any mail app; when none opens it, it copies the report and says
+  where to send it.
+- Block: `AppSettingsRepository.kapostsBlocked` owns the list. `BroadcastRepository.getHiddenSenders`
+  adds it as every-room rows, so a blocked account also leaves every room and its pushes stop. A
+  room's own Hide User stays separate (`getRoomHiddenSenders`).
+- Removal: no word filter, by the owner's choice (2026-11-02). The owner removes bad content by hand
+  with the indexer's admin tool (`kachat-admin`), from reports or from seeing it.
 
 ## Identifiers
 
 - applicationId `kapost.kachat.app` (`.debug` suffix on debug builds), the package registered for
   KaPost in Play Console; it can never change once a bundle is uploaded. The iPhone app's bundle is
   `com.kachat.kaposts`. URL scheme `kaposts`
-- Version: `app/build.gradle.kts` (`versionName`, `versionCode`, `kachatBuildNumber`)
+- Version: `app/build.gradle.kts` (`versionName`, `versionCode`, `kachatBuildNumber`). KaPost's version
+  number matches KaChat iOS's, from 5.2.3 on (iOS f81c467)
 - Flavours as KaChat: `play` (store, reports plain "1.0") and `github` (handed-out APK, "1.0 (n)")
 - The launcher icon is a vector drawn from the iOS icon design: `scripts/make_app_icon.py`; the
   avatar's backward K is KaChat's own, traced from its icon (iOS KaPosts 499275c).
@@ -119,6 +188,16 @@ Android). Change those pieces, not one screen.
 5. **Fee**: Edit (`onEditFee`) opens `SendFeeEditorScreen` (the fee on the keypad, never under the
    network's minimum, a warning above ten times it); Confirm goes back to the review.
 
+Swipe up to Send asks for the phone's lock first (`authenticateWithDeviceCredential`, "Confirm
+sending Kaspa") and sends at 30% of the screen (120dp at least). KaPost sends only from the chatting
+address (iOS e5a9b11): Send, tips and Request offer no other address, and the From step is skipped.
+The fee total includes change too small to keep (`SendFeeModel` folded change).
+
+Send safety (from KaPay): a node's answer must carry the locally computed transaction id, and a send
+the network never answered throws `SendOutcomeUnknownException` ("This may have gone through...").
+That shows "Not confirmed" with only Done on the swipe screen, and posts, replies, room messages and
+instant tips marked `UNCONFIRMED` offer no Retry, which could post and pay twice.
+
 Steps slide sideways (`SendStepTransition`). Where they are used:
 - `SpendingAddressSendFlow` (`Screens.kt`): the Wallet's Send, a room sender's Send, paying a
   chat-payment request (other requests go to KaPay), Compound UTXOs. A pre-filled recipient or a
@@ -128,7 +207,8 @@ Steps slide sideways (`SendStepTransition`). Where they are used:
   tip's encrypted memo and the small-amount warning.
 - Not ported: the .kachat sheets (`KachatTxSheet`, `KachatClaimSheet` in
   `KachatNamesLiveScreens.kt`) keep their one-page form; nothing in KaPost opens them (the Domains
-  tab only lists names), as in iOS KaPosts. iOS's Request Payment screen isn't in KaPost either.
+  tab only lists names), as in iOS KaPosts. Request (`CreatePaymentRequestSheet`, on the Wallet)
+  is amount then review, always to the chatting address.
 
 ## Protocol and servers
 
@@ -164,6 +244,10 @@ wallet app (KaChat-Wallet-Android, `kapay.kachat.app`): a post shows the link as
 and a chat-payment request (`chat=1`, an encrypted chat payment KaPay can't make) open here.
 Without KaPay installed, the Play Store opens (`KaPayHandoff.STORE_URL`: a search for KaPay until
 it is listed). KaChat follows the same rule.
+
+Links to KaChat's own site (`home.kachat.app`, any page, `KaChatSiteLink`) preview by themselves: a
+post draws the page's card (`LinkPreviewCard`) in place of the link's text, and a room loads it
+without the tap other links wait for. Other web links in posts stay plain text.
 
 Links: KaPosts opens `kaposts://` (same targets as `kachat://`), and `kachat://kapost/`,
 `kachat://broadcast/` and `https://kachat.app/post|broadcast/`, which KaChat no longer handles.

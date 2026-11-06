@@ -923,6 +923,7 @@
     <string name="kn_offer_declined_returning_to_you">رد شد - مالک نام عوض شد، به شما برمی‌گردد</string>
     <string name="kn_offer_declined_earlier_owner">رد شد - به مالک قبلی داده شده بود</string>
     <string name="kn_err_offer_declined">این پیشنهاد پیش از تغییر مالک نام داده شده بود، پس رد شده و به خریدار برمی‌گردد.</string>
+    <string name="kn_err_offer_amount_changed">این پیشنهاد مبلغی متفاوت از آنچه نشان داده شد دارد. چیزی ارسال نشد.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">این نام از قبل تا طولانی‌ترین دوره پرداخت شده است. تمدید از %1$s باز می‌شود.</string>
     <string name="kn_err_offer_own_name">نمی‌توانید برای نام خودتان پیشنهاد بدهید.</string>

@@ -11,9 +11,7 @@ import com.kachat.app.util.KaspaUnit
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.first
@@ -30,9 +28,9 @@ import javax.inject.Singleton
  *
  * iOS drives this from live utxosChanged subscription events plus a foreground catch-up diff.
  * Android has no UTXO push subscription (chat delivery is poll/FCM based), so this runs the same
- * per-wallet BASELINE + DIFF algorithm on a foreground poll loop ([POLL_INTERVAL_MS]) plus an
- * immediate pass on app-foreground ([onAppForeground]) - the catch-up half of the iOS design is
- * the whole engine here:
+ * per-wallet BASELINE + DIFF algorithm as a pass on app-foreground ([onAppForeground]) and on
+ * [requestRefresh] - the catch-up half of the iOS design is the whole engine here (KaPost polls
+ * nothing in between):
  *
  * - Per-wallet balance baselines persist across launches; the very first run for a wallet seeds
  *   them silently (no dredging up history as "new" receipts).
@@ -67,7 +65,6 @@ class AddressActivityNotifier @Inject constructor(
     private val runMutex = Mutex()
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val gson = Gson()
-    private var pollJob: Job? = null
 
     /** Always-emitted UI refresh event: the set of watched own addresses whose balance changed
      *  in the last diff pass. NOT gated by the Address Activity setting - consumers (Available
@@ -77,29 +74,23 @@ class AddressActivityNotifier @Inject constructor(
 
     // --- Lifecycle --------------------------------------------------------------------
 
-    /** Called from the process lifecycle observer on foreground: immediate catch-up pass, then a
-     *  foreground-only poll loop approximating iOS's live subscription events. */
+    /** Called from the process lifecycle observer on foreground: one catch-up pass. No poll
+     *  loop in KaPost: iOS runs this from UTXO subscription events and never polls, and with
+     *  `featureOn` always off a 30-second loop only fetched every watched balance (and their
+     *  transactions on a rise) for nothing. The Wallet screen refreshes on open, on pull, after
+     *  a send ([requestRefresh]) and on this foreground pass. */
     fun onAppForeground() {
-        scope.launch { runDiffPass() }
-        if (pollJob?.isActive == true) return
-        pollJob = scope.launch {
-            while (true) {
-                delay(POLL_INTERVAL_MS)
-                try {
-                    runDiffPass()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Address activity poll failed", e)
-                }
+        scope.launch {
+            try {
+                runDiffPass()
+            } catch (e: Exception) {
+                Log.w(TAG, "Address activity catch-up failed", e)
             }
         }
     }
 
-    /** Called on background - the loop freezes with the process, matching the app's
-     *  foreground-only sync design. Next foreground runs the catch-up diff. */
-    fun onAppBackground() {
-        pollJob?.cancel()
-        pollJob = null
-    }
+    /** Called on background - nothing runs between foregrounds; the next one catches up. */
+    fun onAppBackground() = Unit
 
     /** One immediate pass - used by the payment composer's post-send refresh path. */
     fun requestRefresh() {
@@ -408,7 +399,6 @@ class AddressActivityNotifier @Inject constructor(
         private const val TAG = "AddressActivity"
         private const val PREFS_NAME = "kachat_address_activity"
         private const val HANDLED_TX_ID_CAP = 500
-        private const val POLL_INTERVAL_MS = 30_000L
 
         internal fun shortAddress(a: String): String =
             if (a.length <= 20) a else a.take(14) + "..." + a.takeLast(6)

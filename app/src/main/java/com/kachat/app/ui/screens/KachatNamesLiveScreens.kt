@@ -360,6 +360,8 @@ fun Context.kachatErrorText(e: Throwable): String {
         // localized on iOS too (ba07975)
         is KachatNamesActions.ActionError.OfferExpired -> getString(R.string.kn_err_offer_expired)
         is KachatNamesActions.ActionError.OfferDeclined -> getString(R.string.kn_err_offer_declined)
+        // localized on iOS too (e5a9b11)
+        is KachatNamesActions.ActionError.OfferAmountChanged -> getString(R.string.kn_err_offer_amount_changed)
         // localized on iOS too (49c0baa)
         is KachatNamesActions.ActionError.OwnName -> getString(R.string.kn_err_offer_own_name)
         is KachatNamesActions.ActionError.OfferTooLong -> getString(R.string.kn_err_offer_max_days)

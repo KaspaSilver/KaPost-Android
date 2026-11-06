@@ -51,7 +51,21 @@ object KaspaUtxoSelector {
         /** Funds were enough, but no input set fit storage mass without paying real change away
          *  as fee - see [MAX_FOLDED_CHANGE_SOMPI]. The send must be refused. */
         val storageMassBlocked: Boolean = false
-    )
+    ) {
+        /**
+         * Change too small to keep: there is no output for it, so it goes to the fee, and the
+         * wallet loses it like any other fee (iOS e5a9b11 `SendFeeEstimate.foldedChange`). The same
+         * rule the send uses to decide whether a change output stands; a bigger remainder that
+         * can't stand is refused, never folded ([changeIsKeptOrFoldable]).
+         */
+        val foldedChangeSompi: Long
+            get() {
+                if (changeAmount <= 0 || changeAmount > MAX_FOLDED_CHANGE_SOMPI) return 0L
+                val recipient = if (finalAmount > 0) listOf(finalAmount) else emptyList()
+                val kept = KaspaMass.fitsStorageMass(selectedUtxos.map { it.utxoEntry.amount }, recipient + changeAmount)
+                return if (kept) 0L else changeAmount
+            }
+    }
 
     fun selectUtxosAndCalculateFee(
         utxos: List<UtxoEntry>,
@@ -115,17 +129,11 @@ object KaspaUtxoSelector {
             }
         }
 
-        var finalAmount = amountSompi
-        var requiredAmount = amountSompi + estimatedFee
-
-        // Check if we can fulfill the request
-        if (totalSelected < requiredAmount) {
-            // "Max Send" logic: if we are close (within 2000 sompi), adjust the amount
-            if (totalSelected > estimatedFee && (requiredAmount - totalSelected) < 2000) {
-                finalAmount = totalSelected - estimatedFee
-                requiredAmount = totalSelected
-            }
-        }
+        // Exactly the amount asked, or not enough: no quiet "close enough" cut, which sent up to
+        // 2000 sompi less than typed (a payment request underpaid). Max works out an exact amount
+        // already; iOS refuses the same way.
+        val finalAmount = amountSompi
+        val requiredAmount = amountSompi + estimatedFee
 
         val changeAmount = totalSelected - finalAmount - estimatedFee
 
@@ -142,8 +150,7 @@ object KaspaUtxoSelector {
 
     /**
      * Coin control: prices and validates a user-picked, fixed set of UTXOs instead of greedily
-     * growing one. Same "close enough" leeway and always-price-a-change-output policy as
-     * [selectUtxosAndCalculateFee].
+     * growing one. Same always-price-a-change-output policy as [selectUtxosAndCalculateFee].
      */
     fun selectManualUtxosAndCalculateFee(
         utxos: List<UtxoEntry>,
@@ -169,14 +176,9 @@ object KaspaUtxoSelector {
         )
         val estimatedFee = KaspaMass.calculateFee(mass, feeRateSompiPerGram) + extraFeeSompi
 
-        var finalAmount = amountSompi
-        var requiredAmount = amountSompi + estimatedFee
-        if (totalSelected < requiredAmount) {
-            if (totalSelected > estimatedFee && (requiredAmount - totalSelected) < 2000) {
-                finalAmount = totalSelected - estimatedFee
-                requiredAmount = totalSelected
-            }
-        }
+        // No "close enough" cut - see [selectUtxosAndCalculateFee].
+        val finalAmount = amountSompi
+        val requiredAmount = amountSompi + estimatedFee
         val changeAmount = totalSelected - finalAmount - estimatedFee
 
         return SelectionResult(

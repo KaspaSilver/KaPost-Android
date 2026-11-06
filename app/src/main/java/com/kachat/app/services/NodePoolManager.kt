@@ -766,7 +766,9 @@ class NodePoolManager @Inject constructor(
      * before passing the error on - see [SubmitConfirmation] (iOS ad29da9, audit IOS-014). The id
      * is [transaction]'s, computed locally ([com.kachat.app.util.KaspaTransactionId]); should that
      * ever fail, the submit runs exactly as before, unchecked. [rest] is the REST API for the
-     * acceptance lookup, null to ask the nodes only.
+     * acceptance lookup, null to ask the nodes only. A lost answer can end in
+     * [SendOutcomeUnknownException], and a node's answer only counts if it carries that id (iOS
+     * e5a9b11).
      */
     suspend fun submitConfirmingKnown(transaction: RawTransaction, rest: KaspaRestApi?, submit: suspend () -> String): String {
         val txId = runCatching { com.kachat.app.util.KaspaTransactionId.compute(transaction) }.getOrDefault("")
@@ -786,8 +788,35 @@ class NodePoolManager @Inject constructor(
             onRecovered = { e ->
                 Log.w("NodePoolManager", "Submit of ${txId.take(12)} reported \"${e.message}\" but the network has it: treated as sent")
             },
+            onForeignAnswer = { Log.w("NodePoolManager", "A node answered a submit with a different id than ${txId.take(12)}") },
+            onAnswered = { resendIfNetworkCantSee(txId, rest, submit) },
+            lookup = { id -> isInAnyMempool(id) || (rest != null && isAcceptedViaRest(rest, id)) },
             submit = submit,
         )
+    }
+
+    /**
+     * In the background, a transaction the network can't see a moment after a node took it goes out
+     * again, in case that node kept it to itself (iOS e5a9b11 `checkedSubmit`). [submit] carries the
+     * same signed transaction, with the same id, so sending it again can't pay twice.
+     */
+    private fun resendIfNetworkCantSee(txId: String, rest: KaspaRestApi?, submit: suspend () -> String) {
+        scope.launch {
+            repeat(SubmitConfirmation.RESEND_CHECKS) {
+                kotlinx.coroutines.delay(SubmitConfirmation.RESEND_DELAY_MS)
+                if (isTransactionKnown(txId, rest)) return@launch
+                Log.w("NodePoolManager", "The network can't see ${txId.take(12)} yet: sending it again")
+                try {
+                    submit()
+                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                    Log.w("NodePoolManager", "Sending ${txId.take(12)} again timed out")
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("NodePoolManager", "Sending ${txId.take(12)} again: ${e.message}")
+                }
+            }
+        }
     }
 
     /**

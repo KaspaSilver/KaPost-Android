@@ -193,19 +193,61 @@ class ConnectionViewModel @Inject constructor(
      *  e6f664f). Choosing the running network again cancels it. */
     fun switchNetwork(to: com.kachat.app.util.KaspaNetwork.Type) { viewModelScope.launch { settings.switchNetwork(to) } }
     fun setIndexerUrl(value: String) { viewModelScope.launch { settings.setIndexerUrl(value) } }
-    fun setKaspaRestApiUrl(value: String) { viewModelScope.launch { settings.setKaspaRestUrl(value) } }
+    /** Editable like iOS's field, https only; blank is the network's default REST API (iOS
+     *  `normalizedOrDefault`). False when rejected, so the dialog can say so. */
+    fun setKaspaRestApiUrl(value: String): Boolean {
+        val trimmed = httpsUrlOrNull(value) ?: return false
+        viewModelScope.launch {
+            settings.setKaspaRestUrl(
+                trimmed.ifBlank { AppSettingsRepository.defaultKaspaRestUrl(com.kachat.app.util.KaspaNetwork.selected.value) }
+            )
+        }
+        return true
+    }
+
+    /** The Public Chats indexer, editable as on iOS: https only, blank is the default (none on
+     *  testnet). */
+    fun setBroadcastIndexerUrl(value: String): Boolean {
+        val trimmed = httpsUrlOrNull(value) ?: return false
+        viewModelScope.launch {
+            settings.setBroadcastIndexerUrl(trimmed.ifBlank { if (onTestnetSettings) "" else AppSettingsRepository.DEFAULT_BROADCAST_INDEXER_URL })
+        }
+        return true
+    }
+
+    /** The push service, editable as on iOS: https only, blank is the default (none on testnet). */
+    fun setPushIndexerUrl(value: String): Boolean {
+        val trimmed = httpsUrlOrNull(value) ?: return false
+        viewModelScope.launch {
+            settings.setPushIndexerUrl(trimmed.ifBlank { if (onTestnetSettings) "" else AppSettingsRepository.DEFAULT_PUSH_INDEXER_URL })
+        }
+        return true
+    }
+
+    /**
+     * Trimmed, without a trailing slash; null for an http:// value (iOS `isCleartextHTTP`). A bare
+     * host ("indexer.kachat.app") gets https:// (iOS `normalizedHTTPSURL`); blank stays blank.
+     */
+    fun httpsUrlOrNull(value: String): String? {
+        val trimmed = value.trim().trimEnd('/')
+        if (trimmed.isEmpty()) return trimmed
+        if (trimmed.startsWith("http://", ignoreCase = true)) return null
+        return if (trimmed.startsWith("https://", ignoreCase = true)) trimmed else "https://$trimmed"
+    }
 
     /**
      * Blank resets to the default rather than being written through: an empty base URL builds a
      * request that fails and reads as the server being down.
      */
-    fun setTranslationServiceUrl(value: String) {
+    fun setTranslationServiceUrl(value: String): Boolean {
+        // https only, as the indexer URLs (iOS `httpsInlineError`): post text goes to it.
+        val trimmed = httpsUrlOrNull(value) ?: return false
         viewModelScope.launch {
-            val trimmed = value.trim().trimEnd('/')
             settings.setTranslationServiceUrl(
                 trimmed.ifBlank { AppSettingsRepository.DEFAULT_TRANSLATION_SERVICE_URL }
             )
         }
+        return true
     }
     /**
      * Editable like iOS's field: blank resets to the default, and only https is accepted (a
@@ -213,8 +255,7 @@ class ConnectionViewModel @Inject constructor(
      * when the value was rejected, so the dialog can say so instead of closing.
      */
     fun setKapostIndexerUrl(value: String): Boolean {
-        val trimmed = value.trim().trimEnd('/')
-        if (trimmed.isNotEmpty() && !trimmed.startsWith("https://", ignoreCase = true)) return false
+        val trimmed = httpsUrlOrNull(value) ?: return false
         viewModelScope.launch {
             // Blank on testnet is no server, never the mainnet default.
             settings.setKapostIndexerUrl(trimmed.ifBlank { if (onTestnetSettings) "" else AppSettingsRepository.DEFAULT_KAPOST_INDEXER_URL })

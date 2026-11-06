@@ -17,7 +17,9 @@ import com.kachat.app.util.MessageReaction
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOn
@@ -70,7 +72,11 @@ class BroadcastRepository @Inject constructor(
         // tracks that you added yourself stays one you can leave (iOS 21c480d).
         if (channelName in FeaturedBroadcastChannels.CURATED_NAMES) return
         database.broadcastDao().leaveChannel(channelName, walletManager.getAddress())
-        database.broadcastDao().deleteMessagesForChannel(channelName)
+        // The message table is shared by every account on this device (iOS keeps one store per
+        // account): the history goes only once no other account still has the room.
+        if (database.broadcastDao().countJoinedAccounts(channelName) == 0) {
+            database.broadcastDao().deleteMessagesForChannel(channelName)
+        }
     }
 
     /**
@@ -238,7 +244,10 @@ class BroadcastRepository @Inject constructor(
      * reused as-is; `reactionTxId` carries the reaction message row's own id for [retryReactionMessage].
      */
     fun getReactions(channelName: String): Flow<List<ReactionEntity>> {
-        return combine(database.broadcastDao().getMessagesForChannel(channelName), getHiddenSenders()) { messages, hidden ->
+        // Only rows carrying the reaction marker are read (iOS `loadReactions` reads its own
+        // store on change): the whole room, parsed, on every insert into any room was the cost.
+        val rows = database.broadcastDao().getReactionRowsForChannel(channelName).distinctUntilChanged()
+        return combine(rows, getHiddenSenders()) { messages, hidden ->
             val hiddenHere = hiddenAddressesIn(channelName, hidden)
             val newestPerReactor = LinkedHashMap<Pair<String, String>, Pair<BroadcastMessageEntity, com.kachat.app.util.MessageReactionContent>>()
             for (row in messages) {
@@ -264,7 +273,7 @@ class BroadcastRepository @Inject constructor(
                     failedAction = if (row.deliveryStatus == "failed") parsed.action else null
                 )
             }
-        }.flowOn(Dispatchers.Default)
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
     }
 
     /**
@@ -278,14 +287,25 @@ class BroadcastRepository @Inject constructor(
      * draws each bubble.
      */
     fun getEdits(channelName: String): Flow<Map<String, BroadcastEdit>> {
-        return combine(database.broadcastDao().getMessagesForChannel(channelName), getHiddenSenders()) { messages, hidden ->
+        // Only rows carrying the edit marker are read (iOS `loadEdits`), then just the messages
+        // they name. Room re-runs the query on any change to the table, so a target arriving
+        // after its edit still lands - which is why these rows are not deduplicated (the result
+        // is, below).
+        val rows = database.broadcastDao().getEditRowsForChannel(channelName)
+        return combine(rows, getHiddenSenders()) { editRows, hidden ->
             val hiddenHere = hiddenAddressesIn(channelName, hidden)
-            val senders = HashMap<String, BroadcastMessageEntity>(messages.size)
-            for (row in messages) senders[row.id] = row
+            val edits = editRows.mapNotNull { row ->
+                if (row.senderAddress in hiddenHere) return@mapNotNull null
+                com.kachat.app.util.MessageEdit.parseOrNull(row.content)?.let { row to it }
+            }
+            val senders = HashMap<String, BroadcastMessageEntity>(edits.size)
+            for (chunk in edits.map { it.second.targetTxId }.distinct().chunked(500)) {
+                for (row in database.broadcastDao().getMessagesByIds(chunk)) {
+                    if (row.channelName == channelName) senders[row.id] = row
+                }
+            }
             val newestPerTarget = LinkedHashMap<String, BroadcastEdit>()
-            for (row in messages) {
-                if (row.senderAddress in hiddenHere) continue
-                val parsed = com.kachat.app.util.MessageEdit.parseOrNull(row.content) ?: continue
+            for ((row, parsed) in edits) {
                 val target = senders[parsed.targetTxId] ?: continue
                 if (target.senderAddress != row.senderAddress) continue
                 if (!com.kachat.app.util.MessageEdit.isEditable(target.content)) continue
@@ -302,7 +322,7 @@ class BroadcastRepository @Inject constructor(
                 }
             }
             newestPerTarget
-        }.flowOn(Dispatchers.Default)
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
     }
 
     /** One message's newest edit in a room — see [getEdits]. */
@@ -320,11 +340,36 @@ class BroadcastRepository @Inject constructor(
         retryBroadcast(row)
     }
 
-    /** The active account's hidden-sender rows (per-room since 4.0; channelName "" = every room) — re-emits on account switch, same as everything else here. */
-    fun getHiddenSenders(): Flow<List<HiddenBroadcastSenderEntity>> {
+    /** The rooms' own hides, for a room's Hidden Users list (per-room since 4.0; channelName "" =
+     *  every room). Blocked accounts are left out: they are undone on the Blocked screen. */
+    fun getRoomHiddenSenders(): Flow<List<HiddenBroadcastSenderEntity>> {
         return walletManager.activeAddressFlow.flatMapLatest { address ->
             if (address == null) flowOf(emptyList()) else database.broadcastDao().getHiddenSenders(address)
         }
+    }
+
+    /**
+     * Everyone whose messages and pushes are left out: the rooms' hides, plus accounts blocked in
+     * KaPost, as every-room rows (iOS 9e22075 `PublicChatStore.blockedSenders`). Not stored rows:
+     * the block list owns them, per account. Re-emits on account switch.
+     */
+    fun getHiddenSenders(): Flow<List<HiddenBroadcastSenderEntity>> {
+        return walletManager.activeAddressFlow.flatMapLatest { address ->
+            if (address == null) flowOf(emptyList()) else combine(
+                database.broadcastDao().getHiddenSenders(address),
+                settings.kapostsBlocked(address),
+            ) { rows, blocked ->
+                rows + blocked.map { HiddenBroadcastSenderEntity(it, address, "") }
+            }
+        }
+    }
+
+    /** Blocks an account from a room's sender sheet: the same list as a post's Block, which also
+     *  supersedes a mute. */
+    suspend fun blockSender(senderAddress: String) {
+        val wallet = walletManager.activeAddressFlow.value ?: return
+        settings.setKapostsBlocked(wallet, settings.kapostsBlocked(wallet).first() + senderAddress)
+        settings.setKapostsMuted(wallet, settings.kapostsMuted(wallet).first() - senderAddress)
     }
 
     companion object {
@@ -347,6 +392,10 @@ class BroadcastRepository @Inject constructor(
 
         /** Cached rows checked per pass step - one REST search request. */
         private const val REVERIFY_CHUNK = 100
+
+        /** How far before a leftover pending row its delivered copy may sit: the row carries this
+         *  phone's clock, the copy the chain's (iOS e5a9b11, 300_000). */
+        private const val SETTLE_DELIVERED_WINDOW_MS = 5L * 60 * 1000
 
         /** Which senders are hidden in [channelName]: room-scoped rows plus legacy every-room ("") rows. */
         fun hiddenAddressesIn(channelName: String, rows: List<HiddenBroadcastSenderEntity>): Set<String> =
@@ -384,6 +433,55 @@ class BroadcastRepository @Inject constructor(
     /** How many times a room's deep backfill was re-run because some rows' senders could not be
      *  verified yet (audit XP-012). Session-only. */
     private val deepUnverifiedRetries = mutableMapOf<String, Int>()
+
+    /** Sends started in this run, by pending id. A row still pending that isn't one of these was
+     *  left by a run that ended mid-send, and nothing is working on it (iOS e5a9b11). */
+    private val pendingSendsThisRun: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+
+    /** Rooms already checked for those rows, once per account per run (iOS e5a9b11). */
+    private val settledPendingChannels = mutableSetOf<String>()
+
+    /** The account [settledPendingChannels] was filled for. */
+    private var settledForWallet: String? = null
+
+    /**
+     * Called with the active account whenever it lands or changes. Another account's rows have
+     * not been checked yet, so a real switch starts the set again (iOS e5a9b11 setCurrentWallet).
+     * Every room screen's view model reports the same account, so only a change clears it.
+     */
+    fun onActiveWalletChanged(address: String?) {
+        val normalized = address?.lowercase()
+        synchronized(settledPendingChannels) {
+            if (normalized == settledForWallet) return
+            settledForWallet = normalized
+            settledPendingChannels.clear()
+        }
+    }
+
+    /**
+     * Once the room's full history is in (after the deep backfill, or straight away for a room
+     * with no indexer), so a send that did land has its delivered copy to match (iOS e5a9b11
+     * `settlePendingSendsFromBeforeThisRun`). A pending row no send in this run is working on goes
+     * if its delivered copy is here (same sender and content, sent, chain time no more than five
+     * minutes before the row's own), and is otherwise marked failed so Retry shows instead of
+     * Sending forever.
+     */
+    suspend fun settlePendingSendsFromBeforeThisRun(channelName: String) {
+        synchronized(settledPendingChannels) {
+            if (!settledPendingChannels.add(channelName)) return
+        }
+        val dao = database.broadcastDao()
+        for (row in dao.getPendingMessages(channelName)) {
+            if (row.id in pendingSendsThisRun) continue
+            val delivered = dao.countDeliveredCopies(
+                channelName = channelName,
+                senderAddress = row.senderAddress,
+                content = row.content,
+                sinceMillis = row.blockTimestamp - SETTLE_DELIVERED_WINDOW_MS,
+            )
+            if (delivered > 0) dao.deleteMessage(row.id) else dao.updateMessageStatus(row.id, "failed")
+        }
+    }
 
     /** Fetches history for [channelName] and merges it into the local cache. The FIRST call per
      *  channel per launch pages backwards (`before` = oldest blockTime seen) through the
@@ -580,6 +678,24 @@ class BroadcastRepository @Inject constructor(
         }
     }
 
+    /** The newest chain time stored for [channelName], or null for an empty room. */
+    suspend fun newestBlockTimestamp(channelName: String): Long? =
+        database.broadcastDao().newestBlockTimestamp(channelName)
+
+    /**
+     * Room Info's check after a Save: asks [baseUrl] for one row of [channelName] and returns how
+     * many came back (iOS `PublicChatRoomInfoView.saveIndexer`, limit 1). Throws when it can't be
+     * reached. A URL Retrofit can't take is refused here: [NetworkService.broadcastIndexerApiFor]
+     * would quietly fall back to the app-wide indexer and test that one instead.
+     */
+    suspend fun probeIndexer(baseUrl: String, channelName: String): Int {
+        val trimmed = baseUrl.trim()
+        val withSlash = if (trimmed.endsWith("/")) trimmed else "$trimmed/"
+        if (withSlash.toHttpUrlOrNull() == null) throw IllegalArgumentException("unsupported URL")
+        val api = networkService.broadcastIndexerApiFor(trimmed) ?: throw IllegalArgumentException("unsupported URL")
+        return api.getBroadcasts(channel = channelName, limit = 1).messages.orEmpty().size
+    }
+
     suspend fun backfillFromIndexer(channelName: String): Int {
         // This room's own indexer where it has one, the app-wide client otherwise. A broadcast is
         // on-chain, so any indexer watching the same network serves the same room.
@@ -634,6 +750,9 @@ class BroadcastRepository @Inject constructor(
                 } else {
                     deepBackfilledChannels.add(channelName)
                     deepUnverifiedRetries.remove(channelName)
+                    // The whole history is in, so a send that did land has its copy to match
+                    // (iOS e5a9b11).
+                    settlePendingSendsFromBeforeThisRun(channelName)
                 }
             }
             fetched
@@ -653,6 +772,8 @@ class BroadcastRepository @Inject constructor(
     suspend fun sendBroadcast(channelName: String, content: String, feeRateOverride: Long? = null): String {
         val myAddress = walletManager.getAddress()
         val pendingId = "pending_${java.util.UUID.randomUUID()}"
+        // This run is working on it, so the leftover-pending settle leaves it alone (iOS e5a9b11).
+        pendingSendsThisRun.add(pendingId)
         database.broadcastDao().insertMessage(
             BroadcastMessageEntity(
                 id = pendingId,
@@ -679,6 +800,11 @@ class BroadcastRepository @Inject constructor(
                 )
             )
             return txId
+        } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
+            // It may have landed, so no Retry, which would post and pay twice. It stays pending
+            // until its delivered copy shows up, or the next launch settles it (iOS e5a9b11). A
+            // reaction or an edit is a row here too, so it is left as it is the same way.
+            throw e
         } catch (e: Exception) {
             database.broadcastDao().updateMessageStatus(pendingId, "failed")
             throw e
@@ -687,7 +813,12 @@ class BroadcastRepository @Inject constructor(
 
     /** Re-attempts a failed broadcast, reusing its same "pending_<uuid>" id/content — the same placeholder resurrected, not a new message, matching ChatViewModel.retrySendMessage. */
     suspend fun retryBroadcast(message: BroadcastMessageEntity) {
-        database.broadcastDao().updateMessageStatus(message.id, "pending")
+        // Only a failed send of this account's, and only once: a second tap before the list
+        // re-emits would send it twice (iOS `retryPublicChatMessage` guards the same).
+        if (message.senderAddress != walletManager.getAddress()) return
+        // Pending again and worked on by this run, so the settle must not touch it (iOS e5a9b11).
+        pendingSendsThisRun.add(message.id)
+        if (database.broadcastDao().claimFailedForRetry(message.id) == 0) return
         try {
             val txId = walletService.sendBroadcast(message.channelName, message.content).txId
             senderVerifier.rememberOwnBroadcast(txId, message.senderAddress)
@@ -702,6 +833,10 @@ class BroadcastRepository @Inject constructor(
                     deliveryStatus = "sent"
                 )
             )
+        } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
+            // May have landed: stays pending with no Retry (iOS e5a9b11). Passed on so a room
+            // message can say so; a reaction's retry says nothing, as iOS's `try?` does.
+            throw e
         } catch (e: Exception) {
             database.broadcastDao().updateMessageStatus(message.id, "failed")
         }

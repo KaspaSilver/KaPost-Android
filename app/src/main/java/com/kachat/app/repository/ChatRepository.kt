@@ -1312,6 +1312,12 @@ class ChatRepository @Inject constructor(
         // came back the moment that account was re-imported (iOS 78152d3).
         database.groupDao().deleteAllGroupMessagesForWallet(address)
         database.groupDao().deleteAllGroupsForWallet(address)
+        // Its Public Chats too: the joined rooms and hidden senders came back on a re-import.
+        // Cached room messages are shared by every account here, so only rooms nobody else
+        // still has lose theirs.
+        database.broadcastDao().deleteChannelsForWallet(address)
+        database.broadcastDao().deleteHiddenSendersForWallet(address)
+        database.broadcastDao().deleteMessagesOfUnjoinedChannels()
         // The DataStore sync cursors MUST reset with the data: they survived account deletion,
         // so re-importing an account previously held on this device resumed the handshake scan
         // at the old cursor — ZERO historical handshakes came back and no contacts were

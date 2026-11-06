@@ -10,7 +10,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.ceil
 
 /** Why a coin fetch could not even be asked: the node connection is not up yet. */
 internal const val COIN_FETCH_NOT_CONNECTED = "Not connected to a Kaspa node yet. Try again in a moment."
@@ -137,8 +136,8 @@ class KaspaWalletEngine @Inject constructor(
      * @param changeAddress Where leftover change goes — defaults to [fromAddress] (existing
      * behavior). The spending-address flow routes this to a freshly derived *next* address
      * instead, so a payment's change never lands on an address that has been used before.
-     * @param feeRateOverride Sompi-per-mass-gram rate to use instead of the live network
-     * estimate — e.g. from the Withdraw dialog's manual fee bump for a busy fee market. Still
+     * @param feeRateOverride Sompi-per-mass-gram rate to use instead of the fixed 100
+     * sompi/gram — e.g. from the Withdraw dialog's manual fee bump for a busy fee market. Still
      * floored at [KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM] like the live estimate is.
      * @param manualUtxos Coin control: spend exactly this fixed set instead of greedily picking
      * enough large UTXOs — resolved by outpoint against the freshly-reconciled `utxos` fetched
@@ -155,9 +154,12 @@ class KaspaWalletEngine @Inject constructor(
         toAddress: String,
         amountSompi: Long,
         payloadBytes: ByteArray? = null,
-        fromAddress: String = walletManager.getAddress(),
-        signingPrivateKey: ByteArray = walletManager.getPrivateKeyBytes(),
-        changeAddress: String = fromAddress,
+        // Null = the identity address and its key, worked out inside the try below: as default
+        // arguments they were evaluated before it, so a failed key derivation threw out of the send
+        // instead of failing it.
+        fromAddress: String? = null,
+        signingPrivateKey: ByteArray? = null,
+        changeAddress: String? = null,
         feeRateOverride: Long? = null,
         manualUtxos: List<UtxoEntry>? = null,
         /**
@@ -169,9 +171,22 @@ class KaspaWalletEngine @Inject constructor(
          */
         allowReducedAmount: Boolean = false,
         extraFeeSompi: Long = 0L,
-        senderRedeemScript: ByteArray? = null
+        senderRedeemScript: ByteArray? = null,
+        /**
+         * The Wallet's Send from the chatting address (iOS `sendWithdrawal`): only confirmed,
+         * non-coinbase coins are spent - no pending change, no coinbase - so the submit never
+         * needs allowOrphan. The fee preview and Max price the same coins ([fetchWithdrawalUtxosOrThrow]).
+         */
+        withdrawalCoinsOnly: Boolean = false,
     ): Result<String> = sendMutex.withLock {
+        // The key this send derived itself, zeroed once signing is done (as PaymentRequestWallet
+        // zeroes its copy). A caller's own key is the caller's to clear.
+        var derivedKey: ByteArray? = null
         try {
+            val fromAddress = fromAddress ?: walletManager.getAddress()
+            val signingPrivateKey = signingPrivateKey
+                ?: walletManager.getPrivateKeyBytes().also { derivedKey = it }
+            val changeAddress = changeAddress ?: fromAddress
             // A quantum-safe input carries its redeem script after the signature, so every input
             // is priced at that bigger size.
             val signatureScriptSize = senderRedeemScript
@@ -194,9 +209,12 @@ class KaspaWalletEngine @Inject constructor(
             // a node does not - see NodePoolManager.getUtxosByAddress.
             val fetched = nodePoolManager.getUtxosByAddress(fromAddress) ?: api.getUtxos(fromAddress)
             val reconciled = reconcileUtxos(fromAddress, fetched)
-            val utxos = filterSpendableCoinbase(reconciled)
+            val utxos = if (withdrawalCoinsOnly) withdrawalCoins(reconciled) else filterSpendableCoinbase(reconciled)
             if (utxos.isEmpty()) {
-                val msg = if (reconciled.any { it.utxoEntry.isCoinbase }) {
+                val msg = if (withdrawalCoinsOnly) {
+                    // iOS sendWithdrawal's wording
+                    "No spendable UTXOs available"
+                } else if (reconciled.any { it.utxoEntry.isCoinbase }) {
                     "These are mining (coinbase) rewards that haven't matured yet. Each becomes spendable a short time (about 1–2 minutes) after it's mined — try again shortly."
                 } else {
                     "Insufficient funds: No UTXOs found"
@@ -204,10 +222,8 @@ class KaspaWalletEngine @Inject constructor(
                 return Result.failure(IllegalStateException(msg))
             }
 
-            // 3. Fetch network fee rate (sompi per mass-gram) — always at least the
-            // network-enforced minimum, since a quoted rate below that would still
-            // get rejected on broadcast. A caller-supplied override skips the live estimate
-            // entirely (still floored the same way).
+            // 3. The fee rate (sompi per mass-gram): the fixed 100 sompi/gram (iOS KaspaFeePolicy,
+            // see fetchQuotedFeeRateSompiPerGram), or a caller-supplied override floored at it.
             val feeRateSompiPerGram = feeRateOverride?.coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
                 ?: fetchQuotedFeeRateSompiPerGram()
 
@@ -260,7 +276,7 @@ class KaspaWalletEngine @Inject constructor(
                     finalAmount = reduced
                     changeAmount = 0L
                 } else {
-                    return Result.failure(IllegalStateException("Insufficient funds: Needed ${selectionResult.requiredAmount}, have ${selectionResult.totalSelected}"))
+                    return Result.failure(IllegalStateException("Insufficient funds for payment"))
                 }
             }
             // A transaction over Kaspa's mass cap gets rejected by the node. Refuse an over-cap input
@@ -402,8 +418,10 @@ class KaspaWalletEngine @Inject constructor(
                                     throw IllegalStateException(
                                         "No Kaspa node is reachable on this network. Node connections appear blocked, so the message could not be sent.",
                                         e2
-                                    )
+                                    ).also { it.addSuppressed(e) }
                                 }
+                                // The first try's lost answer still counts (iOS e5a9b11).
+                                e2.addSuppressed(e)
                                 throw e2
                             }
                         }
@@ -418,7 +436,13 @@ class KaspaWalletEngine @Inject constructor(
                     e is io.grpc.StatusException || e is io.grpc.StatusRuntimeException
                 if (payloadBytes == null && transportShaped) {
                     Log.w("KaspaWalletEngine", "No node answered the submit, falling back to the REST gateway", e)
-                    api.postTransaction(PostTransactionRequest(signedTx)).transactionId
+                    try {
+                        api.postTransaction(PostTransactionRequest(signedTx)).transactionId
+                    } catch (restError: Exception) {
+                        // The nodes' lost answer still counts (iOS e5a9b11).
+                        restError.addSuppressed(e)
+                        throw restError
+                    }
                 } else {
                     throw e
                 }
@@ -456,10 +480,16 @@ class KaspaWalletEngine @Inject constructor(
                     logSignatureRejection(attemptInputs, fromScriptHex)
                     dropPendingChange(fromAddress, attemptInputs.filter { it.utxoEntry.blockDaaScore == 0L })
                 }
+                // The first send may have gone: new coins would pay twice (iOS e5a9b11).
+                if (e is SendOutcomeUnknownException) throw e
                 if (!(isTransientNodeRejection(e) || signatureRejected) || !manualUtxos.isNullOrEmpty()) throw e
                 val refetched = nodePoolManager.getUtxosByAddress(fromAddress) ?: api.getUtxos(fromAddress)
-                val confirmedOnly = filterSpendableCoinbase(reconcileUtxos(fromAddress, refetched))
-                    .filter { it.utxoEntry.blockDaaScore > 0L }
+                val refetchedReconciled = reconcileUtxos(fromAddress, refetched)
+                val confirmedOnly = if (withdrawalCoinsOnly) {
+                    withdrawalCoins(refetchedReconciled)
+                } else {
+                    filterSpendableCoinbase(refetchedReconciled).filter { it.utxoEntry.blockDaaScore > 0L }
+                }
                 if (confirmedOnly.isEmpty()) throw e
                 Log.w("KaspaWalletEngine", "Submit rejected (${e.message}), retrying once with confirmed-only inputs")
                 attempt(confirmedOnly)
@@ -470,6 +500,8 @@ class KaspaWalletEngine @Inject constructor(
         } catch (e: Exception) {
             Log.e("KaspaWalletEngine", "Error sending Kaspa", e)
             Result.failure(e)
+        } finally {
+            derivedKey?.fill(0)
         }
     }
 
@@ -507,8 +539,12 @@ class KaspaWalletEngine @Inject constructor(
         // The account the source is derived from: its change slot is probed and picked there too
         // (iOS fb2323e, IOS-109 / AND-056 follow-up).
         val owner = walletManager.getActiveAccount()?.address
-        val sourceSpendingAddress = walletManager.deriveSpendingAddress(sourceSpendingIndex)
-        val spendingPrivateKey = walletManager.getSpendingPrivateKeyBytes(sourceSpendingIndex)
+        // A failed derivation fails the send rather than throwing out of it.
+        val sourceSpendingAddress = try {
+            walletManager.deriveSpendingAddress(sourceSpendingIndex)
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
         // A quantum-safe source (KIP-22) spends with its redeem script pushed after the signature.
         val isQuantumSource = WalletManager.isQuantumIndex(sourceSpendingIndex)
         val senderRedeemScript = if (isQuantumSource) {
@@ -535,6 +571,13 @@ class KaspaWalletEngine @Inject constructor(
         if (pick == null && isQuantumSource) {
             return Result.failure(IllegalStateException(appContext.getString(com.kachat.app.R.string.quantum_next_address_failed)))
         }
+        // Derived last, and zeroed once the send has signed with it (as PaymentRequestWallet).
+        val spendingPrivateKey = try {
+            walletManager.getSpendingPrivateKeyBytes(sourceSpendingIndex)
+        } catch (e: Exception) {
+            pick?.let { walletManager.finishQuantumChangePick(it, reveal = false) }
+            return Result.failure(e)
+        }
         val result = try {
             sendKaspa(
                 toAddress = toAddress,
@@ -556,6 +599,8 @@ class KaspaWalletEngine @Inject constructor(
             // and handing out one that may hold change is not.
             pick?.let { walletManager.finishQuantumChangePick(it, reveal = true) }
             throw e
+        } finally {
+            spendingPrivateKey.fill(0)
         }
         // Revealed, not made primary (iOS revealSpendingAddress), only when the send went
         // through; a failed send gives it back. Both writes go to the account this send started
@@ -567,20 +612,27 @@ class KaspaWalletEngine @Inject constructor(
         return result
     }
 
-    /** Live quoted fee rate (sompi per mass-gram), floored at the network minimum - mirrors
-     *  [ColdStorageSendEngine.fetchQuotedFeeRateSompiPerGram]. Falls back to the minimum on any
-     *  request failure. Extracted out of [sendKaspa] so [WalletViewModel]'s max-amount estimate
-     *  can quote the same rate a real send would use. */
-    suspend fun fetchQuotedFeeRateSompiPerGram(): Long {
-        val api = networkService.kaspaRestApi.value ?: return KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
-        return try {
-            val estimate = api.getFeeEstimate()
-            val quoted = estimate.normalBuckets.firstOrNull()?.feerate ?: KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
-            ceil(quoted).toLong().coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
-        } catch (e: Exception) {
-            Log.w("KaspaWalletEngine", "Failed to fetch fee estimate, using network minimum", e)
-            KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
-        }
+    /** The fee rate (sompi per mass-gram) a send with no override pays: the fixed relay minimum,
+     *  100 sompi/gram (iOS `KaspaFeePolicy.minimumRelayFeePerGramSompi`). iOS never reads the
+     *  node's fee estimate to price a send, so neither does this: the rate the Send screen shows
+     *  is the rate the send pays. Fast / Priority / custom go on top as a flat extra. */
+    @Suppress("RedundantSuspendModifier")
+    suspend fun fetchQuotedFeeRateSompiPerGram(): Long = KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
+
+    /** iOS `sendWithdrawal`'s coins: confirmed (`blockDaaScore > 0`) and not coinbase. */
+    private fun withdrawalCoins(utxos: List<UtxoEntry>): List<UtxoEntry> =
+        utxos.filter { it.utxoEntry.blockDaaScore > 0L && !it.utxoEntry.isCoinbase }
+
+    /**
+     * The coins the Wallet's Send from the chatting address spends ([sendKaspa]'s
+     * `withdrawalCoinsOnly`, iOS `sendWithdrawal`): confirmed, non-coinbase, less what this
+     * engine already spent and what scheduled posts hold. The fee preview and Max price these, so
+     * they price what the send spends. Throws when the node can't be asked.
+     */
+    suspend fun fetchWithdrawalUtxosOrThrow(address: String): List<UtxoEntry> {
+        val api = networkService.kaspaRestApi.value ?: throw IllegalStateException(COIN_FETCH_NOT_CONNECTED)
+        val fetched = nodePoolManager.getUtxosByAddress(address) ?: api.getUtxos(address)
+        return withdrawalCoins(reconcileUtxos(address, fetched))
     }
 
     /**
@@ -692,7 +744,7 @@ class KaspaWalletEngine @Inject constructor(
                 changeScriptLen = scriptHex.length / 2,
             )
             if (selection.totalSelected < selection.requiredAmount) {
-                return Result.failure(IllegalStateException("Insufficient funds: Needed ${selection.requiredAmount}, have ${selection.totalSelected}"))
+                return Result.failure(IllegalStateException("Insufficient funds for payment"))
             }
             if (selection.selectedUtxos.size > KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION) {
                 return Result.failure(IllegalStateException(
@@ -761,7 +813,7 @@ class KaspaWalletEngine @Inject constructor(
             changeScriptLen = scriptHex.length / 2,
         )
         if (selection.totalSelected < selection.requiredAmount) {
-            throw IllegalStateException("Insufficient funds: Needed ${selection.requiredAmount}, have ${selection.totalSelected}")
+            throw IllegalStateException("Insufficient funds for payment")
         }
         if (selection.selectedUtxos.size > KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION) {
             throw IllegalStateException(

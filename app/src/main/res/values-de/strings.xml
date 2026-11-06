@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">Abgelehnt – der Name hat den Besitzer gewechselt, geht an dich zurück</string>
     <string name="kn_offer_declined_earlier_owner">Abgelehnt – an einen früheren Besitzer gerichtet</string>
     <string name="kn_err_offer_declined">Dieses Angebot wurde gemacht, bevor der Name den Besitzer wechselte. Es ist abgelehnt und geht an den Käufer zurück.</string>
+    <string name="kn_err_offer_amount_changed">Dieses Angebot enthält einen anderen Betrag als angezeigt. Es wurde nichts gesendet.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">Dieser Name ist bereits für den längsten Zeitraum bezahlt. Verlängerung möglich ab %1$s.</string>
     <string name="kn_err_offer_own_name">Du kannst kein Angebot für deinen eigenen Namen machen.</string>

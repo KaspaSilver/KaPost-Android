@@ -193,6 +193,9 @@ class KachatNamesActions @Inject constructor(
         /** accept an offer made to an earlier owner of the name (iOS ba07975; the seller field since 49c0baa) */
         class OfferDeclined : ActionError("This offer was made before the name changed hands, so it's declined and going back to the buyer.")
 
+        /** accept an offer whose coins on chain aren't the amount the screen showed (iOS e5a9b11) */
+        class OfferAmountChanged : ActionError("This offer holds a different amount than was shown. Nothing was sent.")
+
         /** an offer on a name this key owns (iOS 49c0baa) */
         class OwnName : ActionError("You can't make an offer on your own name.")
 
@@ -863,7 +866,11 @@ class KachatNamesActions @Inject constructor(
                 // Made to an earlier owner: the contract refuses it, and it goes back to the buyer (iOS 49c0baa).
                 if (op.offer.isDeclined(op.name.owner)) throw ActionError.OfferDeclined()
                 validateKey(op.offer.buyer, "The buyer")
-                b.acceptOffer(env, liveName(op.name, m), liveOffer(op.offer, m))
+                // The offer's script doesn't commit to its amount, so the amount the screen showed is
+                // only the indexer's word. The name doesn't go unless the coins really are there (iOS e5a9b11).
+                val liveOffered = liveOffer(op.offer, m)
+                if (liveOffered.value != op.offer.amount) throw ActionError.OfferAmountChanged()
+                b.acceptOffer(env, liveName(op.name, m), liveOffered)
             }
             is Operation.Decline -> b.declineOffer(env, liveOffer(op.offer, m))
             is Operation.Release -> {

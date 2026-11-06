@@ -1423,16 +1423,9 @@ class ChatViewModel @Inject constructor(
             try {
                 val address = walletManager.getAddress()
                 val api = networkService.kaspaRestApi.value ?: return@launch
-                
-                // Refresh fee rate from network
-                try {
-                    val feeInfo = api.getFeeEstimate()
-                    _networkFeeRate.value = feeInfo.normalBuckets.firstOrNull()?.feerate
-                        ?: com.kachat.app.util.KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
-                } catch (e: Exception) {
-                    Log.w("ChatViewModel", "Could not fetch fee estimate, using network minimum")
-                }
 
+                // No fee quote: every send pays the fixed network minimum (iOS KaspaFeePolicy,
+                // KaspaWalletEngine.fetchQuotedFeeRateSompiPerGram), so the preview prices at it.
                 _currentUtxos.value = api.getUtxos(address)
             } catch (e: Exception) {
                 Log.w("ChatViewModel", "UTXO refresh failed", e)
@@ -1458,14 +1451,6 @@ class ChatViewModel @Inject constructor(
             try {
                 val address = if (source != null) walletManager.deriveSpendingAddress(source) else walletManager.getAddress()
                 val api = networkService.kaspaRestApi.value ?: return@launch
-
-                try {
-                    val feeInfo = api.getFeeEstimate()
-                    _networkFeeRate.value = feeInfo.normalBuckets.firstOrNull()?.feerate
-                        ?: com.kachat.app.util.KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM.toDouble()
-                } catch (e: Exception) {
-                    Log.w("ChatViewModel", "Could not fetch fee estimate, using network minimum")
-                }
 
                 val utxos = api.getUtxos(address)
                 // A refresh for a source that has since changed would price the wrong address.

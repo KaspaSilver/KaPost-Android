@@ -1,5 +1,6 @@
 package com.kachat.app.services
 
+import kotlinx.coroutines.sync.withLock
 import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
@@ -61,6 +62,8 @@ class KaPostsScheduledStore @Inject constructor(
     private val walletManager: WalletManager,
     /** Lazy: the service is what talks to the indexer, and it must not need this store to exist. */
     private val kaPostsService: Provider<KaPostsService>,
+    /** The local notification for a post only this phone holds (iOS `scheduleReminder`). */
+    private val reminder: KaPostsScheduledReminder,
 ) {
     private val prefs = context.getSharedPreferences("kaposts_scheduled", Context.MODE_PRIVATE)
     private val gson = Gson()
@@ -149,6 +152,7 @@ class KaPostsScheduledStore @Inject constructor(
             update(entry)
         } catch (e: Exception) {
             Log.w(TAG, "Scheduling on the indexer failed, keeping it on the phone", e)
+            reminder.schedule(entry)
         }
         return entry
     }
@@ -168,6 +172,7 @@ class KaPostsScheduledStore @Inject constructor(
             }
         }
         persist(_entries.value.filterNot { it.txId == entry.txId })
+        reminder.cancel(entry.txId)
     }
 
     /** Forgets a submitted/failed row - nothing is reserved by it any more. */
@@ -177,12 +182,18 @@ class KaPostsScheduledStore @Inject constructor(
 
     /**
      * Submits, from this phone, every post the indexer never took whose time has come, and tries
-     * the indexer again for the ones still in the future. Called when KaPosts opens.
+     * the indexer again for the ones still in the future. Called when the app comes to the
+     * front, and from the background (the reminder's job, [SyncWorker]).
      */
-    suspend fun sendDueLocally() {
+    suspend fun sendDueLocally() = sendDueMutex.withLock {
+        // nothing goes out for an account behind the sign-in screen
+        if (walletManager.isLoggedOut) return@withLock
         reloadIfNeeded()
         val now = System.currentTimeMillis()
-        for (entry in _entries.value) {
+        // Each entry read fresh: a run that waited on the lock must not submit what the run
+        // before it already sent.
+        for (snapshot in _entries.value) {
+            val entry = _entries.value.firstOrNull { it.txId == snapshot.txId } ?: continue
             if (entry.status != KaPostScheduledEntry.STATUS_SCHEDULED || entry.onServer) continue
             if (entry.notBeforeMs <= now) {
                 try {
@@ -193,11 +204,15 @@ class KaPostsScheduledStore @Inject constructor(
                     Log.w(TAG, "Scheduled post failed to submit", e)
                     update(entry.copy(status = KaPostScheduledEntry.STATUS_FAILED, error = e.message))
                 }
+                // Sent or failed, it no longer waits on the phone (iOS KaPostsScheduledStore.swift).
+                reminder.cancel(entry.txId)
             } else {
                 // Still in the future and still only here: offer it to the indexer again.
                 try {
                     kaPostsService.get().scheduleOnServer(entry.txId, entry.transaction, entry.notBeforeMs)
                     update(entry.copy(onServer = true))
+                    // The indexer sends it now; no reminder to open the app.
+                    reminder.cancel(entry.txId)
                 } catch (_: Exception) {
                     // Still unreachable; this phone remains the fallback.
                 }
@@ -205,9 +220,15 @@ class KaPostsScheduledStore @Inject constructor(
         }
     }
 
+    /** One [sendDueLocally] at a time: two at once (opening the list from the menu ran it twice)
+     *  could submit an entry twice, or mark a just-submitted one failed. */
+    private val sendDueMutex = kotlinx.coroutines.sync.Mutex()
+
     /** Takes the indexer's view of what it holds: submitted and failed outcomes land here. */
     suspend fun refreshFromServer() {
         reloadIfNeeded()
+        // Only posts the server holds have anything to learn from it (iOS e5a9b11).
+        if (_entries.value.none { it.onServer }) return
         val remote = try { kaPostsService.get().fetchScheduledPosts() } catch (_: Exception) { return }
         if (remote.isEmpty()) return
         val byId = remote.associateBy { it.txId }

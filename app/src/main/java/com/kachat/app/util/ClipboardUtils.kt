@@ -54,6 +54,9 @@ internal fun addressCopiedDisplay(address: String): String {
     return "$prefix${body.take(4)}...${body.substring(midStart, midStart + 4)}...${body.takeLast(4)}"
 }
 
+/** Counts [copyPrivateKeyWithAutoWipe]'s copies, so a wipe only clears the newest one. */
+private var secretCopyGeneration = 0
+
 fun copyPrivateKeyWithAutoWipe(context: Context, value: String, label: String = "private key") {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val clip = ClipData.newPlainText(label, value)
@@ -66,9 +69,16 @@ fun copyPrivateKeyWithAutoWipe(context: Context, value: String, label: String = 
         }
     }
     clipboard.setPrimaryClip(clip)
+    val copy = ++secretCopyGeneration
     Handler(Looper.getMainLooper()).postDelayed({
-        val current = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
-        if (current == value) {
+        // Only this app's newest secret copy is wiped. From Android 10 an app in the background
+        // reads the clipboard as empty - and the background is exactly where it is at 30 s, with
+        // the user pasting into a password manager - so an unreadable clipboard is wiped too.
+        // A readable one is wiped only while it still holds the value (something copied since
+        // stays).
+        if (copy != secretCopyGeneration) return@postDelayed
+        val current = runCatching { clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() }.getOrNull()
+        if (current == null || current == value) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 clipboard.clearPrimaryClip()
             } else {

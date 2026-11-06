@@ -328,7 +328,10 @@ class BroadcastScanningService @Inject constructor(
      */
     @Synchronized
     private fun reevaluate() {
-        val demand = wantCount > 0
+        // A room on screen wants the stream only while the app is in front: left open behind the
+        // home button it would stream every block until the process dies. Always-listen rooms
+        // keep their background stream (iOS suspends the app instead).
+        val demand = wantCount > 0 && (alwaysListenWasWanted || notificationHelper.isAppInForeground)
         val shouldRun = demand && (
             !meteredNetwork.isMetered ||
                 (
@@ -451,7 +454,7 @@ class BroadcastScanningService @Inject constructor(
             }
         }
 
-        pruneIfDue()
+        pruneIfDueGated()
     }
 
     /** Stores one live post whose [senderAddress] is VERIFIED, and notifies as before. */
@@ -518,7 +521,15 @@ class BroadcastScanningService @Inject constructor(
         }
     }
 
-    private suspend fun pruneIfDue() {
+    /** Retention, also from an open room (iOS prunes on open, after each indexer merge and every
+     *  few minutes): on mobile data an indexer room streams no blocks, so the block path above
+     *  never ran it and old rows stayed. [force] skips the interval gate. */
+    suspend fun pruneIfDue(force: Boolean = false) {
+        if (force) lastPruneAt = 0L
+        pruneIfDueGated()
+    }
+
+    private suspend fun pruneIfDueGated() {
         // Pruning on every single block would hammer the DB — Kaspa blocks arrive fast. Gate it
         // instead to roughly half the shortest retention any joined channel is currently
         // configured for (floor/ceiling below) — a fixed hourly gate would silently ignore a

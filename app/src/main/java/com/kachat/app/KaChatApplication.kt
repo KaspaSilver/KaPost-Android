@@ -252,6 +252,11 @@ class KaChatApplication : Application(), Configuration.Provider {
         // scanner drops to indexer-covered delivery on metered networks (see each service's
         // class doc) — a full block stream is the app's single biggest data cost.
         val foregroundObserver = object : DefaultLifecycleObserver {
+            // iOS KaPostsApp: the reconnect sweep runs at most once per 15 s of comings and
+            // goings (activeResyncDebounce), and the first one waits 2 s for the first render.
+            private var lastReconnectAtMs: Long? = null
+            private var hasCompletedFirstStart = false
+
             override fun onStop(owner: LifecycleOwner) {
                 // Backgrounded: remote push takes over as the notification source for the
                 // push-covered surfaces — the local paths stop posting their own banners.
@@ -270,13 +275,35 @@ class KaChatApplication : Application(), Configuration.Provider {
                 // KaPosts pings while the app is actually open (60s poll) — iOS parity.
                 startupStep("KaPosts notifications: start") { kaPostsNotificationPoller.get().start() }
                 // Immediate catch-up diff for address activity (external receipts while the app
-                // was closed, first-run silent baseline seeding), then its foreground poll loop.
+                // was closed, first-run silent baseline seeding); KaPost runs no loop after it.
                 startupStep("address activity: foreground") { addressActivityNotifier.get().onAppForeground() }
                 // A batch of gRPC connections can die silently while backgrounded/asleep (the OS
                 // tears down sockets, and each KaspadConnection's own self-reconnect can be
                 // suspended along with the rest of the app) - reconnect any that are dead right
                 // now instead of waiting for the next 5-30s probe cycle to notice and replace them.
-                startupStep("node pool: reconnect") { nodePoolManager.get().reconnectStaleConnections() }
+                // Not again within 15 s, and 2 s after a cold start (iOS KaPostsApp).
+                val isFirstStart = !hasCompletedFirstStart
+                hasCompletedFirstStart = true
+                val now = android.os.SystemClock.elapsedRealtime()
+                val shouldReconnect = lastReconnectAtMs?.let { now - it > RECONNECT_DEBOUNCE_MS } ?: true
+                if (shouldReconnect) {
+                    lastReconnectAtMs = now
+                    owner.lifecycleScope.launch(logOnly) {
+                        if (isFirstStart) kotlinx.coroutines.delay(COLD_START_RECONNECT_GRACE_MS)
+                        startupStep("node pool: reconnect") { nodePoolManager.get().reconnectStaleConnections() }
+                    }
+                }
+                // A scheduled post only this phone holds goes out when its time has come, each
+                // time the app comes to the front (iOS KaPostsScheduledStore on didBecomeActive).
+                owner.lifecycleScope.launch(Dispatchers.IO + logOnly) {
+                    try {
+                        kaPostsScheduledStore.get().sendDueLocally()
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        android.util.Log.w("KaChatApplication", "Scheduled posts: local send failed", e)
+                    }
+                }
                 // This wallet's own profile follows the chain on every network (a profile saved
                 // on another device shows here; iOS 5d4ce87), and .kachat registrations in flight
                 // (where names are live) resume after a relaunch: commit -> wait ->
@@ -307,6 +334,10 @@ class KaChatApplication : Application(), Configuration.Provider {
 
     private companion object {
         const val TAG = "KaChatApplication"
+        /** iOS KaPostsApp `activeResyncDebounce` (15 s). */
+        const val RECONNECT_DEBOUNCE_MS = 15_000L
+        /** iOS KaPostsApp `coldStartGraceNanos` (2 s). */
+        const val COLD_START_RECONNECT_GRACE_MS = 2_000L
     }
 
     /**

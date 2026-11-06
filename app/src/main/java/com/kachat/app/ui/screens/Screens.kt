@@ -63,6 +63,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -89,6 +91,8 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Payments
 import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.drawBehind
@@ -653,9 +657,9 @@ fun SpendingAddressSendFlow(
      *  (paymentRequest:)`): its address is locked in, its amount and memo filled in. A request
      *  pasted into the recipient field does the same (not in Compound). */
     paymentRequest: com.kachat.app.models.PaymentRequest? = null,
-    /** Opened from one address's history (its Send button, iOS 7a8102b `lockedSource`): the Kaspa
-     *  leaves from that address and the From section offers no other. */
-    lockedSource: SendSource? = null,
+    /** Where the Kaspa leaves from, with no From step to pick another. KaPost only ever sends from
+     *  the chatting address: other addresses are managed in KaChat and KaPay (iOS e5a9b11). */
+    lockedSource: SendSource? = SendSource.Chatting,
     /** Pays a chatting-address request as a chat payment (the memo encrypted to them inside it);
      *  null takes the app's own (the activity's), as every iOS send screen has ChatService. */
     chatViewModel: com.kachat.app.viewmodels.ChatViewModel? = null,
@@ -723,6 +727,7 @@ fun SpendingAddressSendFlow(
     var source by remember { mutableStateOf<SendSource>(lockedSource ?: SendSource.Chatting) }
     /** The From address's balance, loaded below for the From step and the amount's Available. */
     var sourceBalanceSompi by remember { mutableStateOf<Long?>(null) }
+    var scannedRequest by remember { mutableStateOf<com.kachat.app.models.PaymentRequest?>(null) }
     val chattingAddress by viewModel.address.collectAsState()
     val sourceIndex = if (isCompoundMode) spendingIndex else source.spendingIndex
     val sourceAddress = if (isCompoundMode) fromAddress else (source.address(chattingAddress) ?: fromAddress)
@@ -749,20 +754,23 @@ fun SpendingAddressSendFlow(
     }
 
     // The fee, as iOS prices it (SendKaspaComponents / SpendingAddressWithdrawView) and as the chat
-    // Send KAS sheet already pays it: a base fee at the live quoted rate on the real inputs, plus
-    // Fast / Priority / a custom fee as a flat extra on top (SendFeeModel). The send goes out with
-    // no rate override (the engine prices the base at the quote) and the extra paid exactly - so a
-    // multi-input send no longer scales the chosen fee by its input count.
-    //
-    // The quote is fetched once when the screen opens; until then the base is priced at the
-    // network minimum, the floor of any quote.
-    var liveFeeRateSompiPerGram by remember { mutableStateOf<Long?>(null) }
-    val baseFeeRateSompiPerGram = liveFeeRateSompiPerGram ?: KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
+    // Send KAS sheet already pays it: a base fee at the fixed 100 sompi/gram on the real inputs
+    // (iOS KaspaFeePolicy - no node fee estimate is read), plus Fast / Priority / a custom fee as a
+    // flat extra on top (SendFeeModel). The send goes out with no rate override (the engine prices
+    // the base at the same fixed rate) and the extra paid exactly - so the rate shown is the rate
+    // paid, and a multi-input send never scales the chosen fee by its input count.
+    val baseFeeRateSompiPerGram = KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
     // What automatic selection spends and pays for the amount typed (coin control off) - see the
     // preview LaunchedEffect below. Null while there is no amount, while it is being worked out,
     // or when the coins cannot cover it.
     var feePreview by remember { mutableStateOf<com.kachat.app.util.SendFeeModel.Preview?>(null) }
     var isPreviewingFee by remember { mutableStateOf(false) }
+    /** Why the preview couldn't price this send, under the fee controls with Total "—" (iOS
+     *  WalletScreens `feeError`). */
+    var previewFeeError by remember { mutableStateOf<String?>(null) }
+    /** Why Max couldn't fill the amount, in the amount's footnote and on the review (iOS
+     *  WalletScreens `errorMessage` from setMaxAmount); cleared by a key press. */
+    var maxError by remember { mutableStateOf<String?>(null) }
     // The amount Max last wrote, and the fee choice, From and coins it left room for: changing
     // any of them while the field still holds that amount works Max out again (see setMaxAmount).
     var maxFill by remember { mutableStateOf<SendMaxFill?>(null) }
@@ -781,11 +789,31 @@ fun SpendingAddressSendFlow(
             com.kachat.app.util.SendFeeModel.STANDARD_SCRIPT_LEN
         }
     }
+    // Paid as a chat payment, with its encrypted memo (the send below): priced that way, with the
+    // `kchat:1:pay:` payload it carries (iOS WalletScreens' fee task, `estimatePaymentFee(note:)`;
+    // the size ChatViewModel.estimatedPaymentPayloadSize prices). From a spending address it goes
+    // without a payload, as ChatViewModel.sendPayment sends it.
+    val isChatPaymentRequest = activeRequest?.let { request ->
+        !isCompoundMode && request.toChattingAddress && requestChatViewModel != null &&
+            request.address.equals(feeRecipient, ignoreCase = true)
+    } == true
+    val paymentPayloadSize = remember(isChatPaymentRequest, sourceIndex, activeRequest, previewAmountSompi) {
+        val request = activeRequest
+        if (isChatPaymentRequest && sourceIndex == null && request != null && previewAmountSompi != null && previewAmountSompi > 0) {
+            MessageProtocol.estimatedPaymentPayloadSize(request.memo.trim(), previewAmountSompi)
+        } else {
+            0
+        }
+    }
+    // The chatting address's plain send spends confirmed, non-coinbase coins only (iOS
+    // sendWithdrawal), and the preview and Max price that same set; a chat payment or a spending
+    // address spends the engine's usual coins.
+    val usesWithdrawalCoins = sourceIndex == null && !isChatPaymentRequest
     val manualInputCount = manualUtxos?.size?.takeIf { it > 0 }
     val defaultFeeSompi = when {
-        manualInputCount != null -> com.kachat.app.util.SendFeeModel.baseFee(manualInputCount, baseFeeRateSompiPerGram, recipientScriptLen = recipientScriptLen, signatureScriptSize = sourceSignatureScriptSize)
+        manualInputCount != null -> com.kachat.app.util.SendFeeModel.baseFee(manualInputCount, baseFeeRateSompiPerGram, payloadSize = paymentPayloadSize, recipientScriptLen = recipientScriptLen, signatureScriptSize = sourceSignatureScriptSize)
         feePreview != null -> feePreview!!.baseFeeSompi
-        else -> com.kachat.app.util.SendFeeModel.baseFee(1, baseFeeRateSompiPerGram, signatureScriptSize = sourceSignatureScriptSize)
+        else -> com.kachat.app.util.SendFeeModel.baseFee(1, baseFeeRateSompiPerGram, payloadSize = paymentPayloadSize, signatureScriptSize = sourceSignatureScriptSize)
     }
     // The preview settled its extra together with the inputs it needs; passing exactly that extra
     // makes the send pick those same inputs and pay the total shown.
@@ -794,7 +822,42 @@ fun SpendingAddressSendFlow(
     } else {
         com.kachat.app.util.SendFeeModel.extraFee(defaultFeeSompi, feeTier.multiplier, customExtraFeeSompi)
     }
-    val effectiveFeeSompi = defaultFeeSompi + extraFeeSompi
+    // Change too small to keep goes to the fee, and the Review counts it (iOS e5a9b11
+    // `SendFeeEstimate.total`). It is measured here AFTER the extra was taken from the coins, so
+    // the send pays base + extra + this; iOS measures it before the extra and shows
+    // base + max(extra, folded), the same amount.
+    val foldedChangeSompi = remember(manualUtxos, feePreview, previewAmountSompi, baseFeeRateSompiPerGram, extraFeeSompi, recipientScriptLen, sourceAddress, sourceSignatureScriptSize, paymentPayloadSize) {
+        val coins = manualUtxos?.takeIf { it.isNotEmpty() }
+        if (coins != null && previewAmountSompi != null && previewAmountSompi > 0) {
+            com.kachat.app.util.SendFeeModel.manualFoldedChange(
+                utxos = coins,
+                amountSompi = previewAmountSompi,
+                feeRateSompiPerGram = baseFeeRateSompiPerGram,
+                extraFeeSompi = extraFeeSompi,
+                recipientScriptLen = recipientScriptLen,
+                changeScriptLen = runCatching { KaspaAddress.getScriptPublicKey(sourceAddress).length / 2 }
+                    .getOrDefault(com.kachat.app.util.SendFeeModel.STANDARD_SCRIPT_LEN),
+                signatureScriptSize = sourceSignatureScriptSize,
+                payloadSize = paymentPayloadSize,
+            )
+        } else {
+            feePreview?.foldedChangeSompi ?: 0L
+        }
+    }
+    val effectiveFeeSompi = defaultFeeSompi + extraFeeSompi + foldedChangeSompi
+    // The fee error under the controls: the preview's, or coin control's coins not covering the
+    // amount and its fee (iOS's estimate throws "Insufficient funds for payment" for both).
+    val feeError = manualUtxos?.takeIf { it.isNotEmpty() }?.let { coins ->
+        val amount = previewAmountSompi
+        val held = com.kachat.app.util.UtxoMath.checkedTotal(coins.map { it.utxoEntry.amount })
+        if (amount != null && amount > 0 && (held == null || held < amount + defaultFeeSompi + extraFeeSompi)) {
+            "Insufficient funds for payment"
+        } else {
+            null
+        }
+    } ?: previewFeeError.takeIf { manualUtxos.isNullOrEmpty() }
+    /** The whole fee, or null when it couldn't be worked out (Total and the fee show "—"). */
+    val totalFeeSompi: Long? = if (feeError == null) effectiveFeeSompi else null
 
     // Debounced KNS domain resolution - lets typing "name.kas" here resolve the same way Create
     // Chat's own address field already does. Skipped entirely in compound mode, where the
@@ -837,8 +900,9 @@ fun SpendingAddressSendFlow(
     // they cost, so the fee shown is priced on the real inputs rather than an assumed one -
     // mirrors ColdSendFlow's previewSelection. Debounced; Send waits for it, so it never goes out
     // with an extra worked out for a different amount.
-    LaunchedEffect(previewAmountSompi, baseFeeRateSompiPerGram, feeTier, customExtraFeeSompi, manualUtxos, sourceAddress, recipientScriptLen, sourceSignatureScriptSize) {
+    LaunchedEffect(previewAmountSompi, baseFeeRateSompiPerGram, feeTier, customExtraFeeSompi, manualUtxos, sourceAddress, recipientScriptLen, sourceSignatureScriptSize, paymentPayloadSize, usesWithdrawalCoins) {
         feePreview = null
+        previewFeeError = null
         if (manualUtxos.isNullOrEmpty() && previewAmountSompi != null && previewAmountSompi > 0) {
             isPreviewingFee = true
             kotlinx.coroutines.delay(400)
@@ -851,11 +915,15 @@ fun SpendingAddressSendFlow(
                     customExtraFeeSompi = customExtraFeeSompi,
                     recipientScriptLen = recipientScriptLen,
                     signatureScriptSize = sourceSignatureScriptSize,
+                    payloadSize = paymentPayloadSize,
+                    withdrawalCoins = usesWithdrawalCoins,
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w("SendFlow", "Fee preview failed for ${sourceAddress.redactedForLog()}", e)
+                // kept and shown under the fee controls, Total "—" (iOS `feeError`)
+                previewFeeError = UserFacingError.message(e, "Could not estimate the fee.")
                 null
             }
         }
@@ -869,24 +937,27 @@ fun SpendingAddressSendFlow(
         } else if (paymentRequest != null && activeRequest == null) {
             applyRequest(paymentRequest)
         }
-        // The live quote, once (see baseFeeRateSompiPerGram). Falls back to the network minimum
-        // on any failure.
-        val quotedRate = viewModel.fetchQuotedFeeRateSompiPerGram()
-        liveFeeRateSompiPerGram = quotedRate
         if (isCompoundMode) {
             try {
                 // Consolidation is bounded by Kaspa's per-transaction mass cap, so pin the send to
                 // one transaction's worth of UTXOs (largest-first, ≤MAX_INPUTS_PER_TRANSACTION) and
                 // estimate Max over exactly those. This is why Max works even when the address has
                 // more UTXOs than a single tx can hold - it consolidates one batch; repeat to reduce.
-                val chunk = viewModel.maxConsolidatableChunk(fromAddress, quotedRate, feeTier.multiplier, customExtraFeeSompi, signatureScriptSize = sourceSignatureScriptSize)
-                if (chunk != null) {
-                    manualUtxos = chunk.second
-                    fiatAmountState.setMaxKas(chunk.first / 100_000_000.0, fiatPriceInCurrency)
-                    maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), feeTier, customExtraFeeSompi, source, chunk.second)
+                val chunk = viewModel.maxConsolidatableChunk(fromAddress, baseFeeRateSompiPerGram, feeTier.multiplier, customExtraFeeSompi, signatureScriptSize = sourceSignatureScriptSize, withdrawalCoins = usesWithdrawalCoins)
+                when {
+                    chunk == null -> maxError = "No spendable UTXOs"
+                    chunk.first <= 0L -> maxError = "Balance too low to cover fee"
+                    else -> {
+                        manualUtxos = chunk.second
+                        fiatAmountState.setMaxKas(chunk.first / 100_000_000.0, fiatPriceInCurrency)
+                        maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), feeTier, customExtraFeeSompi, source, chunk.second)
+                    }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                // Leave the field untouched on failure - same as the Max button itself.
+                // The field stays as it is; the reason goes on the review (iOS setMaxAmount).
+                maxError = UserFacingError.message(e, "Could not work out the maximum.")
             } finally {
                 isEstimatingMax = false
             }
@@ -909,7 +980,9 @@ fun SpendingAddressSendFlow(
                 )
             }
         } else {
-            sendError = result.exceptionOrNull()?.message ?: context.getString(R.string.withdrawal_failed)
+            // Worded for the reader (iOS `UserFacingError`); "Not confirmed"'s own text survives,
+            // since it is an IllegalStateException.
+            sendError = com.kachat.app.util.UserFacingError.message(result.exceptionOrNull(), context.getString(R.string.withdrawal_failed))
         }
         viewModel.sends.consume(sendId)
     }
@@ -918,7 +991,16 @@ fun SpendingAddressSendFlow(
     // SpendingAddressWithdrawView and WithdrawKaspaView present QRScannerView and CoinControlView.
     if (showScanner) {
         QrScannerSheet(
-            onScanned = { scanned -> recipientInput = KaspaAddress.fromScanned(scanned) },
+            onScanned = { scanned ->
+                // A scanned payment request fills in the send like a pasted one (iOS
+                // `handleInputChange`), else the address it holds.
+                val request = (KaChatLink.findFirst(scanned.trim())?.ref as? KaChatLinkRef.PaymentRequest)?.request
+                if (request != null) {
+                    scannedRequest = request
+                } else {
+                    recipientInput = KaspaAddress.fromScanned(scanned)
+                }
+            },
             onDismiss = { showScanner = false }
         )
     }
@@ -943,9 +1025,13 @@ fun SpendingAddressSendFlow(
     // Max: fee-aware, from the funds this send actually spends. Compound pins one mass-safe
     // transaction's worth of UTXOs (largest-first, <=cap) as the input set - see the compound
     // LaunchedEffect above.
-    val setMaxAmount: () -> Unit = {
+    // Needs a valid recipient, and why it fails goes in the amount's footnote, not a toast (iOS
+    // WalletScreens setMaxAmount: `errorMessage`, e.g. "Balance too low to cover fee").
+    val setMaxAmount: () -> Unit = setMax@{
+        if (!hasValidRecipient) return@setMax
         coroutineScope.launch {
             isEstimatingMax = true
+            maxError = null
             try {
                 // Room for the base fee and the Fast / Priority / custom extra, the extra derived
                 // from Max's own base - never from a fee estimated for whatever amount was typed
@@ -953,35 +1039,28 @@ fun SpendingAddressSendFlow(
                 val maxTier = feeTier
                 val maxCustomExtra = customExtraFeeSompi
                 if (isCompoundMode) {
-                    val chunk = viewModel.maxConsolidatableChunk(fromAddress, liveFeeRateSompiPerGram, maxTier.multiplier, maxCustomExtra, signatureScriptSize = sourceSignatureScriptSize)
-                    if (chunk != null) {
-                        manualUtxos = chunk.second
-                        fiatAmountState.setMaxKas(chunk.first / 100_000_000.0, fiatPriceInCurrency)
-                        maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), maxTier, maxCustomExtra, source, chunk.second)
-                    } else {
-                        // Same silence as the plain Max had: nothing to consolidate, or nothing
-                        // known yet.
-                        IosToasts.error("Nothing to consolidate here yet.")
-                    }
-                } else {
-                    // null = the wallet cannot answer yet (the REST client is created a moment
-                    // after launch); 0 = it answered, and the fee eats the balance. Neither may
-                    // write "0" into the field, which is what made this read as a dead button.
-                    when (val maxSompi = viewModel.estimateMaxSendableAmount(sourceAddress, liveFeeRateSompiPerGram, manualUtxos, maxTier.multiplier, maxCustomExtra, signatureScriptSize = sourceSignatureScriptSize)) {
-                        null -> IosToasts.error("Still connecting. Try Max again in a moment.")
-                        0L -> IosToasts.error("Not enough here to cover the network fee.")
+                    val chunk = viewModel.maxConsolidatableChunk(fromAddress, baseFeeRateSompiPerGram, maxTier.multiplier, maxCustomExtra, signatureScriptSize = sourceSignatureScriptSize, withdrawalCoins = usesWithdrawalCoins)
+                    when {
+                        chunk == null -> maxError = "No spendable UTXOs"
+                        chunk.first <= 0L -> maxError = "Balance too low to cover fee"
                         else -> {
-                            fiatAmountState.setMaxKas(maxSompi / 100_000_000.0, fiatPriceInCurrency)
-                            maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(maxSompi / 100_000_000.0), maxTier, maxCustomExtra, source, manualUtxos)
+                            manualUtxos = chunk.second
+                            fiatAmountState.setMaxKas(chunk.first / 100_000_000.0, fiatPriceInCurrency)
+                            maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), maxTier, maxCustomExtra, source, chunk.second)
                         }
                     }
+                } else {
+                    // Throws the reason there is no Max (no node yet, no coins, or the fee eats
+                    // the balance); never writes "0" into the field.
+                    val maxSompi = viewModel.estimateMaxSendableAmount(sourceAddress, baseFeeRateSompiPerGram, manualUtxos, maxTier.multiplier, maxCustomExtra, signatureScriptSize = sourceSignatureScriptSize, withdrawalCoins = usesWithdrawalCoins)
+                    fiatAmountState.setMaxKas(maxSompi / 100_000_000.0, fiatPriceInCurrency)
+                    maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(maxSompi / 100_000_000.0), maxTier, maxCustomExtra, source, manualUtxos)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                // Said out loud, not swallowed. A silent catch here is indistinguishable from a
-                // button that does nothing, which is exactly how this was reported - and it left
-                // no trace in the log to diagnose it from either.
                 Log.w("SendFlow", "Max estimate failed for ${sourceAddress.redactedForLog()}", e)
-                IosToasts.error(UserFacingError.message(e, "Could not work out the maximum."))
+                maxError = UserFacingError.message(e, "Could not work out the maximum.")
             } finally {
                 isEstimatingMax = false
             }
@@ -1006,8 +1085,9 @@ fun SpendingAddressSendFlow(
         amountSompi?.takeIf { canSend }?.let {
             val request = activeRequest
             val recipient = effectiveAddress.trim()
-            // No rate override: the engine prices the base at the live quote, and the speed or
-            // custom fee goes on top as the flat extra shown (SendFeeModel).
+            // No rate override: the engine prices the base at the fixed 100 sompi/gram the preview
+            // used, and the speed or custom fee goes on top as the flat extra shown (SendFeeModel) -
+            // for a chat payment, the extra the payload-priced preview settled.
             if (request != null && !isCompoundMode && request.toChattingAddress && request.address.equals(recipient, ignoreCase = true) &&
                 requestChatViewModel != null
             ) {
@@ -1089,6 +1169,13 @@ fun SpendingAddressSendFlow(
         }
         step = to
     }
+    // A payment request read by the scanner, applied here where the steps are known.
+    LaunchedEffect(scannedRequest) {
+        val request = scannedRequest ?: return@LaunchedEffect
+        scannedRequest = null
+        applyRequest(request)
+        go(afterRecipient)
+    }
     val screenTitle = when {
         isCompoundMode -> stringResource(R.string.compound_utxos)
         activeRequest != null -> stringResource(R.string.pr_payment_request)
@@ -1106,7 +1193,9 @@ fun SpendingAddressSendFlow(
         if (isCompoundMode) return@LaunchedEffect
         sourceBalanceSompi = null
         val address = source.address(chattingAddress) ?: return@LaunchedEffect
-        sourceBalanceSompi = viewModel.addressBalanceSompi(address)
+        // Unknown on a failed read rather than 0 (which blocked Review), and less the coins
+        // scheduled posts hold (iOS WalletScreens `sourceBalance`).
+        sourceBalanceSompi = viewModel.tipSpendableSompi(address)
     }
 
     SendStepTransition(currentStep, Modifier.fillMaxSize()) { shown ->
@@ -1222,12 +1311,16 @@ fun SpendingAddressSendFlow(
                         isEstimatingMax = isEstimatingMax,
                         maxEnabled = hasValidRecipient,
                         onMax = setMaxAmount,
+                        // what's wrong with it (Max's reason first), else what's available (iOS
+                        // `amountFootnote`)
                         footnote = when {
+                            maxError != null -> maxError
                             exceedsBalance -> stringResource(R.string.send_exceeds_source)
                             available != null -> KaspaUnit.label(stringResource(R.string.send_available_kas, KaspaUnit.plain(available)))
                             else -> null
                         },
-                        footnoteIsError = exceedsBalance,
+                        footnoteIsError = exceedsBalance || maxError != null,
+                        onKeyTyped = { maxError = null },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -1284,13 +1377,15 @@ fun SpendingAddressSendFlow(
                         SendReviewDivider()
                         SendReviewRow(stringResource(R.string.total)) {
                             val amount = amountSompi
+                            val fee = totalFeeSompi
                             when {
                                 isPreviewingFee || isEstimatingMax -> com.kachat.app.ui.theme.IosActivityIndicator(
                                     modifier = Modifier.size(16.dp),
                                     color = LocalAppColors.current.textSecondary,
                                     strokeWidth = 2.dp,
                                 )
-                                amount != null -> SendReviewValue("${KaspaUnit.plain(amount + effectiveFeeSompi)} ${KaspaUnit.symbol}")
+                                // "—" when the fee couldn't be worked out (iOS `totalFeeSompi` nil)
+                                amount != null && fee != null -> SendReviewValue("${KaspaUnit.plain(amount + fee)} ${KaspaUnit.symbol}")
                                 else -> Text("—", color = LocalAppColors.current.textSecondary, fontSize = 15.sp)
                             }
                         }
@@ -1310,18 +1405,22 @@ fun SpendingAddressSendFlow(
                         customFeeText = customFeeText,
                         onCustomFeeTextChange = { customFeeText = it },
                         isEstimatingFee = isPreviewingFee,
-                        feeText = "${ChatRepository.formatKas(effectiveFeeSompi)} ${KaspaUnit.symbol}",
+                        feeText = totalFeeSompi?.let { "${ChatRepository.formatKas(it)} ${KaspaUnit.symbol}" },
                         onStartEditing = {},
                         onCommit = {},
                         coinControlSummary = coinControlSummary(manualUtxos),
                         onCoinControl = { if (!isSending) showCoinControl = true },
                         onEditFee = {
-                            feeDraft = KaspaUnit.plain(effectiveFeeSompi)
-                            go(SendFlowStep.FEE)
+                            // nothing to edit while the fee is unknown (iOS openFeeEditor)
+                            totalFeeSompi?.let { fee ->
+                                feeDraft = KaspaUnit.plain(fee)
+                                go(SendFlowStep.FEE)
+                            }
                         },
                     )
 
-                    sendError?.let {
+                    // the send's or Max's error, else the fee's (iOS `errorMessage ?? feeError`)
+                    (sendError ?: maxError ?: feeError)?.let {
                         Text(it, color = LocalAppColors.current.danger, fontSize = 13.sp, textAlign = TextAlign.Center)
                     }
                 }
@@ -1898,13 +1997,9 @@ private fun SpendingAddressPrivateKeyOverlay(privateKeyHex: String, onDismiss: (
     var revealed by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
-    val window = (LocalContext.current as? Activity)?.window
-    DisposableEffect(window) {
-        window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        onDispose {
-            window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
-    }
+    // Counted, so leaving this screen can't clear the flag under another secret screen still up
+    // (audit AND-030).
+    SecureWindowWhileShown()
 
     LaunchedEffect(revealed) {
         if (revealed) {
@@ -2758,19 +2853,15 @@ fun SeedPhraseScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     // which has no API to block a screenshot outright, only to detect active screen recording
     // after the fact via UIScreen.isCaptured). Cleared on leaving so it doesn't leak onto other
     // screens.
-    val window = (LocalContext.current as? Activity)?.window
-    DisposableEffect(window) {
-        window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        onDispose {
-            window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
-    }
+    // Counted, so leaving this screen can't clear the flag under another secret screen still up
+    // (audit AND-030).
+    SecureWindowWhileShown()
 
     // Auto-hides the words again after a short window instead of leaving them on screen
     // indefinitely once revealed — someone glancing at the phone later shouldn't still see them.
     LaunchedEffect(revealed) {
         if (revealed) {
-            delay(7000)
+            delay(20_000)
             revealed = false
         }
     }
@@ -2818,6 +2909,12 @@ fun SeedPhraseScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = stringResource(R.string.anyone_with_your_seed_phrase_can),
+                        color = Color(0xFF948B8B),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Best practice is to write your 12 or 24 words down to back them up, and never store it online.",
                         color = Color(0xFF948B8B),
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -2934,12 +3031,12 @@ fun SeedPhraseScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     TextButton(onClick = {
                         copyPrivateKeyWithAutoWipe(context, mnemonic, label = "recovery phrase")
                         secretCopyHaptic(com.kachat.app.util.IosHaptic.SUCCESS)
-                        IosToasts.show("Seed phrase copied. Clipboard will clear in 30s.")
+                        IosToasts.show("Words copied. Clipboard will clear in 30s.")
                     }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.ContentCopy, null, tint = KaspaTeal, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Copy Seed Phrase", color = KaspaTeal)
+                            Text("Copy 12 or 24 Words", color = KaspaTeal)
                         }
                     }
                     TextButton(onClick = {
@@ -2990,23 +3087,84 @@ fun SettingsScreen(
                 ) == PackageManager.PERMISSION_GRANTED
         )
     }
+    // iOS NotificationsHubPage: a spinner beside the switch while push is being turned on, and
+    // the "Notifications Disabled" alert when the permission is refused.
+    var isEnablingPush by remember { mutableStateOf(false) }
+    var notificationPermissionDenied by remember { mutableStateOf(false) }
+    val pushEnableScope = rememberCoroutineScope()
+    val openAppNotificationSettings: () -> Unit = {
+        runCatching {
+            notificationSettingsContext.startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, notificationSettingsContext.packageName)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+    // iOS enablePushNotifications: the setting goes on, then waits for the push service to
+    // accept the registration (30 s, as iOS's registrationTimeoutTask); on failure it goes back
+    // to what it was and says "Push subscription failed.". PushRegistrationManager records every
+    // register attempt in PushState's diagnostics, which is what is watched here.
+    val enablePushNotifications: () -> Unit = {
+        val wasEnabled = notificationsEnabled
+        val before = settingsViewModel.pushDiagnostics.value
+        isEnablingPush = true
+        settingsViewModel.setNotificationsEnabled(true)
+        pushEnableScope.launch {
+            // Already on with the permission only just granted: the registration made before is
+            // still current, so none is repeated (PushRegistrationManager's fingerprint).
+            val alreadyRegistered = wasEnabled && before.lastAction == "register" && before.lastAttemptSucceeded == true
+            val attempt = if (alreadyRegistered) null else kotlinx.coroutines.withTimeoutOrNull(30_000) {
+                settingsViewModel.pushDiagnostics.first {
+                    it.lastAction == "register" && it.lastAttemptAtMs != before.lastAttemptAtMs
+                }
+            }
+            val succeeded = alreadyRegistered || attempt?.lastAttemptSucceeded == true
+            if (!succeeded) {
+                android.util.Log.w("KaChatPush", "[Settings] Failed to enable push: ${attempt?.lastError ?: "timed out"}")
+                settingsViewModel.setNotificationsEnabled(false)
+                IosToasts.error("Push subscription failed.")
+            }
+            isEnablingPush = false
+        }
+    }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         notificationPermissionGranted = granted
         // Only flip the setting on when Android actually agreed - otherwise the switch would
         // sit on with nothing behind it.
-        if (granted) settingsViewModel.setNotificationsEnabled(true)
+        if (granted) {
+            enablePushNotifications()
+        } else {
+            // iOS PushError.permissionDenied: the alert and the toast. After a second refusal
+            // Android 13+ shows no dialog at all (shouldShowRequestPermissionRationale is false)
+            // and lands here at once, so the alert's Open Settings is the only way forward.
+            notificationPermissionDenied = true
+            IosToasts.error("Push subscription failed.")
+        }
     }
     val requestNotificationPermission: () -> Unit = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            notificationSettingsContext.startActivity(
-                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                    .putExtra(Settings.EXTRA_APP_PACKAGE, notificationSettingsContext.packageName)
-            )
+            openAppNotificationSettings()
         }
+    }
+    // Back from the system's notification settings: the switch follows what Android now says.
+    val notificationLifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(notificationLifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                notificationPermissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(
+                        notificationSettingsContext,
+                        Manifest.permission.POST_NOTIFICATIONS,
+                    ) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+        notificationLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { notificationLifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val showFeeEstimate by settingsViewModel.showFeeEstimate.collectAsState()
     val kaspaExplorer by chatViewModel.kaspaExplorer.collectAsState()
@@ -3021,6 +3179,16 @@ fun SettingsScreen(
 
     var showKaPostsSettings by remember { mutableStateOf(false) }
     var showLogout by remember { mutableStateOf(false) }
+    var showDeleteAccount by remember { mutableStateOf(false) }
+    // The seed phrase and the backup steps are pages of their own here: the warning they opened
+    // over comes back when they close (iOS shows them as a sheet over it).
+    var returnToDeleteAccount by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (returnToDeleteAccount) {
+            returnToDeleteAccount = false
+            showDeleteAccount = true
+        }
+    }
     // A tab tapped on the dock copy over KaPosts Settings closes it, as every KaPosts cover.
     LaunchedEffect(Unit) { KaPostsDock.closeCovers.collect { showKaPostsSettings = false } }
 
@@ -3040,14 +3208,13 @@ fun SettingsScreen(
             } else {
             // iOS KaPosts' Settings tab toolbar: the balance in the middle and the connection dot
             // in glass top right (865c9ab) - no title, and no Done, since it is a tab rather than
-            // a sheet.
+            // a sheet. The title is fixed above the list (iOS 9e22075 kaPostsFixedTitle).
+            Column(Modifier.background(LocalAppColors.current.background).statusBarsPadding()) {
             Row(
                 modifier = Modifier
-                    .background(LocalAppColors.current.background)
-                    .statusBarsPadding()
                     .fillMaxWidth()
                     // measured on the iPhone: the bar's centre 37 below the sheet's top
-                    .padding(horizontal = 16.dp, vertical = 15.dp),
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // The dot's width on the other side, so the balance sits in the middle.
@@ -3064,13 +3231,16 @@ fun SettingsScreen(
                     Box(Modifier.size(12.dp).background(Color(dotColorHex), CircleShape))
                 }
             }
+            KaPostsFixedTitle(stringResource(R.string.settings), onOpenBackup = { navController.navigate("account_backup") })
+            }
             }
         }
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                // The hub scrolls on under the dock; a category page stays above it.
+                .padding(top = padding.calculateTopPadding(), bottom = if (sectionKey == null) 0.dp else padding.calculateBottomPadding())
                 .padding(horizontal = 16.dp)
                 .verticalScroll(scrollState),
             // The hub keeps its own measured spacing; a category page is an iOS Form, its
@@ -3081,20 +3251,28 @@ fun SettingsScreen(
             if (sectionKey != null) Spacer(Modifier.height(4.dp))
             if (sectionKey == null) {
                 // Flat hub list (matches iOS): no section titles - just the categories, the
-                // seed-phrase action, and Danger Zone in one card - its top 122 below the
-                // sheet's, as on the iPhone.
-                Spacer(Modifier.height(24.dp))
+                // seed-phrase action, and Danger Zone in one card - its top 35 below the title's
+                // rule, as on the iPhone.
+                Spacer(Modifier.height(11.dp))
                 Surface(
                     color = LocalAppColors.current.surface,
                     shape = RoundedCornerShape(26.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column {
-                    SettingsNavigationItem(stringResource(R.string.customization), Icons.Outlined.Brush, onClick = { navController.navigate("settings_section/customization") })
+                    // Alphabetical, as KaChat and KaPay; Delete Account and Log Out stay apart below
+                    // (iOS e5a9b11).
+                    SettingsNavigationItem(stringResource(R.string.about), Icons.Outlined.Info, onClick = { navController.navigate("settings_section/about") })
                     SettingsDivider(inset = IosRowTextInset)
-                    SettingsNavigationItem(stringResource(R.string.security), com.kachat.app.ui.theme.IosSymbols.LockShield, onClick = { navController.navigate("settings_section/security") })
+                    SettingsNavigationItem("Account Name", Icons.Outlined.Edit, onClick = { navController.navigate("settings_section/account_name") })
+                    SettingsDivider(inset = IosRowTextInset)
+                    SettingsNavigationItem("Back Up Account", Icons.Outlined.Key, onClick = { navController.navigate("settings_section/back_up_account") })
                     SettingsDivider(inset = IosRowTextInset)
                     SettingsNavigationItem(stringResource(R.string.connection), Icons.Outlined.CellTower, onClick = { navController.navigate("settings_section/connection") })
+                    SettingsDivider(inset = IosRowTextInset)
+                    SettingsNavigationItem(stringResource(R.string.customization), Icons.Outlined.Brush, onClick = { navController.navigate("settings_section/customization") })
+                    SettingsDivider(inset = IosRowTextInset)
+                    SettingsNavigationItem(stringResource(R.string.diagnostics), Icons.Outlined.MonitorHeart, onClick = { navController.navigate("settings_section/diagnostics") })
                     SettingsDivider(inset = IosRowTextInset)
                     // KaPosts' own settings, where KaChat had Chats, Storage and Chat History (iOS
                     // KaPosts SettingsView).
@@ -3105,30 +3283,29 @@ fun SettingsScreen(
                     // itself (iOS KaPosts d37f64d).
                     SettingsNavigationItem(stringResource(R.string.notifications), Icons.Outlined.NotificationsActive, onClick = { navController.navigate("settings_section/notifications") })
                     SettingsDivider(inset = IosRowTextInset)
-                    SettingsNavigationItem("Cache", Icons.Outlined.Storage, onClick = { navController.navigate("cache_settings") })
+                    SettingsNavigationItem(stringResource(R.string.security), com.kachat.app.ui.theme.IosSymbols.LockShield, onClick = { navController.navigate("settings_section/security") })
                     SettingsDivider(inset = IosRowTextInset)
-                    SettingsNavigationItem(stringResource(R.string.diagnostics), Icons.Outlined.MonitorHeart, onClick = { navController.navigate("settings_section/diagnostics") })
-                    SettingsDivider(inset = IosRowTextInset)
-                    SettingsNavigationItem("Open Source Licenses", Icons.Outlined.Description, onClick = { navController.navigate("open_source_licenses") })
-                    SettingsDivider(inset = IosRowTextInset)
-                    SettingsActionItem(stringResource(R.string.view_seed_phrase), Icons.Outlined.Key, LocalAppColors.current.danger, labelColor = LocalAppColors.current.danger) {
-                        if (biometricSeedPhraseEnabled) {
-                            context.authenticateWithDeviceCredential(
-                                title = "Unlock to View Seed Phrase",
-                                onSuccess = { navController.navigate("seed_phrase") }
-                            )
-                        } else {
-                            navController.navigate("seed_phrase")
-                        }
-                    }
-                    SettingsDivider(inset = IosRowTextInset)
-                    // Log out, not delete: the account stays saved on this phone, and deleting it is
-                    // done from Saved Accounts on the opening screen (iOS KaPosts 865c9ab).
-                    SettingsActionItem(stringResource(R.string.log_out), Icons.AutoMirrored.Outlined.Logout, LocalAppColors.current.danger, labelColor = LocalAppColors.current.danger) {
-                        showLogout = true
-                    }
+                    SettingsNavigationItem(stringResource(R.string.storage), Icons.Outlined.Storage, onClick = { navController.navigate("cache_settings") })
                     }
                 }
+                // Delete Account and Log Out: a section of their own (iOS 9e22075).
+                Surface(
+                    color = LocalAppColors.current.surface,
+                    shape = RoundedCornerShape(26.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 11.dp)
+                ) {
+                    Column {
+                        SettingsActionItem("Delete Account", Icons.Outlined.Delete, LocalAppColors.current.danger, labelColor = LocalAppColors.current.danger) {
+                            showDeleteAccount = true
+                        }
+                        SettingsDivider(inset = IosRowTextInset)
+                        SettingsActionItem(stringResource(R.string.log_out), Icons.AutoMirrored.Outlined.Logout, LocalAppColors.current.danger, labelColor = LocalAppColors.current.danger) {
+                            showLogout = true
+                        }
+                    }
+                }
+                // Clears the dock the list runs on under.
+                Spacer(Modifier.height(LocalDockInset.current))
             }
 
             if (sectionKey == "customization") {
@@ -3181,16 +3358,63 @@ fun SettingsScreen(
                         "Turn this on to receive anything you have switched on below, even when the app is closed."
                     },
                 ) {
-                    SettingsSwitchItem(
-                        stringResource(R.string.push_notifications),
-                        notificationsEnabled && notificationPermissionGranted,
-                    ) { enabled ->
-                        if (enabled && !notificationPermissionGranted) {
-                            requestNotificationPermission()
-                        } else {
-                            settingsViewModel.setNotificationsEnabled(enabled)
+                    // iOS: a spinner beside the label while push is turning on, and the switch
+                    // disabled until it settles.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 52.dp)
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.push_notifications),
+                            color = LocalAppColors.current.textPrimary,
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        if (isEnablingPush) {
+                            Spacer(Modifier.width(8.dp))
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = LocalAppColors.current.textSecondary,
+                            )
                         }
+                        Spacer(Modifier.weight(1f).padding(end = 12.dp))
+                        com.kachat.app.ui.theme.IosSwitch(
+                            checked = (notificationsEnabled && notificationPermissionGranted) || isEnablingPush,
+                            enabled = !isEnablingPush,
+                            onCheckedChange = { enabled ->
+                                if (isEnablingPush) {
+                                    // Still turning on: nothing until it settles.
+                                } else if (enabled && !notificationPermissionGranted) {
+                                    requestNotificationPermission()
+                                } else if (enabled) {
+                                    enablePushNotifications()
+                                } else {
+                                    settingsViewModel.setNotificationsEnabled(false)
+                                }
+                            },
+                        )
                     }
+                }
+                if (notificationPermissionDenied) {
+                    com.kachat.app.ui.theme.IosAlertDialog(
+                        onDismissRequest = { notificationPermissionDenied = false },
+                        title = { Text("Notifications Disabled", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold) },
+                        text = { Text("To receive notifications, please enable them in Settings.", color = LocalAppColors.current.textPrimary) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                notificationPermissionDenied = false
+                                openAppNotificationSettings()
+                            }) { Text("Open Settings", color = KaspaTeal) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { notificationPermissionDenied = false }) {
+                                Text(stringResource(R.string.cancel), color = LocalAppColors.current.textSecondary)
+                            }
+                        },
+                    )
                 }
 
                 // KaPosts' notifications are about posts only - no wallet ones (iOS KaPosts
@@ -3206,6 +3430,45 @@ fun SettingsScreen(
                 }
             }
 
+            if (sectionKey == "about") {
+                AccountAboutSection(walletViewModel, navController)
+            }
+
+            if (sectionKey == "account_name") {
+                AccountNameSection(walletViewModel)
+            }
+
+            if (sectionKey == "back_up_account") {
+                // iOS e5a9b11 backUpAccountPage. Complete Your Backup only while it's owed:
+                // finishing the steps clears the backup strip.
+                val pendingAddresses by walletViewModel.accountBackupStatus.pendingAddresses.collectAsState()
+                val settingsAddress by walletViewModel.address.collectAsState()
+                val owed = settingsAddress != null && settingsAddress in pendingAddresses
+                if (owed) {
+                    SettingsFormSection(title = null, first = true) {
+                        SettingsActionItem("Complete Your Backup", Icons.Filled.GppMaybe, LocalAppColors.current.warning, labelColor = LocalAppColors.current.textPrimary) {
+                            unlockAccountBackup(context, biometricSeedPhraseEnabled) { navController.navigate("account_backup") }
+                        }
+                    }
+                }
+                SettingsFormSection(title = null, first = !owed) {
+                    SettingsActionItem("View 12 or 24 Words", Icons.Outlined.Key, KaspaTeal, labelColor = LocalAppColors.current.textPrimary) {
+                        unlockAccountBackup(context, biometricSeedPhraseEnabled) { navController.navigate("seed_phrase") }
+                    }
+                    // Without a passphrase, nothing would protect the seed if someone got past the
+                    // PIN (iOS 9653c04).
+                    val offersNfcCard = remember(settingsAddress) {
+                        com.kachat.app.services.NfcCard.isAvailable(context) && walletViewModel.activeAccountHasPassphrase()
+                    }
+                    if (offersNfcCard) {
+                        SettingsDivider(inset = IosRowTextInset)
+                        SettingsActionItem("Back Up to NFC Card", Icons.Filled.Contactless, KaspaTeal, labelColor = LocalAppColors.current.textPrimary) {
+                            unlockAccountBackup(context, biometricSeedPhraseEnabled) { navController.navigate("nfc_card_backup") }
+                        }
+                    }
+                }
+            }
+
             if (sectionKey == "diagnostics") {
                 // Shared with the accounts screen's App Settings (see AppSettingsScreen.kt).
                 DiagnosticsSettingsSections(chatViewModel = chatViewModel)
@@ -3218,12 +3481,36 @@ fun SettingsScreen(
     if (showKaPostsSettings) {
         KaPostsSettingsOverlay(onClose = { showKaPostsSettings = false })
     }
+    if (showDeleteAccount) {
+        val backupPendingAddresses by walletViewModel.accountBackupStatus.pendingAddresses.collectAsState()
+        val activeAddress by walletViewModel.address.collectAsState()
+        fun openOverWarning(route: String) {
+            unlockAccountBackup(context, biometricSeedPhraseEnabled) {
+                showDeleteAccount = false
+                returnToDeleteAccount = true
+                navController.navigate(route)
+            }
+        }
+        DeleteAccountSheet(
+            confirmSubtitle = "Removes this account and its data from this device.",
+            notBackedUp = activeAddress != null && activeAddress in backupPendingAddresses,
+            onViewSeedPhrase = { openOverWarning("seed_phrase") },
+            onBackUp = { openOverWarning("account_backup") },
+            onConfirm = {
+                // The phone's lock comes first, whatever the settings say (iOS e5a9b11).
+                context.authenticateWithDeviceCredential(
+                    title = "Confirm deleting this account",
+                    onSuccess = { walletViewModel.deleteCurrentAccount() },
+                )
+            },
+            onDismiss = { showDeleteAccount = false },
+        )
+    }
     if (showLogout) {
         ConfirmActionSheet(
             title = stringResource(R.string.log_out),
             confirmTitle = stringResource(R.string.log_out),
-            confirmSubtitle = "The account stays saved on this phone: sign back in from Saved Accounts on the " +
-                "opening screen, where an account can also be deleted.",
+            confirmSubtitle = "Signs out of this account. Its data stays on this device.",
             confirmIcon = Icons.AutoMirrored.Outlined.Logout,
             onConfirm = {
                 showLogout = false
@@ -3238,12 +3525,122 @@ fun SettingsScreen(
 /** A Settings category page's inline title - iOS's `.navigationTitle` of each page. */
 @Composable
 private fun settingsSectionTitle(sectionKey: String): String = when (sectionKey) {
+    "about" -> stringResource(R.string.about)
+    "account_name" -> "Account Name"
+    "back_up_account" -> "Back Up Account"
     "customization" -> stringResource(R.string.customization)
     "security" -> stringResource(R.string.security)
     "connection" -> stringResource(R.string.connection)
     "notifications" -> stringResource(R.string.notifications)
     "diagnostics" -> stringResource(R.string.diagnostics)
     else -> ""
+}
+
+/** Settings > About (iOS e5a9b11 `AccountAboutPage`): this account's created date, then the app's
+ *  version, links, terms and licenses. */
+@Composable
+private fun AccountAboutSection(walletViewModel: WalletViewModel, navController: NavController) {
+    val context = LocalContext.current
+    val address by walletViewModel.address.collectAsState()
+    fun open(url: String) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+    }
+    SettingsFormSection(title = null, first = true) {
+        // When the account was created or imported on this device; one that predates the stamp
+        // shows nothing rather than a made-up date.
+        val addedAtMillis = remember(address) { address?.let { walletViewModel.accountAddedAt(it) } }
+        if (addedAtMillis != null) {
+            AboutRow(
+                stringResource(R.string.created),
+                java.text.SimpleDateFormat("MMM d, yyyy 'at' h:mm a", java.util.Locale.getDefault())
+                    .format(java.util.Date(addedAtMillis)),
+            )
+            AboutDivider()
+        }
+        AboutRow(stringResource(R.string.version), com.kachat.app.util.AppVersion.display)
+        AboutDivider()
+        AboutRow(stringResource(R.string.website), "home.kachat.app", onClick = { open("https://home.kachat.app") })
+        AboutDivider()
+        AboutRow(
+            stringResource(R.string.support_email),
+            ContentReport.SUPPORT_EMAIL,
+            onClick = {
+                runCatching { context.startActivity(Intent(Intent.ACTION_SENDTO, android.net.Uri.parse("mailto:${ContentReport.SUPPORT_EMAIL}"))) }
+            },
+        )
+        AboutDivider()
+        AboutRow("Terms of Use", null, onClick = { navController.navigate("terms_of_use") })
+        AboutDivider()
+        AboutRow("Privacy Policy", null, onClick = { open("https://home.kachat.app/privacy/") })
+        AboutDivider()
+        AboutRow("Open Source Licenses", null, onClick = { navController.navigate("open_source_licenses") })
+    }
+}
+
+/** Settings > Account Name (iOS e5a9b11 `AccountNamePage`): your own label for this account, saved
+ *  when you leave the page. */
+@Composable
+private fun AccountNameSection(walletViewModel: WalletViewModel) {
+    val address by walletViewModel.address.collectAsState()
+    val accountName by walletViewModel.accountName.collectAsState()
+    var name by remember(address) { mutableStateOf(accountName.orEmpty()) }
+    SettingsFormSection(title = null, first = true) {
+        com.kachat.app.ui.theme.IosTextField(
+            value = name,
+            onValueChange = { name = it },
+            singleLine = true,
+            placeholder = { Text("Account name", color = LocalAppColors.current.textSecondary) },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = LocalAppColors.current.textPrimary),
+        )
+    }
+    val currentName by rememberUpdatedState(name)
+    val currentSaved by rememberUpdatedState(accountName)
+    val currentAddress by rememberUpdatedState(address)
+    DisposableEffect(Unit) {
+        onDispose {
+            val trimmed = currentName.trim()
+            val saving = currentAddress
+            if (saving != null && trimmed.isNotEmpty() && trimmed != currentSaved) {
+                walletViewModel.renameAccount(saving, trimmed)
+            }
+        }
+    }
+}
+
+/** An About row: the label, then its value in grey or, for a page or a link, a chevron. */
+@Composable
+private fun AboutRow(label: String, value: String?, onClick: (() -> Unit)? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = LocalAppColors.current.textPrimary, fontSize = 17.sp, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
+        if (value != null) {
+            Text(value, color = LocalAppColors.current.textSecondary, fontSize = 17.sp, maxLines = 1)
+        } else {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = LocalAppColors.current.textSecondary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/** iOS `Divider().padding(.leading, 16)`. */
+@Composable
+private fun AboutDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(start = 16.dp),
+        color = LocalAppColors.current.divider,
+        thickness = 0.5.dp,
+    )
 }
 
 /**
@@ -3917,10 +4314,6 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
     // a pinned user never sees them flash on screen entry.
     val nodeSelectionIsAutomatic by viewModel.nodeSelectionIsAutomatic.collectAsState()
     val showPoolSections = nodeSelectionIsAutomatic == true
-    // "Other Nodes" means genuinely other than what's already listed above under Active
-    // Nodes — allNodes includes every known node (active and not), so without this filter
-    // the same active nodes showed up twice, once in each section.
-    val otherNodes = remember(allNodes) { allNodes.filterNot { it.status == "Active" } }
     val status by viewModel.status.collectAsState()
     val dotColorHex by viewModel.dotColorHex.collectAsState()
     val lastSyncAt by viewModel.lastSyncAt.collectAsState()
@@ -4147,19 +4540,30 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // iOS ConnectionStatusDetailView: "All Nodes" with its count - every node the
+                    // pool knows, the active ones too, sorted by state and latency.
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.size(8.dp).background(LocalAppColors.current.textSecondary, CircleShape))
+                        Icon(Icons.Default.Dns, null, tint = LocalAppColors.current.textSecondary, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(text = stringResource(R.string.other_nodes), fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = LocalAppColors.current.textSecondary)
+                        Text(text = "All Nodes", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = LocalAppColors.current.textSecondary)
                     }
-                    Text(text = otherNodes.size.toString(), color = LocalAppColors.current.textSecondary)
+                    Text(text = allNodes.size.toString(), color = LocalAppColors.current.textSecondary)
                 }
                 Column(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(LocalAppColors.current.surface)
                 ) {
-                    otherNodes.forEachIndexed { index, node ->
+                    if (allNodes.isEmpty()) {
+                        Text(
+                            text = "No nodes discovered",
+                            color = LocalAppColors.current.textSecondary,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                            fontSize = 17.sp,
+                            modifier = Modifier.padding(16.dp),
+                        )
+                    }
+                    allNodes.forEachIndexed { index, node ->
                         AllNodeRow(node)
-                        if (index < otherNodes.size - 1) SettingsDivider()
+                        if (index < allNodes.size - 1) SettingsDivider()
                     }
                 }
 
@@ -4645,6 +5049,9 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
     var editingTranslationUrl by remember { mutableStateOf(false) }
     var editingKapostIndexerUrl by remember { mutableStateOf(false) }
     var editingNamesIndexerUrl by remember { mutableStateOf(false) }
+    var editingBroadcastIndexerUrl by remember { mutableStateOf(false) }
+    var editingPushIndexerUrl by remember { mutableStateOf(false) }
+    var editingKaspaRestApiUrl by remember { mutableStateOf(false) }
     val broadcastIndexerUrl by viewModel.broadcastIndexerUrl.collectAsState()
     val pushIndexerUrl by viewModel.pushIndexerUrl.collectAsState()
     val onMainnetSettings = network.equals("mainnet", ignoreCase = true)
@@ -4718,12 +5125,23 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                 )
             }
 
+            // Editable, as on iOS (SettingsView indexerSections): https only, blank is the default.
             SettingsFormSection(title = stringResource(R.string.broadcast_indexer), footer = stringResource(R.string.broadcast_indexer_footer)) {
-                ConnectionUrlField(label = "Public Chats Indexer URL", value = broadcastIndexerUrl, placeholder = testnetIndexerPlaceholder)
+                ConnectionUrlField(
+                    label = "Public Chats Indexer URL",
+                    value = broadcastIndexerUrl,
+                    onClick = { editingBroadcastIndexerUrl = true },
+                    placeholder = testnetIndexerPlaceholder,
+                )
             }
 
             SettingsFormSection(title = "Push Registration", footer = "Used only for push registration and updates") {
-                ConnectionUrlField(label = "Push Indexer URL", value = pushIndexerUrl, placeholder = testnetIndexerPlaceholder)
+                ConnectionUrlField(
+                    label = "Push Indexer URL",
+                    value = pushIndexerUrl,
+                    onClick = { editingPushIndexerUrl = true },
+                    placeholder = testnetIndexerPlaceholder,
+                )
             }
 
             // Verbose API Logging lives in Settings > Diagnostics, as on iOS.
@@ -4791,7 +5209,12 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
             }
             else -> {
             SettingsFormSection(title = stringResource(R.string.kaspa_explorer_api), footer = stringResource(R.string.rest_api_for_transaction_history_and)) {
-                ConnectionUrlField(label = "Kaspa REST API URL", value = kaspaRestApiUrl)
+                // Editable, as on iOS (SettingsView explorerSections).
+                ConnectionUrlField(
+                    label = "Kaspa REST API URL",
+                    value = kaspaRestApiUrl,
+                    onClick = { editingKaspaRestApiUrl = true },
+                )
             }
             }
             }
@@ -4820,7 +5243,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        if (rejected) "The URL must start with https://"
+                        if (rejected) "Use https. Unencrypted connections are not supported."
                         else if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_INDEXER_URL}"
                         else stringResource(R.string.no_testnet_indexer_yet),
                         color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
@@ -4830,8 +5253,8 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val trimmed = draft.trim().trimEnd('/')
-                    if (trimmed.isNotEmpty() && !trimmed.startsWith("https://", ignoreCase = true)) {
+                    val trimmed = viewModel.httpsUrlOrNull(draft)
+                    if (trimmed == null) {
                         rejected = true
                     } else {
                         // Blank is the network's default (AppSettingsRepository.resolveIndexerUrl).
@@ -4866,7 +5289,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        if (rejected) "The URL must start with https://"
+                        if (rejected) "Use https. Unencrypted connections are not supported."
                         // The network's default: none on testnet.
                         else if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_KAPOST_INDEXER_URL}"
                         else stringResource(R.string.no_testnet_indexer_yet),
@@ -4890,6 +5313,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
 
     if (editingTranslationUrl) {
         var draft by remember { mutableStateOf(translationServiceUrl) }
+        var rejected by remember { mutableStateOf(false) }
         com.kachat.app.ui.theme.IosAlertDialog(
             onDismissRequest = { editingTranslationUrl = false },
             containerColor = LocalAppColors.current.surface,
@@ -4898,22 +5322,23 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                 Column {
                     com.kachat.app.ui.theme.IosTextField(
                         value = draft,
-                        onValueChange = { draft = it },
+                        onValueChange = { draft = it; rejected = false },
                         singleLine = true,
+                        isError = rejected,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_TRANSLATION_SERVICE_URL}",
-                        color = LocalAppColors.current.textSecondary,
+                        if (rejected) "Use https. Unencrypted connections are not supported."
+                        else "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_TRANSLATION_SERVICE_URL}",
+                        color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.setTranslationServiceUrl(draft)
-                    editingTranslationUrl = false
+                    if (viewModel.setTranslationServiceUrl(draft)) editingTranslationUrl = false else rejected = true
                 }) { Text("Save", color = KaspaTeal) }
             },
             dismissButton = {
@@ -4923,6 +5348,84 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
             }
         )
     }
+
+    val noTestnetIndexerHint = stringResource(R.string.no_testnet_indexer_yet)
+    if (editingBroadcastIndexerUrl) {
+        ConnectionUrlEditDialog(
+            title = "Public Chats Indexer URL",
+            initial = broadcastIndexerUrl,
+            hint = if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_BROADCAST_INDEXER_URL}" else noTestnetIndexerHint,
+            onSave = viewModel::setBroadcastIndexerUrl,
+            onDismiss = { editingBroadcastIndexerUrl = false },
+        )
+    }
+    if (editingPushIndexerUrl) {
+        ConnectionUrlEditDialog(
+            title = "Push Indexer URL",
+            initial = pushIndexerUrl,
+            hint = if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_PUSH_INDEXER_URL}" else noTestnetIndexerHint,
+            onSave = viewModel::setPushIndexerUrl,
+            onDismiss = { editingPushIndexerUrl = false },
+        )
+    }
+    if (editingKaspaRestApiUrl) {
+        val restDefault = com.kachat.app.repository.AppSettingsRepository.defaultKaspaRestUrl(
+            if (onMainnetSettings) com.kachat.app.util.KaspaNetwork.Type.MAINNET else com.kachat.app.util.KaspaNetwork.Type.TESTNET
+        )
+        ConnectionUrlEditDialog(
+            title = "Kaspa REST API URL",
+            initial = kaspaRestApiUrl,
+            hint = "Leave blank to use $restDefault",
+            onSave = viewModel::setKaspaRestApiUrl,
+            onDismiss = { editingKaspaRestApiUrl = false },
+        )
+    }
+}
+
+/** One endpoint's edit dialog, as the KaPost and translation ones above: https only, and
+ *  [onSave] returns false to keep it open with the error (iOS `httpsInlineError`). */
+@Composable
+private fun ConnectionUrlEditDialog(
+    title: String,
+    initial: String,
+    hint: String,
+    onSave: (String) -> Boolean,
+    onDismiss: () -> Unit,
+) {
+    var draft by remember { mutableStateOf(initial) }
+    var rejected by remember { mutableStateOf(false) }
+    com.kachat.app.ui.theme.IosAlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LocalAppColors.current.surface,
+        title = { Text(title, color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                com.kachat.app.ui.theme.IosTextField(
+                    value = draft,
+                    onValueChange = { draft = it; rejected = false },
+                    singleLine = true,
+                    isError = rejected,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (rejected) "Use https. Unencrypted connections are not supported." else hint,
+                    color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (onSave(draft)) onDismiss() else rejected = true
+            }) { Text("Save", color = KaspaTeal) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel), color = LocalAppColors.current.textSecondary)
+            }
+        }
+    )
 }
 
 /** Read-only for now — editing these let a mistyped URL crash the whole app (fixed at the NetworkService layer too, but not editable at all is safer). */
@@ -5134,6 +5637,8 @@ fun AddressQrPage(
     caption: String,
     dismiss: QrPageDismiss,
     onDismiss: () -> Unit,
+    /** The balance in the bar; Receive leaves it to the Wallet screen. */
+    showsBalance: Boolean = true,
 ) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
@@ -5149,7 +5654,7 @@ fun AddressQrPage(
             },
     ) {
         AddressQrPageBar(dismiss = dismiss, onDismiss = onDismiss) {
-            Text(
+            if (showsBalance) Text(
                 balanceSompi?.let { "%.8f %s".format(java.util.Locale.US, it / 100_000_000.0, KaspaUnit.symbol) } ?: "—",
                 // iOS's `.primary`, as iOS draws it: the page forces no colour scheme, so in dark
                 // mode the balance is the theme's white over the white page, as on the iPhone.
@@ -5236,6 +5741,9 @@ fun ChattingAddressQrPage(address: String, balanceSompi: Long?, dismiss: QrPageD
         caption = stringResource(R.string.qr_chatting_address_subtitle),
         dismiss = dismiss,
         onDismiss = onDismiss,
+        // Only the code and the address: the backup strip is on every tab, and the balance is the
+        // Wallet screen's (iOS e5a9b11).
+        showsBalance = false,
     )
 }
 
@@ -5467,3 +5975,318 @@ internal fun Modifier.chatComposerFieldModifier(): Modifier = this.iosGlass(corn
 
 
 
+
+/**
+ * Profile > Wallet (iOS e5a9b11 `KaPostWalletView`), KaChat's and KaPay's Wallet tab in KaPost: the
+ * total up top, split into the chatting and spending addresses, then Send, Receive and Request, the
+ * Backup Hygiene card when it's due, then the chatting address's history. KaPost only uses the
+ * chatting address: Send leaves from it and Receive and Request are paid to it. Other addresses
+ * count in the total and are managed in KaChat and KaPay. Pushed, so the dock stays under it.
+ */
+@OptIn(ExperimentalMaterial3Api::class, kotlinx.coroutines.FlowPreview::class)
+@Composable
+fun KaPostWalletScreen(
+    navController: NavController,
+    viewModel: WalletViewModel,
+    portfolioViewModel: com.kachat.app.viewmodels.PortfolioViewModel = hiltViewModel(),
+) {
+    val colors = LocalAppColors.current
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val haptic = com.kachat.app.util.rememberHaptics()
+    val uriHandler = LocalUriHandler.current
+    val address by viewModel.address.collectAsState()
+    val chattingSompi by viewModel.balanceSompi.collectAsState()
+    val balanceKnown by viewModel.balanceKnown.collectAsState()
+    val spendingSompi by viewModel.spendingTotalSompi.collectAsState()
+    val txHistory by viewModel.spendingAddressTxHistory.collectAsState()
+    val isLoadingTxHistory by viewModel.loadingSpendingAddressTxHistory.collectAsState()
+    val txHistoryFailed by viewModel.spendingAddressTxHistoryFailed.collectAsState()
+    val kaspaExplorer by viewModel.kaspaExplorer.collectAsState()
+    val pendingAddresses by viewModel.accountBackupStatus.pendingAddresses.collectAsState()
+    val confirmedAt by viewModel.accountBackupStatus.confirmedAt.collectAsState()
+    val price by portfolioViewModel.currentPriceUsd.collectAsState()
+    val currency by portfolioViewModel.currency.collectAsState()
+    val network by com.kachat.app.util.KaspaNetwork.selected.collectAsState()
+    var showSend by remember { mutableStateOf(false) }
+    var showReceive by remember { mutableStateOf(false) }
+    var showRequest by remember { mutableStateOf(false) }
+    var transactionActionTarget by remember { mutableStateOf<ColdStorageAddressDiscovery.AddressTransaction?>(null) }
+    var portfolioCandidate by remember { mutableStateOf<ColdStorageAddressDiscovery.AddressTransaction?>(null) }
+    var addedPortfolioName by remember { mutableStateOf<String?>(null) }
+
+    // The balances and the history, each time the screen opens and for the account it's on.
+    fun refreshWallet() {
+        val current = address ?: return
+        viewModel.refreshBalance()
+        viewModel.refreshSpendingAddress()
+        viewModel.loadSpendingAddressTxHistory(current)
+    }
+    LaunchedEffect(address) { refreshWallet() }
+    // Arriving funds refresh at once (iOS `.ownAddressUtxoActivity`), a burst coalesced.
+    val activityChatViewModel: com.kachat.app.viewmodels.ChatViewModel =
+        hiltViewModel(LocalContext.current as androidx.activity.ComponentActivity)
+    LaunchedEffect(address) {
+        activityChatViewModel.ownAddressUtxoActivityEvents
+            .debounce(500)
+            .collect { refreshWallet() }
+    }
+    val pullRefreshState = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
+    LaunchedEffect(pullRefreshState.isRefreshing) {
+        if (pullRefreshState.isRefreshing) {
+            refreshWallet()
+            pullRefreshState.endRefresh()
+        }
+    }
+
+    // Both parts or a dash: a total missing one of them would read as the whole balance.
+    val totalSompi = spendingSompi?.takeIf { balanceKnown }?.let { chattingSompi + it }
+    val hygieneDue = remember(address, pendingAddresses, confirmedAt) { viewModel.accountBackupStatus.isHygieneDue(address) }
+
+    Scaffold(
+        containerColor = colors.background,
+        contentWindowInsets = WindowInsets(0),
+        topBar = {
+            MainPageHeader(
+                title = "Wallet",
+                onBack = { navController.popBackStack() },
+                showsDivider = true,
+                banner = { AccountBackupBanner(viewModel) { navController.navigate("account_backup") } },
+            )
+        },
+    ) { padding ->
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(top = padding.calculateTopPadding())
+                .clipToBounds()
+                .nestedScroll(pullRefreshState.nestedScrollConnection)
+        ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp + LocalDockInset.current),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            item(key = "balance") {
+                val shape = RoundedCornerShape(22.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(shape)
+                        .background(
+                            androidx.compose.ui.graphics.Brush.linearGradient(
+                                listOf(KaspaTeal.copy(alpha = 0.32f), KaspaTeal.copy(alpha = 0.08f))
+                            )
+                        )
+                        .border(0.8.dp, KaspaTeal.copy(alpha = 0.35f), shape)
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Total Balance", color = colors.textSecondary, fontSize = 15.sp)
+                        Text(
+                            totalSompi?.let { "${KaspaUnit.plain(it)} ${KaspaUnit.symbol}" } ?: "--",
+                            color = colors.textPrimary,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                            modifier = Modifier.clickable(enabled = totalSompi != null) {
+                                val total = totalSompi ?: return@clickable
+                                clipboard.setText(AnnotatedString(KaspaUnit.plain(total)))
+                                haptic(com.kachat.app.util.IosHaptic.SUCCESS)
+                                IosToasts.show("Balance copied to clipboard.")
+                            },
+                        )
+                        // What the total is worth in your currency. Testnet coins aren't worth anything.
+                        val livePrice = price
+                        if (totalSompi != null && network == com.kachat.app.util.KaspaNetwork.Type.MAINNET && livePrice != null && livePrice > 0) {
+                            Text(
+                                com.kachat.app.util.formatFiatAmount(totalSompi / 100_000_000.0 * livePrice, currency),
+                                color = colors.textSecondary,
+                                fontSize = 15.sp,
+                            )
+                        }
+                    }
+                    HorizontalDivider(color = colors.surfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        WalletBalancePart("Chatting", chattingSompi.takeIf { balanceKnown }, Modifier.weight(1f))
+                        WalletBalancePart("Spending", spendingSompi, Modifier.weight(1f))
+                    }
+                }
+            }
+            item(key = "actions") {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    WalletActionButton("Send", Icons.Filled.ArrowUpward, Modifier.weight(1f)) {
+                        haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                        showSend = true
+                    }
+                    WalletActionButton("Receive", Icons.Filled.ArrowDownward, Modifier.weight(1f)) {
+                        haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                        showReceive = true
+                    }
+                    WalletActionButton("Request", RequestPaymentIcon, Modifier.weight(1f)) {
+                        haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                        showRequest = true
+                    }
+                }
+            }
+            if (hygieneDue) {
+                item(key = "hygiene") {
+                    BackupHygieneCard { navController.navigate("backup_hygiene") }
+                }
+            }
+            item(key = "history_title") {
+                Text("Transaction History", color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            }
+            when {
+                isLoadingTxHistory && txHistory.isEmpty() -> item(key = "history_loading") {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 18.dp), contentAlignment = Alignment.Center) {
+                        com.kachat.app.ui.theme.IosActivityIndicator(color = KaspaTeal)
+                    }
+                }
+                // A failed read isn't an empty history.
+                txHistory.isEmpty() && txHistoryFailed -> item(key = "history_failed") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Could not load transactions.", color = colors.textSecondary, fontSize = 17.sp)
+                        Text(
+                            stringResource(R.string.try_again),
+                            color = KaspaTeal,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.clickable { address?.let { viewModel.loadSpendingAddressTxHistory(it) } },
+                        )
+                    }
+                }
+                txHistory.isEmpty() -> item(key = "history_empty") {
+                    Text(stringResource(R.string.no_transactions_yet), color = colors.textSecondary, fontSize = 17.sp)
+                }
+                else -> item(key = "history") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Some pages failed: what loaded is shown, and the gap said (iOS).
+                    if (txHistoryFailed) {
+                        Text(
+                            "Some transactions could not be loaded. Pull to refresh to try again.",
+                            color = colors.warning,
+                            fontSize = 12.sp,
+                        )
+                    }
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(colors.surface)
+                    ) {
+                        txHistory.forEachIndexed { i, tx ->
+                            SpendingAddressTxHistoryRow(tx = tx, onClick = { transactionActionTarget = tx })
+                            if (i < txHistory.lastIndex) HorizontalDivider(color = colors.surfaceVariant, modifier = Modifier.padding(start = 14.dp))
+                        }
+                    }
+                    }
+                }
+            }
+        }
+        if (pullRefreshState.verticalOffset > 0f || pullRefreshState.isRefreshing) {
+            androidx.compose.material3.pulltorefresh.PullToRefreshContainer(
+                state = pullRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
+        }
+        }
+    }
+
+    val current = address
+    if (showSend && current != null) {
+        IosFullSheet(
+            onDismissed = {
+                showSend = false
+                viewModel.refreshBalance()
+                viewModel.loadSpendingAddressTxHistory(current)
+            },
+            swipeToDismiss = false,
+        ) { close ->
+            SpendingAddressSendFlow(
+                fromAddress = current,
+                balanceSompi = chattingSompi,
+                title = "Send Kaspa",
+                viewModel = viewModel,
+                portfolioViewModel = portfolioViewModel,
+                onDone = close,
+                presentedAsSheet = true,
+                lockedSource = SendSource.Chatting,
+            )
+        }
+    }
+    if (showReceive && current != null) {
+        QrPageSheet(onDismiss = { showReceive = false }, white = true) {
+            ChattingAddressQrPage(
+                address = current,
+                balanceSompi = chattingSompi,
+                dismiss = QrPageDismiss.CLOSE,
+                onDismiss = { showReceive = false },
+            )
+        }
+    }
+    if (showRequest) {
+        CreatePaymentRequestSheet(walletViewModel = viewModel, onDismissed = { showRequest = false })
+    }
+    transactionActionTarget?.let { tapped ->
+        TransactionActionsSheet(
+            tx = tapped,
+            onOpenExplorer = {
+                transactionActionTarget = null
+                uriHandler.openUri(kaspaExplorer.txUrl(tapped.txId))
+            },
+            onAddToPortfolio = {
+                transactionActionTarget = null
+                portfolioCandidate = tapped
+            },
+            onDismiss = { transactionActionTarget = null },
+        )
+    }
+    portfolioCandidate?.let { candidate ->
+        AddToPortfolioSheet(
+            tx = candidate,
+            address = address.orEmpty(),
+            viewModel = portfolioViewModel,
+            onDismiss = { portfolioCandidate = null },
+            onAdded = { addedPortfolioName = it },
+        )
+    }
+    addedPortfolioName?.let { name ->
+        PortfolioAddedSnackbar(name) { addedPortfolioName = null }
+    }
+}
+
+@Composable
+private fun WalletBalancePart(title: String, sompi: Long?, modifier: Modifier = Modifier) {
+    val colors = LocalAppColors.current
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, color = colors.textSecondary, fontSize = 12.sp)
+        Text(
+            sompi?.let { "${KaspaUnit.plain(it)} ${KaspaUnit.symbol}" } ?: "--",
+            color = colors.textPrimary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+        )
+    }
+}
+
+@Composable
+private fun WalletActionButton(title: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.size(60.dp).clip(CircleShape).background(KaspaTeal), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = Color.Black, modifier = Modifier.size(26.dp))
+        }
+        Text(title, color = LocalAppColors.current.textPrimary, fontSize = 15.sp)
+    }
+}

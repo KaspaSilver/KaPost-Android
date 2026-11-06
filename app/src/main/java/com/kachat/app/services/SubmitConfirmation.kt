@@ -7,6 +7,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
 /**
+ * A send a node may have received without ever answering, which the network doesn't have yet (iOS
+ * 953b255 `SendOutcomeUnknownError`). It may still land, so nothing should offer to send it again:
+ * the send screen shows "Not confirmed" with this message and only Done (`SendProgressScreen`).
+ */
+class SendOutcomeUnknownException(val txId: String, cause: Exception) : IllegalStateException(MESSAGE, cause) {
+    companion object {
+        const val MESSAGE = "This may have gone through, but the network didn't confirm it. Check your balance before sending again."
+    }
+}
+
+/**
  * A failed submit is not always a failed send (iOS ad29da9, audit IOS-014).
  *
  * A node can accept a transaction while its answer times out; the retry that follows (a fresh
@@ -23,6 +34,16 @@ object SubmitConfirmation {
     /** Between the two lookups: a just-accepted transaction may not have propagated yet. */
     const val RECHECK_DELAY_MS = 1_500L
 
+    /** After a lost answer, how many more times the network is asked, and how far apart (iOS
+     *  953b255 `confirmAfterLostAnswer`). */
+    const val LOST_ANSWER_CHECKS = 6
+    const val LOST_ANSWER_CHECK_DELAY_MS = 3_000L
+
+    /** After a node's answer, how often and how far apart the network is asked whether it can see
+     *  the transaction, sending it again if not (iOS 953b255 `checkedSubmit`). */
+    const val RESEND_CHECKS = 2
+    const val RESEND_DELAY_MS = 5_000L
+
     /** How long a send rejected as an orphan gives its parent to reach the node (iOS 4eb492f). */
     const val PARENT_WAIT_MS = 1_500L
 
@@ -37,9 +58,10 @@ object SubmitConfirmation {
      * reached hasn't caught up yet - a reaction or message sent right after the previous one. Then
      * the parent gets [delayMs] to propagate and the submit runs once more; if that is refused too,
      * the node is asked to hold it as an orphan until the parent arrives ([onHeldAsOrphan] is told
-     * the id). When neither goes through, the first rejection is what is thrown, as before. Any
-     * other error, or a submit that already allowed orphans, is thrown at once. A cancelled send
-     * stays cancelled (a timeout is not a cancellation of the send).
+     * the id). When neither goes through, the first rejection is what is thrown, as before, with
+     * the later tries' errors as suppressed (a lost answer among them still counts, iOS 953b255,
+     * [isLostAnswer]). Any other error, or a submit that already allowed orphans, is thrown at once.
+     * A cancelled send stays cancelled (a timeout is not a cancellation of the send).
      */
     suspend fun submitWaitingForParent(
         allowOrphan: Boolean,
@@ -53,8 +75,8 @@ object SubmitConfirmation {
             if (e is CancellationException && e !is TimeoutCancellationException) throw e
             if (allowOrphan || !isOrphanRejection(e)) throw e
             delay(delayMs)
-            attempt { submit(false) }?.let { return it }
-            attempt { submit(true) }?.let { id ->
+            attempt(e) { submit(false) }?.let { return it }
+            attempt(e) { submit(true) }?.let { id ->
                 onHeldAsOrphan(id)
                 return id
             }
@@ -62,12 +84,14 @@ object SubmitConfirmation {
         }
     }
 
-    /** [block]'s id, or null when it failed (iOS `try?`); a cancelled send stays cancelled. */
-    private suspend fun attempt(block: suspend () -> String): String? = try {
+    /** [block]'s id, or null when it failed (its error kept on [first]); a cancelled send stays
+     *  cancelled. */
+    private suspend fun attempt(first: Exception, block: suspend () -> String): String? = try {
         block()
     } catch (e: Exception) {
         if (e is CancellationException && e !is TimeoutCancellationException) throw e
         currentCoroutineContext().ensureActive()
+        first.addSuppressed(e)
         null
     }
 
@@ -76,25 +100,101 @@ object SubmitConfirmation {
      * [txId] is returned as the sent transaction's id and [onRecovered] is told why, otherwise
      * the submit's own error is thrown. A cancelled send stays cancelled (a timeout is not a
      * cancellation of the send).
+     *
+     * When the error is a lost answer rather than the node's verdict ([isLostAnswer]), [lookup]
+     * asks on for longer, and a transaction still not found ends in [SendOutcomeUnknownException]
+     * rather than a failure: it may yet land (iOS 953b255 `confirmAfterLostAnswer`).
+     *
+     * Nodes are unauthenticated, so a "sent" answer is only a claim: its id has to be [txId], and
+     * any other answer is treated as no answer ([onForeignAnswer] is told it). [onAnswered] runs
+     * once a node's answer did carry [txId] (iOS 953b255 `checkedSubmit`). Without a local id
+     * ([txId] empty) the submit runs exactly as before, unchecked.
      */
     suspend fun submitOrConfirmKnown(
         txId: String,
         isKnown: suspend (String) -> Boolean,
         onRecovered: (Exception) -> Unit = {},
+        onForeignAnswer: (String) -> Unit = {},
+        onAnswered: () -> Unit = {},
+        lookup: suspend (String) -> Boolean = isKnown,
+        checkDelayMs: Long = LOST_ANSWER_CHECK_DELAY_MS,
         submit: suspend () -> String,
     ): String {
-        try {
-            return submit()
+        val answer = try {
+            submit()
         } catch (e: Exception) {
             if (e is CancellationException && e !is TimeoutCancellationException) throw e
             currentCoroutineContext().ensureActive()
-            if (txId.isNotEmpty() && isKnown(txId)) {
+            if (txId.isNotEmpty() && asked(isKnown, txId)) {
                 onRecovered(e)
                 return txId
             }
-            throw e
+            if (txId.isEmpty() || !isLostAnswer(e)) throw e
+            return confirmAfterLostAnswer(txId, e, lookup, checkDelayMs)
+        }
+        if (txId.isEmpty()) return answer
+        if (!answer.equals(txId, ignoreCase = true)) {
+            onForeignAnswer(answer)
+            if (asked(isKnown, txId)) return txId
+            return confirmAfterLostAnswer(
+                txId,
+                java.io.IOException("A node answered a submit with a different transaction id"),
+                lookup,
+                checkDelayMs,
+            )
+        }
+        onAnswered()
+        return answer
+    }
+
+    /** A node may have the transaction and its answer never came, so a resend could pay twice:
+     *  asks the network for longer, then reports the outcome as unknown. */
+    private suspend fun confirmAfterLostAnswer(
+        txId: String,
+        cause: Exception,
+        lookup: suspend (String) -> Boolean,
+        checkDelayMs: Long,
+    ): String {
+        repeat(LOST_ANSWER_CHECKS) {
+            delay(checkDelayMs)
+            if (asked(lookup, txId)) return txId
+        }
+        throw SendOutcomeUnknownException(txId, cause)
+    }
+
+    /** A lookup that fails says nothing about the transaction: never a verdict on the send. */
+    private suspend fun asked(lookup: suspend (String) -> Boolean, txId: String): Boolean = try {
+        lookup(txId)
+    } catch (e: Exception) {
+        if (e is CancellationException && e !is TimeoutCancellationException) throw e
+        currentCoroutineContext().ensureActive()
+        false
+    }
+
+    /**
+     * Whether a submit may have reached a node and no answer came back (iOS 953b255
+     * `SubmitAnswerLostError`), as opposed to the node's own refusal, or a connection that never
+     * opened and so can't have sent anything. Any earlier try of the same transaction that lost
+     * its answer counts: they are kept as suppressed errors, or as the cause of a reworded one.
+     */
+    fun isLostAnswer(e: Throwable): Boolean {
+        if (e.suppressedExceptions.any { isLostAnswer(it) }) return true
+        return when (e) {
+            is java.net.UnknownHostException, is java.net.ConnectException, is java.net.NoRouteToHostException,
+            is javax.net.ssl.SSLHandshakeException -> false
+            // gRPC's UNAVAILABLE wraps the connect failures above.
+            is io.grpc.StatusException, is io.grpc.StatusRuntimeException -> e.cause?.let { neverConnected(it) } != true
+            is TimeoutCancellationException, is java.io.IOException -> true
+            is retrofit2.HttpException -> e.code() >= 500
+            else -> e.cause?.let { isLostAnswer(it) } == true
         }
     }
+
+    private fun neverConnected(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.take(8).any {
+            it is java.net.UnknownHostException || it is java.net.ConnectException ||
+                it is java.net.NoRouteToHostException || it is javax.net.ssl.SSLHandshakeException
+        }
 
     /**
      * Whether the network has [txId]: in some node's mempool ([inMempool]), or accepted

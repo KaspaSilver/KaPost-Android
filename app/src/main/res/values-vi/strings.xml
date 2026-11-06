@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">Bị từ chối - tên đã đổi chủ, đang hoàn lại cho bạn</string>
     <string name="kn_offer_declined_earlier_owner">Bị từ chối - gửi cho chủ cũ</string>
     <string name="kn_err_offer_declined">Đề nghị này được gửi trước khi tên đổi chủ, nên đã bị từ chối và đang hoàn lại cho người mua.</string>
+    <string name="kn_err_offer_amount_changed">Ưu đãi này chứa số tiền khác với số đã hiển thị. Chưa có gì được gửi.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">Tên này đã được trả đến kỳ dài nhất. Mở gia hạn vào %1$s.</string>
     <string name="kn_err_offer_own_name">Bạn không thể đưa đề nghị cho tên của chính mình.</string>

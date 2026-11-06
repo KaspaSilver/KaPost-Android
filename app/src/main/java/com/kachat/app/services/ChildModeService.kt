@@ -1,8 +1,6 @@
 package com.kachat.app.services
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.google.gson.Gson
 import com.kachat.app.repository.AppSettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -51,16 +49,10 @@ class ChildModeService @Inject constructor(
 
     private val gson = Gson()
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val sharedPrefs = EncryptedSharedPreferences.create(
-        context,
-        PREFS_NAME,
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+    // A store whose Keystore key didn't come along (a phone restore or transfer) must not crash
+    // the app at launch: it runs from memory this session (StartupSafety, as WalletManager).
+    private val sharedPrefs = com.kachat.app.util.StartupSafety.encryptedPrefsOrInMemory(
+        context, PREFS_NAME, "ChildModeService"
     )
 
     // MARK: - Queries

@@ -107,8 +107,16 @@ class NotificationHelper @Inject constructor(
             // matches the current settings.
             val manager = context.getSystemService(NotificationManager::class.java)
             CHANNELS.forEach { (channelId, soundOn, vibrationOn) ->
-                val channel = NotificationChannel(channelId, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "New messages, connection requests, and payments"
+                // KaPost's wording, one name per combination: four entries all called "Messages"
+                // couldn't be told apart in Android's settings.
+                val name = when {
+                    soundOn && vibrationOn -> "KaPost - sound and vibration"
+                    soundOn -> "KaPost - sound only"
+                    vibrationOn -> "KaPost - vibration only"
+                    else -> "KaPost - silent"
+                }
+                val channel = NotificationChannel(channelId, name, NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Likes, replies, follows and Public Chats rooms you get notified for"
                     enableVibration(vibrationOn)
                     if (!soundOn) setSound(null, null)
                 }
@@ -200,6 +208,12 @@ class NotificationHelper @Inject constructor(
         activeChannelName.value = channelName
     }
 
+    /** Clears the room on screen only if it is still [channelName]: moving from room A to room B,
+     *  A's screen goes away after B's has set itself, and a plain clear would drop B's. */
+    fun clearActiveChannel(channelName: String) {
+        activeChannelName.compareAndSet(channelName, null)
+    }
+
     fun setActiveGroup(groupId: String?) {
         activeGroupId.value = groupId
         refreshOpenChat()
@@ -262,6 +276,7 @@ class NotificationHelper @Inject constructor(
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_INTERNAL_TOKEN, internalToken(context))
             putExtra(EXTRA_CONTACT_ID, contactId)
         }
         // Stable per-contact request code so a burst of updates for the same
@@ -324,6 +339,7 @@ class NotificationHelper @Inject constructor(
         if (settings.childModeEnabled.first()) return
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_INTERNAL_TOKEN, internalToken(context))
             putExtra(EXTRA_OPEN_KAPOSTS, true)
             if (!postTxId.isNullOrBlank()) putExtra(EXTRA_KAPOST_TXID, postTxId)
             if (!focusTxId.isNullOrBlank()) putExtra(EXTRA_KAPOST_FOCUS_TXID, focusTxId)
@@ -339,6 +355,8 @@ class NotificationHelper @Inject constructor(
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("KaPost")
             .setContentText(text)
+            // iOS threadIdentifier "kaposts": what cancelKaPostsNotifications recognizes it by.
+            .setGroup(KAPOSTS_GROUP)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -368,15 +386,35 @@ class NotificationHelper @Inject constructor(
             }.getOrDefault(false)
         } else false
 
-    /** Ids of the KaPosts banners posted this process, so the Notifications screen can take
-     *  them down once the reader has seen the stream (iOS clears the "kaposts" thread). */
+    /** Ids of the KaPosts banners posted this process - the fallback below API 23, where the
+     *  shade's notifications can't be listed. */
     private val shownKaPostsIds = mutableSetOf<Int>()
 
+    /**
+     * Takes down every KaPosts notification in the shade once the reader has seen the stream
+     * (iOS markSeen clears the "kaposts" thread), not only the ones this process drew.
+     *
+     * Ours carry the [KAPOSTS_GROUP] group. The ones FCM drew by itself while the app was in the
+     * background carry neither our group nor a KaPosts channel (the default channel, tag = the
+     * txid, as a room's push), and their data payload sits in the tap's intent, which can't be
+     * read back. Their title tells them apart: the push service sends KaPosts pushes titled
+     * "KaPosts" and room pushes "#room" (indexer push.rs).
+     */
     fun cancelKaPostsNotifications() {
         val ids = synchronized(shownKaPostsIds) { shownKaPostsIds.toList().also { shownKaPostsIds.clear() } }
-        if (ids.isEmpty()) return
         val manager = NotificationManagerCompat.from(context)
         for (id in ids) manager.cancel(id)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        runCatching {
+            val system = context.getSystemService(NotificationManager::class.java) ?: return
+            for (sbn in system.activeNotifications) {
+                val title = sbn.notification.extras
+                    ?.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString()
+                val isKaPosts = sbn.notification.group == KAPOSTS_GROUP ||
+                    title == "KaPosts" || title == "KaPost"
+                if (isKaPosts) system.cancel(sbn.tag, sbn.id)
+            }
+        }
     }
 
     /** Wallet address-activity notification ("Received X KAS" on a spending/cold address) — see
@@ -401,6 +439,7 @@ class NotificationHelper @Inject constructor(
         if (!settings.notificationsEnabled.first()) return
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_INTERNAL_TOKEN, internalToken(context))
             putExtra(EXTRA_WALLET_ACTIVITY_KIND, kind)
             if (!address.isNullOrEmpty()) putExtra(EXTRA_WALLET_ACTIVITY_ADDRESS, address)
         }
@@ -434,7 +473,9 @@ class NotificationHelper @Inject constructor(
         // this single point is what stops a reply/photo/chess envelope's raw JSON reaching the
         // shade, and keeps both delivery paths' wording identical.
         val bodyText = broadcastNotificationText(text)
-        if (activeChannelName.value == channelName) return // already looking at this channel
+        // Already looking at this channel - only while the app is in front (iOS KaPostsApp
+        // willPresent): a room left open behind the home button notifies as usual.
+        if (activeChannelName.value == channelName && appForeground.value) return
         if (!settings.notificationsEnabled.first()) return
         // Child Mode removes Broadcasts entirely - no local banners for them either. Covers the
         // scan-driven path (BroadcastScanningService) AND the FCM receive handler in one place
@@ -444,6 +485,7 @@ class NotificationHelper @Inject constructor(
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_INTERNAL_TOKEN, internalToken(context))
             putExtra(EXTRA_CHANNEL_NAME, channelName)
         }
         // Stable per-channel request code, same reasoning as the per-contact one above.
@@ -502,6 +544,7 @@ class NotificationHelper @Inject constructor(
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_INTERNAL_TOKEN, internalToken(context))
             if (targetGroupId != null) {
                 putExtra(EXTRA_GROUP_ID, targetGroupId)
             } else {
@@ -543,6 +586,40 @@ class NotificationHelper @Inject constructor(
         /** The id a tagged tip banner uses: the OS posts an FCM notification under its tag with
          *  id 0, so ours must match it to replace it (IDX-030). */
         const val TIP_TAG_ID = 0
+        /**
+         * MainActivity is exported (it takes kachat://, kaposts:// and kachat.app links), so any
+         * app could start it with our notification extras. Every intent built here carries this
+         * per-install random token, and MainActivity honours the extras only when it matches
+         * ([isInternalIntent]). Generated once, kept in app-private prefs.
+         */
+        const val EXTRA_INTERNAL_TOKEN = "kapost_internal_token"
+        private const val TOKEN_PREFS = "kapost_notification_token"
+        private const val TOKEN_KEY = "token"
+        @Volatile private var cachedToken: String? = null
+
+        @Synchronized
+        fun internalToken(context: Context): String {
+            cachedToken?.let { return it }
+            val prefs = context.applicationContext.getSharedPreferences(TOKEN_PREFS, Context.MODE_PRIVATE)
+            val token = prefs.getString(TOKEN_KEY, null) ?: run {
+                val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+                bytes.joinToString("") { "%02x".format(it) }.also { prefs.edit().putString(TOKEN_KEY, it).apply() }
+            }
+            cachedToken = token
+            return token
+        }
+
+        /** Whether [intent] was built by this class (see [EXTRA_INTERNAL_TOKEN]). */
+        fun isInternalIntent(context: Context, intent: Intent): Boolean {
+            val presented = runCatching { intent.getStringExtra(EXTRA_INTERNAL_TOKEN) }.getOrNull() ?: return false
+            return java.security.MessageDigest.isEqual(
+                presented.toByteArray(),
+                internalToken(context).toByteArray(),
+            )
+        }
+
+        /** The group every KaPosts banner is posted in (iOS threadIdentifier "kaposts"). */
+        const val KAPOSTS_GROUP = "kaposts"
         /**
          * Friendly one-line preview for a broadcast room's notification, mirroring the mapping
          * 1:1 chats use (`ChatRepository`'s `notificationText`, and the identical one in

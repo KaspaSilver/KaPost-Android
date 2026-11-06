@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -16,6 +17,20 @@ private tailrec fun Context.findFragmentActivity(): FragmentActivity? = when (th
     is ContextWrapper -> baseContext.findFragmentActivity()
     else -> null
 }
+
+/**
+ * What the prompt accepts: a strong biometric or the screen lock. Android 9 and 10 (API 28-29)
+ * don't support that pairing in androidx.biometric - every check there reported "unsupported" and
+ * every gated action failed - so they take the weak tier with the screen lock, which is what
+ * their system prompt offers anyway.
+ */
+private val deviceAuthenticators: Int
+    get() = if (android.os.Build.VERSION.SDK_INT in 28..29) BIOMETRIC_WEAK or DEVICE_CREDENTIAL
+    else BIOMETRIC_STRONG or DEVICE_CREDENTIAL
+
+/** A screen lock or biometric is set up, so [authenticateWithDeviceCredential] can ask. */
+fun Context.hasDeviceCredential(): Boolean =
+    BiometricManager.from(this).canAuthenticate(deviceAuthenticators) == BiometricManager.BIOMETRIC_SUCCESS
 
 /**
  * Gates [onSuccess] behind whatever the device's own lock screen is set to (fingerprint/face
@@ -41,7 +56,7 @@ fun Context.authenticateWithDeviceCredential(
         onFailure()
         return
     }
-    val allowedAuthenticators = BIOMETRIC_STRONG or DEVICE_CREDENTIAL
+    val allowedAuthenticators = deviceAuthenticators
     if (BiometricManager.from(activity).canAuthenticate(allowedAuthenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
         presentScreenLockRequired(activity)
         onFailure()

@@ -30,6 +30,7 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
     @Inject lateinit var pushRegistrationManager: PushRegistrationManager
     @Inject lateinit var walletManager: WalletManager
     @Inject lateinit var settingsRepository: com.kachat.app.repository.AppSettingsRepository
+    @Inject lateinit var notificationPoller: KaPostsNotificationPoller
 
     override fun onNewToken(token: String) {
         // FCM rotated the token — re-register it with the indexer (signed with the wallet key).
@@ -110,6 +111,12 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
                         // arrived whatever they said. See shouldNotifyKaPostsPush.
                         if (!settingsRepository.shouldNotifyKaPostsPush(data["kaposts_kind"], body.ifEmpty { title })) {
                             Log.i(TAG, "KaPosts push suppressed by notification settings")
+                            return@runBlocking
+                        }
+                        // The Notifications tab on screen shows it already: no banner (iOS
+                        // KaPostsApp willPresent), but the txid is claimed so nothing draws it later.
+                        if (notificationHelper.isAppInForeground && notificationPoller.isNotificationsScreenVisible) {
+                            txId.takeIf { it.isNotBlank() }?.let { notificationHelper.claimWithoutNotifying(it) }
                             return@runBlocking
                         }
                         notificationHelper.showKaPosts(

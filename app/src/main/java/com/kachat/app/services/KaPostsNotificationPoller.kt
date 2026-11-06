@@ -59,7 +59,8 @@ class KaPostsNotificationPoller @Inject constructor(
         actorNameCache[address]?.let { return it }
         val contact = try { chatRepository.getContacts().first().find { it.id == address } } catch (_: Exception) { null }
         val alias = contact?.alias?.trim().orEmpty()
-        val fallback = com.kachat.app.util.KaspaAddress.shortDisplay(address)
+        // The address's last 10 characters, as iOS KaPostsNotificationService.actorName.
+        val fallback = address.takeLast(10)
         // A domain keeps its ".kas" here too: the suffix is part of the name.
         val name = if (alias.isNotEmpty()) {
             alias
@@ -118,6 +119,8 @@ class KaPostsNotificationPoller @Inject constructor(
     }
 
     private suspend fun pollOnce() {
+        // Signed out: no banners for the account behind the sign-in screen (iOS).
+        if (walletManager.isLoggedOut) return
         val address = try { walletManager.getAddress() } catch (_: Exception) { return }
         // Child Mode removes KaPosts entirely - no polling, no count, no pings (iOS).
         if (settingsRepository.childModeEnabled.first()) return
@@ -176,7 +179,8 @@ class KaPostsNotificationPoller @Inject constructor(
             val text = KaPostsProtocol.stripMarker(n.decodedContent ?: "").trim()
             val name = actorDisplayName(actor)
             notificationHelper.showKaPosts(
-                text = "$name ${actionText(n.contentType, n.voteType, text, n.tipAmountSompi)}" + if (text.isEmpty()) "" else ": ${text.take(120)}",
+                // The whole text, as iOS postLocal: the system shade cuts it where it must.
+                text = "$name ${actionText(n.contentType, n.voteType, text, n.tipAmountSompi)}" + if (text.isEmpty()) "" else ": $text",
                 actionTxId = n.id,
                 // Same per-kind target rule as the in-app notifications overlay and iOS: a
                 // reply targets the reply ITSELF, and the landing rule opens its parent's thread

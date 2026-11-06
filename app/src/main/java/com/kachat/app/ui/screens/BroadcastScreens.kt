@@ -2,6 +2,14 @@ package com.kachat.app.ui.screens
 
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.MarkEmailRead
+import androidx.compose.material.icons.outlined.MarkEmailUnread
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.NotificationsOff
+import androidx.compose.material.icons.outlined.PushPin
 import com.kachat.app.util.UserFacingError
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -215,6 +223,44 @@ fun BroadcastListScreen(
     val roomClipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
     val listed by broadcastViewModel.listedChannels.collectAsState()
+    // Rooms pinned up out of the list into the circles row above it, saved per account (iOS
+    // 9653c04). A room no longer listed finds nothing.
+    val pinContext = LocalContext.current
+    val pinAddress = remember { runCatching { broadcastViewModel.myAddress() }.getOrNull() }
+    var roomPins by remember(pinAddress) {
+        mutableStateOf(pinAddress?.let { KaPostRoomPins.load(pinContext, it) }.orEmpty())
+    }
+    val pinnedChannels = roomPins.mapNotNull { name -> listed.firstOrNull { it.channelName == name } }
+    val unpinnedChannels = listed.filter { it.channelName !in roomPins }
+    fun toggleRoomPin(name: String) {
+        val pinned = name in roomPins
+        roomPins = if (pinned) roomPins - name else listOf(name) + roomPins
+        pinAddress?.let { KaPostRoomPins.save(pinContext, it, roomPins) }
+        IosToasts.show(if (pinned) "Unpinned" else "Pinned to the top row", durationMs = IosToastDuration.LONG)
+    }
+    /** A default room is never really deleted - it is switched off, exactly like its toggle in
+     *  Public Chats settings, and that toggle brings it back. Nothing is lost, so it needs no
+     *  confirmation. A room you added asks first. */
+    fun deleteRoom(name: String) {
+        if (name in com.kachat.app.models.FeaturedBroadcastChannels.CURATED_NAMES) {
+            broadcastViewModel.removeFromList(name)
+            IosToasts.show(pinContext.getString(R.string.default_room_switched_off, name), durationMs = IosToastDuration.LONG)
+        } else {
+            channelToLeave = name
+        }
+    }
+    fun toggleRoomNotify(name: String, notifyOn: Boolean) {
+        broadcastViewModel.setNotifyEnabled(name, !notifyOn)
+        // iOS toggleNotify's words.
+        IosToasts.show(
+            when {
+                notifyOn -> "Notifications are off for this public chat"
+                com.kachat.app.models.FeaturedBroadcastChannels.isIndexerTracked(name) -> "You'll get notifications for new messages in this public chat, even when the app is closed"
+                else -> "You'll get a notification for new messages in this public chat as long as your app remains open"
+            },
+            durationMs = IosToastDuration.LONG,
+        )
+    }
 
     // Standing alone, Select mode is this list's own: Select / Cancel and Select All in the
     // header, and a bar acting on every picked room (iOS KaPosts eec2e30).
@@ -234,6 +280,13 @@ fun BroadcastListScreen(
     }
     // Back while picking rooms leaves Select mode first.
     BackHandler(enabled = ownSelecting) { setSelecting(false) }
+
+    /** Opens a room - only while this list is the screen in front, so a quick double tap on a
+     *  row or a circle can't push the room twice. */
+    fun openRoom(name: String) {
+        if (navController.currentBackStackEntry?.lifecycle?.currentState != androidx.lifecycle.Lifecycle.State.RESUMED) return
+        navController.navigate("broadcast_channel/$name")
+    }
 
     LaunchedEffect(joinState.status) {
         if (joinState.status == BroadcastViewModel.JoinChannelStatus.SUCCESS) {
@@ -279,7 +332,7 @@ fun BroadcastListScreen(
                         val haptic = com.kachat.app.util.rememberHaptics()
                         ToolbarGlassGroup {
                             if (ownSelecting) {
-                                val allRooms = listed.map { it.channelName }.toSet()
+                                val allRooms = unpinnedChannels.map { it.channelName }.toSet()
                                 val everything = allRooms.isNotEmpty() && ownSelection == allRooms
                                 ToolbarTextButton(if (everything) "Deselect All" else "Select All", onClick = {
                                     ownSelection = if (ownSelection == allRooms) emptySet() else allRooms
@@ -298,6 +351,9 @@ fun BroadcastListScreen(
                         }
                     },
                     showsConnectionDot = !ownSelecting,
+                    showsDivider = true,
+                    // The backup strip, above the title (iOS e5a9b11).
+                    banner = { AccountBackupBanner(onOpenBackup = { navController.navigate("account_backup") }) },
                     actions = {
                         val haptic = com.kachat.app.util.rememberHaptics()
                         ToolbarTextButton(if (ownSelecting) stringResource(R.string.cancel) else "Select", onClick = {
@@ -366,14 +422,41 @@ fun BroadcastListScreen(
                     roomListState.scrollToItem(0)
                 }
             }
+            // One swiped row open at a time, closed when the list scrolls.
+            var openSwipeRow by remember { mutableStateOf<Any?>(null) }
+            LaunchedEffect(roomListState.isScrollInProgress) {
+                if (roomListState.isScrollInProgress) openSwipeRow = null
+            }
             LazyColumn(
                 state = roomListState,
                 modifier = Modifier.fillMaxSize(),
                 // Room at the bottom so the last row never sits under the floating button, nor
                 // the dock the list runs under.
-                contentPadding = PaddingValues(top = 8.dp, bottom = if (ownSelecting) 8.dp else 96.dp + dockInset),
+                contentPadding = PaddingValues(bottom = if (ownSelecting) 8.dp else 96.dp + dockInset),
             ) {
-                items(listed, key = { "room:${it.channelName}" }) { channel ->
+                if (pinnedChannels.isNotEmpty()) item(key = "pinned-rooms") {
+                    // Tap opens, hold opens the room's half sheet (with Unpin).
+                    PinnedCirclesRow {
+                        pinnedChannels.forEach { channel ->
+                            PinnedCircle(
+                                name = "#${channel.channelName}",
+                                unreadCount = summaries[channel.channelName]?.unreadCount ?: 0,
+                                showsPin = true,
+                                isSelecting = selecting,
+                                onTap = { openRoom(channel.channelName) },
+                                onLongPress = { roomActionTarget = channel.channelName },
+                            ) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize().background(KaspaTeal.copy(alpha = 0.2f)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text("#", color = KaspaTeal, fontWeight = FontWeight.Bold, fontSize = 26.sp, fontFamily = IosRoundedFontFamily)
+                                }
+                            }
+                        }
+                    }
+                }
+                items(unpinnedChannels, key = { "room:${it.channelName}" }) { channel ->
                     val summary = summaries[channel.channelName]
                     val last = summary?.lastMessage
                     LaunchedEffect(last?.senderAddress) {
@@ -385,24 +468,62 @@ fun BroadcastListScreen(
                         color = LocalAppColors.current.divider,
                         thickness = 0.5.dp,
                     )
-                    PublicChatRow(
-                        channelName = channel.channelName,
-                        notifyOff = !channel.notifyEnabled,
-                        preview = last?.let { "${senderName(it.senderAddress)}: ${publicRoomPreview(it.content)}" },
-                        emptyText = "No messages yet",
-                        timeText = last?.let { publicRoomTime(it.blockTimestamp) },
-                        unread = summary?.unreadCount ?: 0,
-                        // In Select mode a tap picks the room, as on the Chats and Group Chats pages.
-                        onClick = {
-                            if (selecting) toggleRoom(channel.channelName)
-                            else navController.navigate("broadcast_channel/${channel.channelName}")
-                        },
-                        onLongClick = if (selecting) null else ({ roomActionTarget = channel.channelName }),
-                        selected = if (selecting) channel.channelName in pickedRooms else null,
-                    )
+                    val roomColors = LocalAppColors.current
+                    val roomHasUnread = (summary?.unreadCount ?: 0) > 0
+                    // Swiped left: Delete, Mute and Pin, with no full swipe, so a long swipe can't
+                    // start a delete. Swiped right: the read state (iOS 9653c04).
+                    SwipeActionsRow(
+                        key = channel.channelName,
+                        openKey = openSwipeRow,
+                        onOpenKeyChange = { openSwipeRow = it },
+                        enabled = !selecting,
+                        leadingActions = listOf(
+                            if (roomHasUnread) {
+                                SwipeAction(Icons.Outlined.MarkEmailRead, stringResource(R.string.mark_as_read), KaspaTeal) {
+                                    broadcastViewModel.markRoomRead(channel.channelName)
+                                }
+                            } else {
+                                SwipeAction(Icons.Outlined.MarkEmailUnread, stringResource(R.string.mark_as_unread), KaspaTeal) {
+                                    broadcastViewModel.markRoomUnread(channel.channelName)
+                                }
+                            }
+                        ),
+                        trailingActions = listOf(
+                            SwipeAction(Icons.Outlined.Delete, stringResource(R.string.delete), roomColors.danger) {
+                                deleteRoom(channel.channelName)
+                            },
+                            SwipeAction(
+                                if (channel.notifyEnabled) Icons.Outlined.NotificationsOff else Icons.Outlined.Notifications,
+                                if (channel.notifyEnabled) "Mute" else "Unmute",
+                                roomColors.warning,
+                            ) {
+                                toggleRoomNotify(channel.channelName, channel.notifyEnabled)
+                            },
+                            SwipeAction(Icons.Outlined.PushPin, "Pin", KaspaTeal) {
+                                toggleRoomPin(channel.channelName)
+                            },
+                        ),
+                    ) {
+                        PublicChatRow(
+                            channelName = channel.channelName,
+                            notifyOff = !channel.notifyEnabled,
+                            preview = last?.let { "${senderName(it.senderAddress)}: ${publicRoomPreview(it.content)}" },
+                            emptyText = "No messages yet",
+                            timeText = last?.let { publicRoomTime(it.blockTimestamp) },
+                            unread = summary?.unreadCount ?: 0,
+                            // In Select mode a tap picks the room, as on the Chats and Group Chats pages.
+                            onClick = {
+                                if (selecting) toggleRoom(channel.channelName)
+                                else openRoom(channel.channelName)
+                            },
+                            onLongClick = if (selecting) null else ({ roomActionTarget = channel.channelName }),
+                            selected = if (selecting) channel.channelName in pickedRooms else null,
+                        )
+                    }
                 }
 
-                if (!selecting) item(key = "footer:note") {
+                // In Select mode too, as on iOS (PublicChatListView's List keeps it).
+                item(key = "footer:note") {
                     Text(
                         "Public rooms are open to everyone. #kaspa, #kachat-bugs and the language rooms keep 30 days of history.",
                         color = LocalAppColors.current.textSecondary,
@@ -431,7 +552,7 @@ fun BroadcastListScreen(
         // iOS PublicChatListView's toast: up for 3 s.
         fun say(text: String) = IosToasts.show(text, durationMs = IosToastDuration.LONG)
         // iOS sizes this sheet for five tiles (two rows).
-        TileActionSheet(title = "#$name", onDismiss = { roomActionTarget = null }, height = ActionSheetTileMetrics.sheetHeight(tiles = 5)) {
+        TileActionSheet(title = "#$name", onDismiss = { roomActionTarget = null }, height = ActionSheetTileMetrics.sheetHeight(tiles = 6)) {
                 if (hasUnread) {
                     ActionSheetRow(icon = Icons.Default.Drafts, title = stringResource(R.string.mark_as_read), subtitle = "Clears the unread badge on this room.") {
                         roomActionTarget = null
@@ -464,6 +585,16 @@ fun BroadcastListScreen(
                             }
                         )
                     }
+                }
+                val isPinned = name in roomPins
+                ActionSheetRow(
+                    icon = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                    title = if (isPinned) "Unpin" else "Pin to Top Row",
+                    subtitle = if (isPinned) "Goes back to its place in the list."
+                    else "Moves this room out of the list into the row of circles above it.",
+                ) {
+                    roomActionTarget = null
+                    toggleRoomPin(name)
                 }
                 ActionSheetRow(icon = Icons.Default.Link, title = "Copy Room Link", subtitle = "A kachat.app link that opens this room.") {
                     roomActionTarget = null
@@ -555,13 +686,6 @@ fun BroadcastListScreen(
                 ),
                 modifier = Modifier.fillMaxWidth()
             )
-            if (joinState.status == BroadcastViewModel.JoinChannelStatus.FAILED) {
-                Text(
-                    joinState.message ?: "Invalid channel name",
-                    color = LocalAppColors.current.danger,
-                    fontSize = 12.sp
-                )
-            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -573,11 +697,13 @@ fun BroadcastListScreen(
                 ) {
                     Text(stringResource(R.string.cancel), color = LocalAppColors.current.textPrimary)
                 }
-                // Does NOT close the sheet: joinChannel() updates joinChannelState
-                // asynchronously, so whether it worked is not known at click time. The
-                // LaunchedEffect above closes it on SUCCESS; on FAILED it stays, showing why.
+                // Closes first, then joins: a failure is the "Couldn't Join Channel" alert
+                // below, which shows once the sheet is gone (iOS PublicChatListView.submitJoin).
                 Button(
-                    onClick = { broadcastViewModel.joinChannel(channelInput) },
+                    onClick = {
+                        showJoinDialog = false
+                        broadcastViewModel.joinChannel(channelInput)
+                    },
                     enabled = channelInput.isNotBlank(),
                     modifier = Modifier.weight(1f).height(52.dp),
                     shape = RoundedCornerShape(16.dp),
@@ -587,6 +713,21 @@ fun BroadcastListScreen(
                 }
             }
         }
+    }
+
+    // A join that failed: an alert, once the join sheet has closed (iOS "Couldn't Join Channel").
+    if (!showJoinDialog && joinState.status == BroadcastViewModel.JoinChannelStatus.FAILED) {
+        com.kachat.app.ui.theme.IosAlertDialog(
+            onDismissRequest = { broadcastViewModel.resetJoinChannelState() },
+            containerColor = LocalAppColors.current.surface,
+            title = { Text("Couldn't Join Channel", color = LocalAppColors.current.textPrimary) },
+            text = { Text(joinState.message.orEmpty(), color = LocalAppColors.current.textSecondary) },
+            confirmButton = {
+                TextButton(onClick = { broadcastViewModel.resetJoinChannelState() }) {
+                    Text("OK", color = KaspaTeal, fontWeight = FontWeight.Bold)
+                }
+            },
+        )
     }
 
     // Deleting a room asks on a sheet, like every other menu here (iOS eff5c09).
@@ -772,6 +913,7 @@ private fun PublicChatRow(
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "#$channelName",
                     color = colors.textPrimary,
@@ -786,7 +928,7 @@ private fun PublicChatRow(
                     Spacer(Modifier.width(4.dp))
                     Icon(Icons.Default.NotificationsOff, contentDescription = "Notifications off", tint = colors.textSecondary, modifier = Modifier.size(13.dp))
                 }
-                Spacer(Modifier.weight(1f))
+                }
                 if (timeText != null) Text(timeText, color = colors.textSecondary, fontSize = 12.sp)
             }
             Spacer(Modifier.height(4.dp))
@@ -823,8 +965,9 @@ private fun PublicChatRow(
 
 /** One line of a room's newest message: replies, voice notes and links read as what they are,
  *  never as their raw JSON or a tappable link (the same rules as the chat lists). */
-private fun publicRoomPreview(content: String): String {
-    com.kachat.app.util.MessageReply.parseOrNull(content)?.let { return "replied to \"${it.replyToPreview}\"" }
+private fun publicRoomPreview(raw: String): String {
+    // A reply reads as its own text (iOS `MessageReplyCodec.previewText`), then the rules below.
+    val content = com.kachat.app.util.MessageReply.parseOrNull(raw)?.text ?: raw
     com.kachat.app.util.InlineMediaSniff.mimeType(content)?.let { mime ->
         return when {
             mime.startsWith("audio/") -> "🎤 Audio message"
@@ -840,8 +983,8 @@ private fun publicRoomPreview(content: String): String {
 private fun publicRoomTime(ms: Long): String {
     val now = System.currentTimeMillis()
     return when {
-        com.kachat.app.util.ChatTimeFormat.isSameDay(ms, now) ->
-            java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault()).format(java.util.Date(ms))
+        // The clock the message time lines use (iOS SharedFormatting.chatTime, both places).
+        com.kachat.app.util.ChatTimeFormat.isSameDay(ms, now) -> com.kachat.app.util.ChatTimeFormat.formatMessageTime(ms)
         com.kachat.app.util.ChatTimeFormat.isSameDay(ms, now - 24L * 60 * 60 * 1000) -> "Yesterday"
         else -> java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()).format(java.util.Date(ms))
     }
@@ -922,11 +1065,20 @@ fun BroadcastChannelScreen(
     }
 
     val showFeeEstimate by settingsViewModel.showFeeEstimate.collectAsState()
-    val messageWindow by broadcastViewModel.getMessageWindow(channelName)
-        .collectAsState(initial = com.kachat.app.repository.BroadcastRepository.RoomWindow(emptyList(), false))
+    // Each flow built once per room: built inside composition, every recomposition (a sheet, a
+    // reaction landing) would restart its query.
+    val messageWindowFlow = remember(channelName) { broadcastViewModel.getMessageWindow(channelName) }
+    // Null until the store's first answer: drawn as nothing, so opening a room doesn't flash
+    // "No messages yet" before its messages arrive.
+    val loadedWindow by messageWindowFlow
+        .collectAsState(initial = null as com.kachat.app.repository.BroadcastRepository.RoomWindow?)
+    val messageWindow = loadedWindow ?: com.kachat.app.repository.BroadcastRepository.RoomWindow(emptyList(), false)
     val messages = messageWindow.messages
+    val loadingEarlierFlow = remember(channelName) { broadcastViewModel.isLoadingEarlier(channelName) }
+    val isLoadingEarlier by loadingEarlierFlow.collectAsState(initial = false)
     // Reactions aggregated per message txId — same shape as GroupChatScreen's groupReactionsByTxId.
-    val channelReactions by broadcastViewModel.getReactions(channelName).collectAsState(initial = emptyList())
+    val channelReactionsFlow = remember(channelName) { broadcastViewModel.getReactions(channelName) }
+    val channelReactions by channelReactionsFlow.collectAsState(initial = emptyList())
     // Translate from the long-press menu (iOS 03e5128) - read once here, not per row.
     val translationStates by broadcastViewModel.translations.collectAsState()
     val translationOriginals by broadcastViewModel.showingOriginal.collectAsState()
@@ -958,7 +1110,8 @@ fun BroadcastChannelScreen(
     val replyingTo by broadcastViewModel.replyingTo.collectAsState()
     // The newest edit per message (see MessageEdit), applied as each bubble is drawn - the
     // envelope itself is never a message row.
-    val editsByTxId by broadcastViewModel.getEdits(channelName).collectAsState(initial = emptyMap())
+    val editsFlow = remember(channelName) { broadcastViewModel.getEdits(channelName) }
+    val editsByTxId by editsFlow.collectAsState(initial = emptyMap())
     val editingMessage by broadcastViewModel.editingMessage.collectAsState()
     val kaspaExplorer by broadcastViewModel.kaspaExplorer.collectAsState()
     val networkFeeRate by broadcastViewModel.networkFeeRate.collectAsState()
@@ -968,6 +1121,26 @@ fun BroadcastChannelScreen(
     // The sender whose avatar was tapped. One sheet serves every row - the parent presents it
     // for whichever sender was tapped, rather than a menu attached to each avatar in the list.
     var senderSheetTarget by remember { mutableStateOf<SenderSheetTarget?>(null) }
+    // A report that couldn't go to a mail app.
+    var unsentReport by remember { mutableStateOf(false) }
+    val reportContext = LocalContext.current
+    /** Reporting ([ContentReport], iOS 9e22075): the message's id, room, sender and text. */
+    fun reportRoomMessage(messageId: String, senderAddress: String, text: String) {
+        val report = ContentReport(
+            buildString {
+                appendLine("I want to report this public chat message.")
+                appendLine()
+                appendLine("Room: #$channelName")
+                appendLine("Message: $messageId")
+                appendLine("Sender: $senderAddress")
+                appendLine("Text: ${text.take(500)}")
+                appendLine()
+                appendLine("What is wrong with it:")
+                appendLine()
+            }
+        )
+        unsentReport = !report.send(reportContext)
+    }
     /** Send Kaspa from a member's menu: the send screen with their address filled in. */
     var sendTarget by remember { mutableStateOf<String?>(null) }
     // Same trick as 1:1 chat's fee pill — recover the mass implied by whatever's currently being
@@ -986,11 +1159,16 @@ fun BroadcastChannelScreen(
     val coroutineScope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
+    // "Load earlier messages" is the list's first item while there is more: every message sits
+    // one further down the list than its index in [messages].
+    val listOffset = if (messageWindow.hasMore) 1 else 0
     val jumpToReply: (String) -> Unit = { targetId ->
         val index = messages.indexOfFirst { it.id == targetId }
-        if (index >= 0) {
+        if (index < 0) {
+            IosToasts.show("Original message not available.")
+        } else {
             coroutineScope.launch {
-                listState.animateScrollToItem(index)
+                listState.animateScrollToItem(index + listOffset)
                 highlightedMessageId = targetId
                 delay(1200)
                 if (highlightedMessageId == targetId) highlightedMessageId = null
@@ -1007,6 +1185,8 @@ fun BroadcastChannelScreen(
     var voiceViaNextcloud by remember { mutableStateOf(false) }
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) broadcastViewModel.startVoiceRecording(channelName, viaNextcloud = voiceViaNextcloud)
+        // iOS PublicChatAudioRecorder's failure, shown as the room's toast.
+        else IosToasts.show("Microphone access denied", durationMs = IosToastDuration.LONG)
     }
     val startVoiceRecordingIfPermitted = { viaNextcloud: Boolean ->
         voiceViaNextcloud = viaNextcloud
@@ -1033,12 +1213,15 @@ fun BroadcastChannelScreen(
     LaunchedEffect(channelName, messages.lastOrNull()?.id) {
         if (messages.isEmpty()) return@LaunchedEffect
         if (!hasPositionedAtLatest) {
-            listState.scrollToItem(messages.size - 1)
+            listState.scrollToItem(messages.size - 1 + listOffset)
             hasPositionedAtLatest = true
         } else {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            if (lastVisible >= messages.size - 3 && !listState.isScrollInProgress) {
-                listState.animateScrollToItem(messages.size - 1)
+            // Someone reading further up stays where they are; your own message still brings
+            // you down to it (iOS e5a9b11).
+            val mine = myAddress != null && messages.last().senderAddress == myAddress
+            if (mine || (lastVisible >= messages.size - 3 + listOffset && !listState.isScrollInProgress)) {
+                listState.animateScrollToItem(messages.size - 1 + listOffset)
             }
         }
     }
@@ -1052,7 +1235,19 @@ fun BroadcastChannelScreen(
             // The keyboard is still animating up and the list has not been resized yet, so
             // scrolling immediately lands short of the bottom.
             kotlinx.coroutines.delay(120)
-            listState.animateScrollToItem(messages.size - 1)
+            listState.animateScrollToItem(messages.size - 1 + listOffset)
+        }
+    }
+
+    // Older messages land above the one the reader was at the top of: put them back on it
+    // (iOS `keepInPlaceAfterOlderLoad`), rather than at the start of the new batch.
+    var keepInPlaceId by remember(channelName) { mutableStateOf<String?>(null) }
+    LaunchedEffect(messages.firstOrNull()?.id) {
+        val anchor = keepInPlaceId ?: return@LaunchedEffect
+        val index = messages.indexOfFirst { it.id == anchor }
+        if (index > 0) {
+            listState.scrollToItem(index + listOffset)
+            keepInPlaceId = null
         }
     }
 
@@ -1060,10 +1255,13 @@ fun BroadcastChannelScreen(
     // visible — a real, deliberate scroll away from the bottom to read history — not just a
     // transient viewport shrink. Tolerates a 1-item gap for the same reason as 1:1 chat's
     // equivalent check (see MessageBubble's screen in Screens.kt).
+    // The newest list size as state: a plain `messages` read here would stay the first (empty)
+    // window forever, and the button would never show.
+    val latestLastIndex by rememberUpdatedState(messages.lastIndex + listOffset)
     val showScrollToBottom by remember {
         derivedStateOf {
             val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-            lastVisibleIndex != null && lastVisibleIndex < messages.lastIndex - 1
+            lastVisibleIndex != null && lastVisibleIndex < latestLastIndex - 1
         }
     }
 
@@ -1233,14 +1431,8 @@ fun BroadcastChannelScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (sendState.status == BroadcastViewModel.SendBroadcastStatus.FAILED) {
-                    Text(
-                        sendState.message ?: "Failed to send",
-                        color = LocalAppColors.current.danger,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    )
-                }
+                // A failed send, edit or voice note says so in a toast (iOS showToast), not a
+                // line above the composer.
                 // Editing and replying are mutually exclusive - the banner says which one is in
                 // progress (iOS editBanner / replyBanner: caption lines on secondarySystemBackground
                 // in a 12-rounded box padded 12 by 8, inset a further 16 and 8 below the top).
@@ -1248,8 +1440,11 @@ fun BroadcastChannelScreen(
                     RoomComposerBanner(
                         icon = Icons.Default.Edit,
                         title = "Editing message",
-                        preview = editsByTxId[editing.id]?.text
-                            ?: com.kachat.app.util.MessageEdit.unwrappedText(editing.content),
+                        // iOS editBanner: previewText of the current text.
+                        preview = BroadcastViewModel.replyPreviewText(
+                            editsByTxId[editing.id]?.text
+                                ?: com.kachat.app.util.MessageEdit.unwrappedText(editing.content)
+                        ),
                         cancelDescription = "Cancel editing",
                         onCancel = {
                             broadcastViewModel.cancelEditing()
@@ -1261,9 +1456,8 @@ fun BroadcastChannelScreen(
                     RoomComposerBanner(
                         icon = Icons.AutoMirrored.Filled.Reply,
                         title = "Replying to ${addressDisplayName(reply.senderAddress, contactAliases[reply.senderAddress], senderKnsNames[reply.senderAddress])}",
-                        preview = VoiceMessage.parseOrNull(reply.content)?.let { "🎤 Audio message" }
-                            ?: MessageReply.parseOrNull(reply.content)?.text
-                            ?: reply.content,
+                        // The quote the reply will carry (iOS replyBanner: MessageReplyCodec.previewText).
+                        preview = BroadcastViewModel.replyPreviewText(reply.content),
                         cancelDescription = stringResource(R.string.cancel_reply),
                         onCancel = { broadcastViewModel.cancelReply() },
                     )
@@ -1303,7 +1497,8 @@ fun BroadcastChannelScreen(
                             )
                             Icon(Icons.Default.Mic, contentDescription = null, tint = LocalAppColors.current.danger, modifier = Modifier.size(14.dp))
                             Text(
-                                text = "Recording... ${formatRecordingElapsed(voiceRecordingState.elapsedMs)}",
+                                // iOS recordingBar: whole seconds, "Recording... 3s".
+                                text = "Recording... ${voiceRecordingState.elapsedMs / 1000}s",
                                 color = LocalAppColors.current.textSecondary,
                                 fontSize = 17.sp,
                                 maxLines = 1,
@@ -1430,7 +1625,9 @@ fun BroadcastChannelScreen(
             modifier = Modifier
                 .fillMaxSize()
         ) {
-        if (messages.isEmpty()) {
+        if (loadedWindow == null) {
+            // Not read yet: nothing, rather than a flash of the empty state.
+        } else if (messages.isEmpty()) {
             // iOS emptyState: the radio-waves glyph at 48 in secondary, "No messages yet" in
             // headline and the invitation in subheadline secondary, 16 apart, centred.
             Column(
@@ -1473,6 +1670,7 @@ fun BroadcastChannelScreen(
                     )
                 }
             }
+            if (unsentReport) ContentReportFallback(onDismiss = { unsentReport = false })
             senderSheetTarget?.let { target ->
                 val address = target.address
                 val sheetClipboard = LocalClipboardManager.current
@@ -1502,6 +1700,11 @@ fun BroadcastChannelScreen(
                     // Per-room since 4.0: hides this sender in THIS room only.
                     onHide = { broadcastViewModel.hideSender(address, channelName) },
                     hideSubtitle = "Stop seeing their messages in this room. Undo it in Room Info.",
+                    onReport = { reportRoomMessage(target.messageId, target.address, target.messageText) },
+                    onBlock = {
+                        broadcastViewModel.blockSender(address)
+                        IosToasts.show("Blocked. Undo it in the Feed's menu, under Blocked.", durationMs = IosToastDuration.LONG)
+                    },
                 )
             }
             LazyColumn(
@@ -1520,21 +1723,38 @@ fun BroadcastChannelScreen(
                 if (messageWindow.hasMore) {
                     item(key = "load_earlier") {
                         // iOS: a plain button - caption semibold in the accent colour, the full
-                        // width, 8 above and below.
-                        Text(
-                            stringResource(R.string.load_earlier_messages),
-                            color = KaspaTeal,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center,
+                        // width, 8 above and below; while it loads, a small spinner and
+                        // "Loading…", and a tap does nothing.
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
-                                ) { broadcastViewModel.loadEarlier(channelName) }
+                                ) {
+                                    if (!isLoadingEarlier) {
+                                        keepInPlaceId = messages.firstOrNull()?.id
+                                        broadcastViewModel.loadEarlier(channelName)
+                                    }
+                                }
                                 .padding(vertical = 8.dp),
-                        )
+                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (isLoadingEarlier) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = LocalAppColors.current.textSecondary,
+                                )
+                            }
+                            Text(
+                                if (isLoadingEarlier) "Loading…" else stringResource(R.string.load_earlier_messages),
+                                color = KaspaTeal,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
                     }
                 }
                 itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
@@ -1614,7 +1834,6 @@ fun BroadcastChannelScreen(
                     var showMenu by remember { mutableStateOf(false) }
                     // Who reacted to this message, when the reader asks from the long-press menu.
                     var showReactions by remember { mutableStateOf(false) }
-                                        var menuAnchor by remember { mutableStateOf(Offset.Zero) }
                     val clipboardManager = LocalClipboardManager.current
                     val menuContext = LocalContext.current
 
@@ -1632,7 +1851,7 @@ fun BroadcastChannelScreen(
                             size = 32.dp,
                             address = message.senderAddress,
                             modifier = Modifier.clickable {
-                                senderSheetTarget = SenderSheetTarget(message.senderAddress, isOwnMessage = isMine)
+                                senderSheetTarget = SenderSheetTarget(message.senderAddress, isOwnMessage = isMine, messageId = message.id, messageText = displayContent)
                             }
                         )
                     }
@@ -1663,11 +1882,7 @@ fun BroadcastChannelScreen(
                         Column(
                             horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
                             verticalArrangement = Arrangement.spacedBy(3.dp),
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .onGloballyPositioned { coords ->
-                                    menuAnchor = coords.positionInWindow() + Offset(0f, coords.size.height.toFloat())
-                                }
+                            modifier = Modifier.weight(1f, fill = false)
                         ) {
                             // The double-tap bar sits directly above the message, as iOS's does.
                             InlineQuickReactionBar(
@@ -1800,29 +2015,13 @@ fun BroadcastChannelScreen(
                                         fallbackText = displayContent,
                                         onDoubleTap = { QuickReactionBarState.activeId = message.id },
                                         isOutgoing = isMine,
-                                        autoFetch = false
+                                        // Only KaChat's own site loads by itself (iOS f81c467).
+                                        autoFetch = KaChatSiteLink.isSiteLink(TextLinkify.findUrls(displayContent).first().uri)
                                     )
                                 } else {
-                                    var textLayoutResult by remember(shownText) { mutableStateOf<TextLayoutResult?>(null) }
-                                    // Tapping a link here asks first rather than opening straight
-                                    // away: a room's senders are anonymous, so opening one of
-                                    // their links should be a decision, not a stray tap. iOS has
-                                    // always required a deliberate gesture for the same reason.
-                                    var tappedLinkUrl by remember { mutableStateOf<String?>(null) }
-                                    tappedLinkUrl?.let { url ->
-                                        LinkActionsSheet(
-                                            url = url,
-                                            onDismiss = { tappedLinkUrl = null },
-                                            onOpen = {
-                                                val internal = KaChatLink.parse(url)
-                                                if (internal != null) openKaChatLink(internal)
-                                                else uriHandler.openUri(url)
-                                            },
-                                            onCopy = {
-                                                clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(url))
-                                            },
-                                        )
-                                    }
+                                    // A plain tap on a link here does nothing: a room's senders are
+                                    // anonymous, so a link opens only from the long-press menu's
+                                    // Open Link (iOS `tapOpensLink: false`, PublicChatChannelView).
                                     // Sent bubbles are teal with black text/links for contrast —
                                     // matches 1:1/group chats' treatment of the same case.
                                     val linkColor = if (isMine) LocalAppColors.current.onOutgoingBubble else KaspaTeal
@@ -1860,17 +2059,8 @@ fun BroadcastChannelScreen(
                                                     detectTapGestures(
                                                         onLongPress = { showMenu = true },
                                                         onDoubleTap = { QuickReactionBarState.activeId = message.id },
-                                                        onTap = { offset ->
-                                                            val layout = textLayoutResult ?: return@detectTapGestures
-                                                            val charOffset = layout.getOffsetForPosition(offset)
-                                                            annotatedBody.getStringAnnotations("URL", charOffset, charOffset)
-                                                                .firstOrNull()?.let { annotation ->
-                                                                    tappedLinkUrl = annotation.item
-                                                                }
-                                                        }
                                                     )
                                                 },
-                                            onTextLayout = { textLayoutResult = it }
                                         )
                                     }
                                 }
@@ -1906,6 +2096,44 @@ fun BroadcastChannelScreen(
                                                 showMenu = false
                                             }
                                         }
+                                        // The message's first web link, opened or copied from here
+                                        // only - a plain tap on it does nothing (iOS bubbleActions,
+                                        // `firstLink`).
+                                        val firstLink = remember(displayContent, voiceContent) {
+                                            if (voiceContent != null) null
+                                            else TextLinkify.findUrls(displayContent).firstOrNull {
+                                                it.uri.startsWith("http://", ignoreCase = true) ||
+                                                    it.uri.startsWith("https://", ignoreCase = true)
+                                            }?.uri
+                                        }
+                                        if (firstLink != null) {
+                                            ActionSheetRow(
+                                                icon = Icons.Default.Language,
+                                                title = stringResource(R.string.open_link),
+                                                subtitle = "Opens it in your browser.",
+                                            ) {
+                                                showMenu = false
+                                                val internal = KaChatLink.parse(firstLink)
+                                                if (internal != null) openKaChatLink(internal)
+                                                else uriHandler.openUri(firstLink)
+                                            }
+                                            // Not for a Nextcloud share: the link is the address of
+                                            // someone's file, which the preview card won't hand out
+                                            // either (iOS, same classifier).
+                                            if (com.kachat.app.services.LinkPreviewService.nextcloudShareEndpoints(firstLink) == null) {
+                                                ActionSheetRow(
+                                                    icon = Icons.Default.Link,
+                                                    title = stringResource(R.string.copy_link),
+                                                    subtitle = "Copies the address to your clipboard.",
+                                                ) {
+                                                    clipboardManager.setText(AnnotatedString(firstLink))
+                                                    showMenu = false
+                                                }
+                                            }
+                                        }
+                                        // Not for a voice note: its text is the encoded audio (iOS
+                                        // offers it only with no voice payload).
+                                        if (voiceContent == null) {
                                         ActionSheetRow(
                                             icon = Icons.Default.ContentCopy,
                                             title = stringResource(R.string.copy_message),
@@ -1915,6 +2143,17 @@ fun BroadcastChannelScreen(
                                             showMenu = false
                                             // iOS PublicChatChannelView: "Message copied." for 3 s.
                                             IosToasts.show("Message copied.", durationMs = IosToastDuration.LONG)
+                                        }
+                                        }
+                                        if (!isMine) {
+                                            ActionSheetRow(
+                                                icon = Icons.Default.Flag,
+                                                title = "Report",
+                                                subtitle = "Report abusive or objectionable content. Opens an email with this message attached.",
+                                            ) {
+                                                showMenu = false
+                                                reportRoomMessage(message.id, message.senderAddress, displayContent)
+                                            }
                                         }
                                         when (translationState) {
                                             is com.kachat.app.services.PostTranslationService.TranslationState.Translated ->
@@ -1959,6 +2198,17 @@ fun BroadcastChannelScreen(
                                             uriHandler.openUri(kaspaExplorer.txUrl(message.id))
                                             showMenu = false
                                         }
+                                        // Retry, then Reactions last, as iOS bubbleActions orders them.
+                                        if (isMine && message.deliveryStatus == "failed") {
+                                            ActionSheetRow(
+                                                icon = Icons.Default.Refresh,
+                                                title = stringResource(R.string.retry_send),
+                                                subtitle = "Sends this message again.",
+                                            ) {
+                                                broadcastViewModel.retryBroadcast(message)
+                                                showMenu = false
+                                            }
+                                        }
                                         // The pill on the bubble shows WHICH emoji; it has no
                                         // room to say how many or from whom. This does.
                                         if (messageReactions.isNotEmpty()) {
@@ -1969,16 +2219,6 @@ fun BroadcastChannelScreen(
                                             ) {
                                                 showMenu = false
                                                 showReactions = true
-                                            }
-                                        }
-                                        if (isMine && message.deliveryStatus == "failed") {
-                                            ActionSheetRow(
-                                                icon = Icons.Default.Refresh,
-                                                title = stringResource(R.string.retry_send),
-                                                subtitle = "Sends this message again.",
-                                            ) {
-                                                broadcastViewModel.retryBroadcast(message)
-                                                showMenu = false
                                             }
                                         }
                                     }
@@ -2004,8 +2244,7 @@ fun BroadcastChannelScreen(
                                 // `Box(Modifier.fillMaxWidth())`, which resolved the alignment
                                 // against the full row width instead: the pill flew to the screen
                                 // edge (up to ~280dp from a short bubble), and stretching the
-                                // Column to full width also moved the `menuAnchor` captured on it,
-                                // so the long-press menu and the double-tap QuickReactionBar jumped
+                                // Column to full width also moved the double-tap QuickReactionBar
                                 // to the left edge on any message that already had a reaction.
                                 if (messageReactions.isNotEmpty()) {
                                     ReactionPill(
@@ -2067,7 +2306,7 @@ fun BroadcastChannelScreen(
                             separateLinkPreviewUrl?.takeIf { internalLinkMatch == null }?.let { url ->
                                 // Tap-to-load for all broadcast previews - see the entire-link
                                 // branch above for why.
-                                LinkPreviewCard(url = url, txId = message.id, kaspaExplorer = kaspaExplorer, onDoubleTap = { QuickReactionBarState.activeId = message.id }, isOutgoing = isMine, autoFetch = false)
+                                LinkPreviewCard(url = url, txId = message.id, kaspaExplorer = kaspaExplorer, onDoubleTap = { QuickReactionBarState.activeId = message.id }, isOutgoing = isMine, autoFetch = KaChatSiteLink.isSiteLink(url))
                             }
 
 
@@ -2130,7 +2369,7 @@ fun BroadcastChannelScreen(
                     .iosGlass(cornerRadius = 18.dp)
                     .clickable {
                         haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        coroutineScope.launch { listState.animateScrollToItem(messages.size - 1) }
+                        coroutineScope.launch { listState.animateScrollToItem(messages.size - 1 + listOffset) }
                     }
                     .semantics { contentDescription = scrollToLatestLabel },
             ) {

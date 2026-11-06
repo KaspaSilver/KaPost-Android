@@ -45,6 +45,9 @@ enum class WalletSourceFamily {
     }
 }
 
+/** An address the import's passphrase step found on the identity chain (iOS 9653c04). */
+data class FoundChattingAddress(val index: Int, val address: String, val balanceSompi: Long)
+
 /**
  * One row of the import source-wallet chooser: a wallet the user might be coming from, and the
  * derivation [family] its seeds belong to. Order mirrors KasWare's restore list, with KaChat

@@ -415,7 +415,16 @@ class NameServicesClient @Inject constructor(
         val registry = kachatRegistry.get()
         registry.refreshIfStale()
         return try {
-            val owner = KachatNames.resolvedOwner(registry.lookup(canonical), registry.graceMs)
+            val found = registry.lookup(canonical)
+            val owner = KachatNames.resolvedOwner(found, registry.graceMs)
+            if (owner != null) {
+                // A payment goes where this points, so the name resolves only from the chain's
+                // record: the indexer's answer must be for the name asked, and the registry on
+                // chain must hold the record it describes (iOS e5a9b11).
+                val n = (found as com.kachat.app.services.kachatnames.Lookup.Registered).info
+                if (n.name != canonical) throw KachatNames.Failure("the indexer answered for another name")
+                registry.confirmOnChain(n)
+            }
             NameResolution(NameServiceTLD.KACHAT, display, owner?.let { KachatNamesRegistry.address(it) }, failed = false)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e

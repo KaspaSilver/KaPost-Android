@@ -94,7 +94,7 @@ fun CacheSettingsScreen(
 
     Scaffold(
         containerColor = colors.background,
-        topBar = { SettingsSubpageBar(title = "Cache", onBack = onBack) }
+        topBar = { SettingsSubpageBar(title = stringResource(R.string.storage), onBack = onBack) }
     ) { padding ->
         Column(
             modifier = Modifier

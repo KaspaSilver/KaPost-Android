@@ -43,6 +43,15 @@ class KaPostsUnseenStore @Inject constructor(
 
     private fun key(wallet: String) = "unseen_$wallet"
 
+    /** Delete Account: one wallet's count, from this device (iOS 9e22075). */
+    fun removeAllData(walletAddress: String) {
+        prefs.edit().remove(key(walletAddress)).apply()
+        if (loadedWallet == walletAddress) {
+            loadedWallet = null
+            _unseenCount.value = 0
+        }
+    }
+
     /** Loads the active wallet's count; call before reading and on account switches. */
     @Synchronized
     fun reloadIfNeeded() {

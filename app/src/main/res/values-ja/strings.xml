@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">辞退 - 名前の所有者が変わったため、あなたに返却中</string>
     <string name="kn_offer_declined_earlier_owner">辞退 - 以前の所有者へのオファー</string>
     <string name="kn_err_offer_declined">このオファーは名前の所有者が変わる前に出されたため、辞退扱いとなり購入者に返却されます。</string>
+    <string name="kn_err_offer_amount_changed">このオファーの金額は、表示された金額と異なります。何も送信されていません。</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">この名前はすでに最長の期間まで支払い済みです。更新は %1$s から可能です。</string>
     <string name="kn_err_offer_own_name">自分の名前にオファーすることはできません。</string>

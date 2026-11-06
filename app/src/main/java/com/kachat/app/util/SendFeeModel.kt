@@ -81,9 +81,48 @@ object SendFeeModel {
     }
 
     /** What an automatic-selection send of a given amount spends, and what it pays. Passing
-     *  [utxos] as coin control and [extraFeeSompi] as the extra reproduces exactly this fee. */
-    data class Preview(val utxos: List<UtxoEntry>, val baseFeeSompi: Long, val extraFeeSompi: Long) {
+     *  [utxos] as coin control and [extraFeeSompi] as the extra reproduces exactly this fee.
+     *  [foldedChangeSompi] is change too small to keep, which goes to the fee on top of that, so it
+     *  counts in what the Review shows (iOS e5a9b11 `SendFeeEstimate`). */
+    data class Preview(
+        val utxos: List<UtxoEntry>,
+        val baseFeeSompi: Long,
+        val extraFeeSompi: Long,
+        val foldedChangeSompi: Long = 0L,
+    ) {
         val totalFeeSompi: Long get() = baseFeeSompi + extraFeeSompi
+    }
+
+    /**
+     * Change too small to keep on a coin-control send of exactly [utxos], with [extraFeeSompi] on
+     * top: it goes to the fee and the Review counts it, as [Preview.foldedChangeSompi] does for
+     * automatic selection. 0 when the coins' amounts are not real values ([UtxoMath]); the send
+     * refuses those itself.
+     */
+    fun manualFoldedChange(
+        utxos: List<UtxoEntry>,
+        amountSompi: Long,
+        feeRateSompiPerGram: Long,
+        extraFeeSompi: Long,
+        recipientScriptLen: Int = STANDARD_SCRIPT_LEN,
+        changeScriptLen: Int = STANDARD_SCRIPT_LEN,
+        /** See [baseFee]. */
+        signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
+        /** See [previewAutomaticSelection]. */
+        payloadSize: Int = 0,
+    ): Long = try {
+        KaspaUtxoSelector.selectManualUtxosAndCalculateFee(
+            utxos = utxos,
+            amountSompi = amountSompi,
+            feeRateSompiPerGram = feeRateSompiPerGram,
+            recipientScriptLen = recipientScriptLen,
+            changeScriptLen = changeScriptLen,
+            payloadBytes = payloadStandIn(payloadSize),
+            extraFeeSompi = extraFeeSompi,
+            signatureScriptSize = signatureScriptSize,
+        ).foldedChangeSompi
+    } catch (e: IllegalStateException) {
+        0L
     }
 
     /**
@@ -108,8 +147,13 @@ object SendFeeModel {
         changeScriptLen: Int = STANDARD_SCRIPT_LEN,
         /** See [baseFee]. */
         signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
+        /** The payload the send carries, in bytes: a chat payment's `kchat:1:pay:` one
+         *  ([MessageProtocol.estimatedPaymentPayloadSize], iOS `estimatePaymentFee(note:)`); 0 for
+         *  a plain transfer. */
+        payloadSize: Int = 0,
     ): Preview? {
         if (amountSompi <= 0 || utxos.isEmpty()) return null
+        val payload = payloadStandIn(payloadSize)
         var extra = customExtraFeeSompi?.coerceAtLeast(0L) ?: 0L
         var preview: Preview? = null
         repeat(MAX_PREVIEW_PASSES) {
@@ -118,7 +162,7 @@ object SendFeeModel {
                     utxos = utxos,
                     amountSompi = amountSompi,
                     feeRateSompiPerGram = feeRateSompiPerGram,
-                    payloadBytes = null,
+                    payloadBytes = payload,
                     recipientScriptLen = recipientScriptLen,
                     changeScriptLen = changeScriptLen,
                     extraFeeSompi = extra,
@@ -129,7 +173,7 @@ object SendFeeModel {
             }
             if (selection.totalSelected < selection.requiredAmount) return null
             val base = selection.estimatedFee - extra
-            val settled = Preview(selection.selectedUtxos, base, extra)
+            val settled = Preview(selection.selectedUtxos, base, extra, selection.foldedChangeSompi)
             preview = settled
             val next = extraFee(base, feeMultiplier, customExtraFeeSompi)
             if (next == extra) return settled
@@ -137,4 +181,7 @@ object SendFeeModel {
         }
         return preview
     }
+
+    /** A payload of [size] bytes for the selectors, which only price its length. */
+    private fun payloadStandIn(size: Int): ByteArray? = if (size > 0) ByteArray(size) else null
 }

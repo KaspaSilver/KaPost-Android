@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">נדחתה - השם עבר בעלות, חוזרת אליכם</string>
     <string name="kn_offer_declined_earlier_owner">נדחתה - הוגשה לבעלים קודמים</string>
     <string name="kn_err_offer_declined">ההצעה הוגשה לפני שהשם עבר בעלות, ולכן נדחתה והיא חוזרת לקונה.</string>
+    <string name="kn_err_offer_amount_changed">ההצעה הזו מכילה סכום שונה ממה שהוצג. דבר לא נשלח.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">השם הזה כבר משולם עד התקופה הארוכה ביותר. החידוש נפתח ב-%1$s.</string>
     <string name="kn_err_offer_own_name">אי אפשר להציע הצעה על השם שלך.</string>

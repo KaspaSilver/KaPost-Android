@@ -37,7 +37,6 @@ class DiagnosticsExportService @Inject constructor(
     private val settingsRepository: AppSettingsRepository,
     private val nodePoolManager: NodePoolManager,
     private val pushState: PushState,
-    private val nextcloudService: NextcloudService
 ) {
     private val gson = GsonBuilder().setPrettyPrinting().create()
 
@@ -134,12 +133,26 @@ class DiagnosticsExportService @Inject constructor(
             // Same no-active-account tolerance as above - "none" rather than a thrown export.
             "activeAddress" to (settingsRepository.activeAddress.first()
                 ?: runCatching { walletManager.getAddress() }.getOrDefault("none")),
+            // KaPost's own servers, as iOS DiagnosticsArchive's settings carry them
+            // (kaPostIndexerURL, publicChatIndexerURL, pushIndexerURL, translationServiceURL).
+            // No Nextcloud or Talk: KaPost has neither. Addresses only - no keys or tokens.
+            "kapostIndexerUrl" to settingsRepository.kapostIndexerUrl.first(),
+            "publicChatIndexerUrl" to settingsRepository.broadcastIndexerUrl.first(),
+            "pushIndexerUrl" to settingsRepository.pushIndexerUrl.first(),
+            "translationServiceUrl" to settingsRepository.translationServiceUrl.first(),
+            "trustedNodeAddress" to settingsRepository.trustedNodeAddress.first(),
+            "kaspaExplorer" to settingsRepository.kaspaExplorer.first().name,
+            "verboseApiLogging" to settingsRepository.verboseApiLogging.first().toString(),
             "notificationsEnabled" to settingsRepository.notificationsEnabled.first().toString(),
-            // Calls: whether this side can host one, and why not when it cannot.
-            "nextcloudConnected" to (nextcloudService.account.value != null).toString(),
-            "nextcloudServer" to (nextcloudService.account.value?.server ?: "none"),
-            "talkCallsAvailable" to nextcloudService.talkCallsAvailable.value.toString(),
-            "talkAvailabilityReason" to nextcloudService.talkAvailabilityReason.value,
+            "notificationSoundEnabled" to settingsRepository.notificationSoundEnabled.first().toString(),
+            "notificationVibrationEnabled" to settingsRepository.notificationVibrationEnabled.first().toString(),
+            "kaPostsNotifyLikes" to settingsRepository.kaPostsNotifyLikes.first().toString(),
+            "kaPostsNotifyReposts" to settingsRepository.kaPostsNotifyReposts.first().toString(),
+            "kaPostsNotifyFollows" to settingsRepository.kaPostsNotifyFollows.first().toString(),
+            "kaPostsNotifyDislikes" to settingsRepository.kaPostsNotifyDislikes.first().toString(),
+            "kaPostsNotifyComments" to settingsRepository.kaPostsNotifyComments.first().toString(),
+            "kaPostsNotifyMentions" to settingsRepository.kaPostsNotifyMentions.first().toString(),
+            "showFeeEstimate" to settingsRepository.showFeeEstimate.first().toString(),
             "backupRetention" to settingsRepository.backupRetention.first().name,
             "broadcastPopularEnabled" to settingsRepository.broadcastPopularEnabled.first().toString(),
             "broadcastShowKnsAvatars" to settingsRepository.broadcastShowKnsAvatars.first().toString(),

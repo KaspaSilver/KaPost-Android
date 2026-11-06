@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">Refusée – le nom a changé de propriétaire, elle vous revient</string>
     <string name="kn_offer_declined_earlier_owner">Refusée – faite à un ancien propriétaire</string>
     <string name="kn_err_offer_declined">Cette offre a été faite avant que le nom change de propriétaire : elle est refusée et retourne à l’acheteur.</string>
+    <string name="kn_err_offer_amount_changed">Cette offre porte sur un montant différent de celui affiché. Rien n\'a été envoyé.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">Ce nom est déjà payé jusqu’à sa période la plus longue. Le renouvellement ouvre le %1$s.</string>
     <string name="kn_err_offer_own_name">Vous ne pouvez pas faire d’offre sur votre propre nom.</string>

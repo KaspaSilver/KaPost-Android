@@ -459,6 +459,19 @@ class KachatNamesRegistry @Inject constructor(
 
     // Reads
 
+    /**
+     * An indexer's answer is only a claim. Before a payment trusts it, the chain has to hold the
+     * name record it describes: the script commits to the name and its owner, and carries the
+     * registry's covenant id, so an indexer can't point a name at another address. Throws if it
+     * doesn't. A record read from the chain itself needs no second look (iOS e5a9b11).
+     */
+    suspend fun confirmOnChain(n: NameInfo) {
+        if (_source.value !is Source.Indexer) return
+        val fields = n.fields ?: throw KachatNames.Failure("the indexer's record can't be checked")
+        val m = service.loadManifest()
+        service.liveRegistryUtxo(m.name.script(fields.encoded), n.outpoint)
+    }
+
     suspend fun lookup(raw: String): Lookup {
         prepare()
         val name = Codec.normalize(raw)
@@ -1011,6 +1024,59 @@ class KachatNamesRegistry @Inject constructor(
         }
     }
 
+    /**
+     * Addresses [cachedIdentity] wants looked up, collected for one batched request. It runs from
+     * composables, once per author drawn, so a screen of posts was a request per author
+     * (iOS e5a9b11). Both are guarded by [identityBatchLock]: composables call in from any thread.
+     */
+    private val identityBatchQueue = LinkedHashSet<String>()
+    private var identityBatchJob: kotlinx.coroutines.Job? = null
+    private val identityBatchLock = Any()
+
+    private fun scheduleIdentityBatch() {
+        synchronized(identityBatchLock) {
+            if (identityBatchJob != null) return
+            identityBatchJob = scope.launch {
+                // the rest of the screen asks in the same moment
+                delay(150)
+                val keys = synchronized(identityBatchLock) {
+                    val queued = identityBatchQueue.toList()
+                    identityBatchQueue.clear()
+                    identityBatchJob = null
+                    queued
+                }
+                val batch = identitiesBatch(keys)
+                val answered = HashMap<String, Identity>()
+                for (key in keys) {
+                    val found: Identity? = if (batch != null) {
+                        // left out of the answer: no names and no profile
+                        batch[key] ?: Identity(key, null, emptyList(), null)
+                    } else {
+                        try {
+                            identity(key)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // the registry or profiles are not there (being upgraded, offline, a
+                            // 503): this address is asked again in a minute
+                            null
+                        }
+                    }
+                    identityLookups.remove(key)
+                    if (found == null) {
+                        identityMisses[key] = System.currentTimeMillis()
+                        continue
+                    }
+                    identityMisses.remove(key)
+                    // a lookup of its own shows as it lands; a batch's answers wait for the one
+                    // cache update below, so the lists redraw once
+                    if (batch != null) answered[key] = found else storeFetchedIdentities(mapOf(key to found))
+                }
+                storeFetchedIdentities(answered)
+            }
+        }
+    }
+
     fun cachedIdentity(address: String): Identity? {
         // Every network since iOS d36fc42: profiles need no registry. Mainnet has no names yet,
         // so there an address keeps its short form and only its profile (avatar...) shows.
@@ -1032,21 +1098,10 @@ class KachatNamesRegistry @Inject constructor(
         val missedRecently = identityMisses[key]?.let { now - it < 60_000L } == true
         if (stale && !missedRecently && identityLookups.add(key)) {
             identityAsked[key] = rev to now
-            scope.launch {
-                try {
-                    val found = identity(key)
-                    identityMisses.remove(key)
-                    storeFetchedIdentities(mapOf(key to found))
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // the registry or profiles are not there (being upgraded, offline, a 503):
-                    // this address is asked again in a minute
-                    identityMisses[key] = System.currentTimeMillis()
-                } finally {
-                    identityLookups.remove(key)
-                }
-            }
+            // one batched request for everyone drawn in the next moment, not one per address;
+            // per-address lookups only if the batch call fails (iOS e5a9b11)
+            synchronized(identityBatchLock) { identityBatchQueue.add(key) }
+            scheduleIdentityBatch()
         }
         val own = ownProfile(key)?.profile ?: return known
         return (known ?: Identity(key, null, emptyList(), null)).copy(profile = own)

@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">Reddedildi - adın sahibi değişti, sana dönüyor</string>
     <string name="kn_offer_declined_earlier_owner">Reddedildi - önceki sahibine yapılmış</string>
     <string name="kn_err_offer_declined">Bu teklif ad el değiştirmeden önce yapıldığı için reddedildi ve alıcıya geri dönüyor.</string>
+    <string name="kn_err_offer_amount_changed">Bu teklif gösterilenden farklı bir tutar içeriyor. Hiçbir şey gönderilmedi.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">Bu ad zaten en uzun dönemine kadar ödenmiş. Yenileme %1$s tarihinde açılır.</string>
     <string name="kn_err_offer_own_name">Kendi adınıza teklif veremezsiniz.</string>

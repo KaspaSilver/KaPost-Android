@@ -386,6 +386,9 @@ class PushRegistrationManager @Inject constructor(
 
     private suspend fun register(tokenOverride: String?) = mutex.withLock {
         if (!walletManager.hasWallet()) return@withLock
+        // Signed out: nothing registers until someone signs in (iOS sets every service to nil
+        // while logged out). Without this a relaunch after Log Out registered push again.
+        if (walletManager.isLoggedOut) return@withLock
         if (!settings.notificationsEnabled.first()) return@withLock
         if (settings.pushIndexerUrl.first().isBlank()) {
             withContext(Dispatchers.IO) { leavePushServiceOfOtherNetworkIfNeeded() }

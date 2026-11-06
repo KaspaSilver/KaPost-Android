@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">مرفوض - تغيّر مالك الاسم، يعود إليك</string>
     <string name="kn_offer_declined_earlier_owner">مرفوض - قُدّم لمالك سابق</string>
     <string name="kn_err_offer_declined">قُدّم هذا العرض قبل أن يتغير مالك الاسم، لذا رُفض وهو يعود إلى المشتري.</string>
+    <string name="kn_err_offer_amount_changed">يحتوي هذا العرض على مبلغ مختلف عما عُرض. لم يُرسل شيء.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">هذا الاسم مدفوع بالفعل حتى أطول فترة. يبدأ التجديد في %1$s.</string>
     <string name="kn_err_offer_own_name">لا يمكنك تقديم عرض على اسمك.</string>

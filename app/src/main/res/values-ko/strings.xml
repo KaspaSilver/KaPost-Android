@@ -892,6 +892,7 @@
     <string name="kn_offer_declined_returning_to_you">거절됨 - 이름 소유자가 바뀌어 나에게 반환 중</string>
     <string name="kn_offer_declined_earlier_owner">거절됨 - 이전 소유자에게 한 제안</string>
     <string name="kn_err_offer_declined">이 제안은 이름의 소유자가 바뀌기 전에 이루어져 거절되었으며 구매자에게 반환됩니다.</string>
+    <string name="kn_err_offer_amount_changed">이 제안의 금액이 표시된 금액과 다릅니다. 아무것도 전송되지 않았습니다.</string>
     <!-- .kachat registry v3: prices from the price record, the period clock, declining offers (iOS 49c0baa) -->
     <string name="kn_err_period_full_longest">이 이름은 이미 최대 기간까지 결제되어 있어요. 갱신은 %1$s부터 가능해요.</string>
     <string name="kn_err_offer_own_name">내 이름에는 제안할 수 없어요.</string>

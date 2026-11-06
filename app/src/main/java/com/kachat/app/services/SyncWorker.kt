@@ -22,15 +22,29 @@ import dagger.assisted.AssistedInject
  * PushRegistrationManager) is the only background delivery path for those — a background poller
  * would mask push failures. Broadcast messages additionally have no queryable per-cursor history
  * to catch up on, only a live block subscription, which doesn't fit a periodic job anyway.
+ *
+ * A scheduled KaPost only this phone holds is the one KaPosts exception: it goes out here if its
+ * time has come (iOS BackgroundTaskManager.swift `handleBackgroundFetch`) - it is the author's own
+ * post, not a fetch. KaPost cancels this worker at launch (KaChatApplication), so the post's own
+ * one-time job ([KaPostsScheduledReminderWorker]) is what actually sends it in the background.
  */
 @HiltWorker
 class SyncWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
-    private val groupRepository: GroupRepository
+    private val groupRepository: GroupRepository,
+    private val kaPostsScheduledStore: KaPostsScheduledStore,
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
+        // Before the sync, and whatever it does; signed out, sendDueLocally does nothing.
+        try {
+            kaPostsScheduledStore.sendDueLocally()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("SyncWorker", "Scheduled posts: background send failed", e)
+        }
         return try {
             groupRepository.syncGroups()
             Result.success()

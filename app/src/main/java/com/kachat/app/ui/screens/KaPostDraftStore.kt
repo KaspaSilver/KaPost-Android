@@ -93,6 +93,11 @@ object KaPostDraftStore {
         persist(context, walletAddress, load(context, walletAddress).filter { it.id != id })
     }
 
+    /** Delete Account: one wallet's drafts, from this device (iOS 9e22075). */
+    fun deleteAll(context: Context, walletAddress: String) {
+        persist(context, walletAddress, emptyList())
+    }
+
     private fun persist(context: Context, walletAddress: String, drafts: List<KaPostSavedDraft>) {
         val array = JSONArray()
         drafts.forEach { d ->

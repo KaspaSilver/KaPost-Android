@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nothing leaves this phone in a cloud backup or a device-to-device transfer (Android 12+, where
+     allowBackup="false" no longer stops the transfer). The keys are sealed by this phone's Keystore,
+     so copied prefs could not be opened on the new phone anyway, and would only make it fail to
+     start. The words are the way to move an account. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>
