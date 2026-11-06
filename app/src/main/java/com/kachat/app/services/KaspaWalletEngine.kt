@@ -418,10 +418,12 @@ class KaspaWalletEngine @Inject constructor(
                                     throw IllegalStateException(
                                         "No Kaspa node is reachable on this network. Node connections appear blocked, so the message could not be sent.",
                                         e2
-                                    ).also { it.addSuppressed(e) }
+                                    ).also { if (e2 !is NodeRejectedTransactionException) it.addSuppressed(e) }
                                 }
-                                // The first try's lost answer still counts (iOS e5a9b11).
-                                e2.addSuppressed(e)
+                                // The first try's lost answer still counts (iOS e5a9b11), unless
+                                // the node this retry reached rejected the transaction: that is a
+                                // verdict on it, so not "may have gone through" (iOS d816404).
+                                if (e2 !is NodeRejectedTransactionException) e2.addSuppressed(e)
                                 throw e2
                             }
                         }
@@ -463,6 +465,14 @@ class KaspaWalletEngine @Inject constructor(
             return Result.success(SubmittedSend(transactionId, selectionResult.selectedUtxos, changeUtxo))
             }
 
+            // A Wallet send whose outcome is unknown may have landed: its coins stay out of the
+            // next send, post and room message, with no change offered, since a post chained on a
+            // transaction that never landed would never land either (iOS d816404 `recordPlainSend`).
+            fun keptOutOfNextSend(unknown: SendOutcomeUnknownException): SendOutcomeUnknownException {
+                if (withdrawalCoinsOnly) recordSpend(fromAddress, changeAddress, attemptInputs, null)
+                return unknown
+            }
+
             val submitted = try {
                 attempt(utxos)
             } catch (e: Exception) {
@@ -481,7 +491,7 @@ class KaspaWalletEngine @Inject constructor(
                     dropPendingChange(fromAddress, attemptInputs.filter { it.utxoEntry.blockDaaScore == 0L })
                 }
                 // The first send may have gone: new coins would pay twice (iOS e5a9b11).
-                if (e is SendOutcomeUnknownException) throw e
+                if (e is SendOutcomeUnknownException) throw keptOutOfNextSend(e)
                 if (!(isTransientNodeRejection(e) || signatureRejected) || !manualUtxos.isNullOrEmpty()) throw e
                 val refetched = nodePoolManager.getUtxosByAddress(fromAddress) ?: api.getUtxos(fromAddress)
                 val refetchedReconciled = reconcileUtxos(fromAddress, refetched)
@@ -492,7 +502,11 @@ class KaspaWalletEngine @Inject constructor(
                 }
                 if (confirmedOnly.isEmpty()) throw e
                 Log.w("KaspaWalletEngine", "Submit rejected (${e.message}), retrying once with confirmed-only inputs")
-                attempt(confirmedOnly)
+                try {
+                    attempt(confirmedOnly)
+                } catch (unknown: SendOutcomeUnknownException) {
+                    throw keptOutOfNextSend(unknown)
+                }
             }.getOrElse { return Result.failure(it) }
 
             recordSpend(fromAddress, changeAddress, submitted.spentUtxos, submitted.changeUtxo)

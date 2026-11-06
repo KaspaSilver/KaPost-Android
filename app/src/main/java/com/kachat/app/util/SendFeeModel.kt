@@ -38,6 +38,16 @@ object SendFeeModel {
     ): List<UtxoEntry> =
         if (utxos.size > maxInputs) utxos.sortedByDescending { it.utxoEntry.amount }.take(maxInputs) else utxos
 
+    /** A Max (iOS d816404 `estimateMaxWithdrawalAmount`'s answer). [cappedAtInputLimit]: the
+     *  address holds more coins than one transaction can spend, so this is the most its largest
+     *  [KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION] coins can send (what the send itself picks,
+     *  largest first) - not the whole balance, which no single transaction could carry. */
+    data class MaxAmount(val amountSompi: Long, val cappedAtInputLimit: Boolean)
+
+    /** Compound's one transaction: the coins it pins, what they consolidate to, and
+     *  [MaxAmount.cappedAtInputLimit]'s meaning for the rest of the address's coins. */
+    data class ConsolidationChunk(val amountSompi: Long, val utxos: List<UtxoEntry>, val cappedAtInputLimit: Boolean)
+
     /** Base fee for [inputCount] inputs paying a recipient plus change. */
     fun baseFee(
         inputCount: Int,
@@ -126,6 +136,40 @@ object SendFeeModel {
     }
 
     /**
+     * Whether a coin-control send of exactly [utxos] is refused for storage mass
+     * ([KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE]): its change can neither stand as an output nor
+     * fold with the recipient's output alone fitting (iOS d816404, the manual selector's guard).
+     * False when the coins don't cover it (that is the funds error) or aren't real values.
+     */
+    fun manualStorageMassBlocked(
+        utxos: List<UtxoEntry>,
+        amountSompi: Long,
+        feeRateSompiPerGram: Long,
+        extraFeeSompi: Long,
+        recipientScriptLen: Int = STANDARD_SCRIPT_LEN,
+        changeScriptLen: Int = STANDARD_SCRIPT_LEN,
+        /** See [baseFee]. */
+        signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
+        /** See [previewAutomaticSelection]. */
+        payloadSize: Int = 0,
+    ): Boolean = try {
+        val selection = KaspaUtxoSelector.selectManualUtxosAndCalculateFee(
+            utxos = utxos,
+            amountSompi = amountSompi,
+            feeRateSompiPerGram = feeRateSompiPerGram,
+            recipientScriptLen = recipientScriptLen,
+            changeScriptLen = changeScriptLen,
+            payloadBytes = payloadStandIn(payloadSize),
+            extraFeeSompi = extraFeeSompi,
+            signatureScriptSize = signatureScriptSize,
+        )
+        amountSompi > 0 && selection.changeAmount > 0 &&
+            !KaspaUtxoSelector.changeIsKeptOrFoldable(selection.selectedUtxos.map { it.utxoEntry.amount }, listOf(amountSompi), selection.changeAmount)
+    } catch (e: IllegalStateException) {
+        false
+    }
+
+    /**
      * What automatic selection (largest-first, [KaspaUtxoSelector.selectUtxosAndCalculateFee] - the
      * selector the real send runs) picks for [amountSompi], with the base fee priced on those
      * inputs and the extra on top. Mirrors ColdStorageSendEngine.previewAutomaticSelection, which
@@ -135,7 +179,8 @@ object SendFeeModel {
      * tier's extra depends on the base, so this settles the two together. Whatever pass it ends
      * on, [Preview.baseFeeSompi] is priced on the inputs selected WITH [Preview.extraFeeSompi], so
      * a send passing that extra pays [Preview.totalFeeSompi]. Null when the coins cannot cover it,
-     * or when their amounts are not real values ([UtxoMath]).
+     * or when their amounts are not real values ([UtxoMath]). Throws
+     * [KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE] when they cover it but no set fits storage mass.
      */
     fun previewAutomaticSelection(
         utxos: List<UtxoEntry>,
@@ -172,6 +217,10 @@ object SendFeeModel {
                 return null // invalid node data (UtxoMath): no preview rather than a wrong one
             }
             if (selection.totalSelected < selection.requiredAmount) return null
+            // No coin set fits storage mass without giving real change away: the send refuses
+            // it, so the Review says why rather than showing a fee (iOS d816404, the estimate
+            // runs the send's own selector).
+            if (selection.storageMassBlocked) throw IllegalStateException(KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE)
             val base = selection.estimatedFee - extra
             val settled = Preview(selection.selectedUtxos, base, extra, selection.foldedChangeSompi)
             preview = settled

@@ -614,7 +614,7 @@ fun DomainNameCard(
 /**
  * Send Kaspa (iOS `WithdrawKaspaView`): Chats > + > Send Kaspa, Donate, the Address Book, an
  * address's Send, paying a payment request - and, in [isCompoundMode], Compound UTXOs for one
- * address. Every send but Compound has a From step ([SendFromStep]): Your Address (the default)
+ * address. Every send but Compound has a From step ([SendFromStep]): Chatting Address (the default)
  * or Choose an Address. Fees, Max, coin control and the send follow the
  * chosen address: the chatting address signs with the identity key
  * ([WalletViewModel.onSendClicked]), a spending address with its own key
@@ -774,6 +774,12 @@ fun SpendingAddressSendFlow(
     // The amount Max last wrote, and the fee choice, From and coins it left room for: changing
     // any of them while the field still holds that amount works Max out again (see setMaxAmount).
     var maxFill by remember { mutableStateOf<SendMaxFill?>(null) }
+    /** The Max on screen is what one transaction can carry, not the whole balance (the address
+     *  holds more coins than one transaction can spend), iOS d816404 `maxCapped`. */
+    var maxCapped by remember { mutableStateOf(false) }
+    /** The latest Max request: an older one finishing later (a fee tapped twice fast) is dropped
+     *  (iOS d816404 `maxRequest`). */
+    var maxRequest by remember { mutableStateOf(0) }
     // The one exact parser for typed KAS (iOS 16b64bc): comma or dot, at most 8 decimals.
     val previewAmountSompi = KaspaUnit.sompiFromUserText(amountInput)
     // Base fee on the real inputs: coin control's exact set, else the automatic-selection preview,
@@ -852,6 +858,20 @@ fun SpendingAddressSendFlow(
         val held = com.kachat.app.util.UtxoMath.checkedTotal(coins.map { it.utxoEntry.amount })
         if (amount != null && amount > 0 && (held == null || held < amount + defaultFeeSompi + extraFeeSompi)) {
             "Insufficient funds for payment"
+        } else if (amount != null && amount > 0 && com.kachat.app.util.SendFeeModel.manualStorageMassBlocked(
+                utxos = coins,
+                amountSompi = amount,
+                feeRateSompiPerGram = baseFeeRateSompiPerGram,
+                extraFeeSompi = extraFeeSompi,
+                recipientScriptLen = recipientScriptLen,
+                changeScriptLen = runCatching { KaspaAddress.getScriptPublicKey(sourceAddress).length / 2 }
+                    .getOrDefault(com.kachat.app.util.SendFeeModel.STANDARD_SCRIPT_LEN),
+                signatureScriptSize = sourceSignatureScriptSize,
+                payloadSize = paymentPayloadSize,
+            )
+        ) {
+            // the coins can't carry this amount without giving real change away (iOS d816404)
+            com.kachat.app.util.KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE
         } else {
             null
         }
@@ -946,11 +966,12 @@ fun SpendingAddressSendFlow(
                 val chunk = viewModel.maxConsolidatableChunk(fromAddress, baseFeeRateSompiPerGram, feeTier.multiplier, customExtraFeeSompi, signatureScriptSize = sourceSignatureScriptSize, withdrawalCoins = usesWithdrawalCoins)
                 when {
                     chunk == null -> maxError = "No spendable UTXOs"
-                    chunk.first <= 0L -> maxError = "Balance too low to cover fee"
+                    chunk.amountSompi <= 0L -> maxError = "Balance too low to cover fee"
                     else -> {
-                        manualUtxos = chunk.second
-                        fiatAmountState.setMaxKas(chunk.first / 100_000_000.0, fiatPriceInCurrency)
-                        maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), feeTier, customExtraFeeSompi, source, chunk.second)
+                        manualUtxos = chunk.utxos
+                        fiatAmountState.setMaxKas(chunk.amountSompi / 100_000_000.0, fiatPriceInCurrency)
+                        maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.amountSompi / 100_000_000.0), feeTier, customExtraFeeSompi, source, chunk.utxos)
+                        maxCapped = chunk.cappedAtInputLimit
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1029,6 +1050,8 @@ fun SpendingAddressSendFlow(
     // WalletScreens setMaxAmount: `errorMessage`, e.g. "Balance too low to cover fee").
     val setMaxAmount: () -> Unit = setMax@{
         if (!hasValidRecipient) return@setMax
+        maxRequest += 1
+        val request = maxRequest
         coroutineScope.launch {
             isEstimatingMax = true
             maxError = null
@@ -1040,29 +1063,38 @@ fun SpendingAddressSendFlow(
                 val maxCustomExtra = customExtraFeeSompi
                 if (isCompoundMode) {
                     val chunk = viewModel.maxConsolidatableChunk(fromAddress, baseFeeRateSompiPerGram, maxTier.multiplier, maxCustomExtra, signatureScriptSize = sourceSignatureScriptSize, withdrawalCoins = usesWithdrawalCoins)
+                    // a newer Max (another speed tapped meanwhile) decides the amount (iOS d816404)
+                    if (request != maxRequest) return@launch
                     when {
                         chunk == null -> maxError = "No spendable UTXOs"
-                        chunk.first <= 0L -> maxError = "Balance too low to cover fee"
+                        chunk.amountSompi <= 0L -> maxError = "Balance too low to cover fee"
                         else -> {
-                            manualUtxos = chunk.second
-                            fiatAmountState.setMaxKas(chunk.first / 100_000_000.0, fiatPriceInCurrency)
-                            maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.first / 100_000_000.0), maxTier, maxCustomExtra, source, chunk.second)
+                            manualUtxos = chunk.utxos
+                            fiatAmountState.setMaxKas(chunk.amountSompi / 100_000_000.0, fiatPriceInCurrency)
+                            maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(chunk.amountSompi / 100_000_000.0), maxTier, maxCustomExtra, source, chunk.utxos)
+                            maxCapped = chunk.cappedAtInputLimit
                         }
                     }
                 } else {
                     // Throws the reason there is no Max (no node yet, no coins, or the fee eats
                     // the balance); never writes "0" into the field.
-                    val maxSompi = viewModel.estimateMaxSendableAmount(sourceAddress, baseFeeRateSompiPerGram, manualUtxos, maxTier.multiplier, maxCustomExtra, signatureScriptSize = sourceSignatureScriptSize, withdrawalCoins = usesWithdrawalCoins)
-                    fiatAmountState.setMaxKas(maxSompi / 100_000_000.0, fiatPriceInCurrency)
-                    maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(maxSompi / 100_000_000.0), maxTier, maxCustomExtra, source, manualUtxos)
+                    val max = viewModel.estimateMaxSendableAmount(sourceAddress, baseFeeRateSompiPerGram, manualUtxos, maxTier.multiplier, maxCustomExtra, signatureScriptSize = sourceSignatureScriptSize, withdrawalCoins = usesWithdrawalCoins)
+                    if (request != maxRequest) return@launch
+                    fiatAmountState.setMaxKas(max.amountSompi / 100_000_000.0, fiatPriceInCurrency)
+                    maxFill = SendMaxFill(com.kachat.app.util.formatKasAmount(max.amountSompi / 100_000_000.0), maxTier, maxCustomExtra, source, manualUtxos)
+                    maxCapped = max.cappedAtInputLimit
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w("SendFlow", "Max estimate failed for ${sourceAddress.redactedForLog()}", e)
-                maxError = UserFacingError.message(e, "Could not work out the maximum.")
+                if (request == maxRequest) {
+                    Log.w("SendFlow", "Max estimate failed for ${sourceAddress.redactedForLog()}", e)
+                    maxError = UserFacingError.message(e, "Could not work out the maximum.")
+                    maxCapped = false
+                }
             } finally {
-                isEstimatingMax = false
+                // only the latest Max ends the wait the swipe and Review hold for
+                if (request == maxRequest) isEstimatingMax = false
             }
         }
     }
@@ -1078,8 +1110,13 @@ fun SpendingAddressSendFlow(
             setMaxAmount()
         }
     }
-    // Not while the fee preview is being worked out: the send passes the preview's extra.
-    val canSend = !isSending && hasValidRecipient && (amountSompi ?: 0) > 0 && !isPreviewingFee
+    // Not while the fee preview is being worked out: the send passes the preview's extra. And the
+    // swipe waits for the amount and the fee it shows to be the ones that will be sent: not while
+    // Max is being worked out again, and not when the fee couldn't be (iOS d816404 `canSend`).
+    // Automatic selection's fee is known once its preview is in; coin control's is priced here.
+    val feeIsKnown = totalFeeSompi != null && (!manualUtxos.isNullOrEmpty() || feePreview != null)
+    val canSend = !isSending && hasValidRecipient && (amountSompi ?: 0) > 0 && !isPreviewingFee &&
+        !isEstimatingMax && feeError == null && feeIsKnown
     val send: () -> Unit = {
         sendError = null
         amountSompi?.takeIf { canSend }?.let {
@@ -1185,6 +1222,17 @@ fun SpendingAddressSendFlow(
     /** The amount is more than the From address holds. */
     val exceedsBalance = amountSompi != null && availableSompi != null && amountSompi > availableSompi
     val canContinueFromAmount = hasValidRecipient && (amountSompi ?: 0) > 0 && !exceedsBalance && !isEstimatingMax
+    /** The field still holds a Max that is capped at one transaction's coins (iOS d816404
+     *  `usedMax && maxCapped`). */
+    val showsCappedMax = maxCapped && maxFill?.amount == amountInput
+    /** Why Max isn't the whole balance: one transaction spends at most
+     *  [com.kachat.app.util.KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION] coins, and this address
+     *  holds more (iOS d816404 `maxCappedNote`). */
+    val maxCappedNote = if (isCompoundMode) {
+        stringResource(R.string.send_compound_capped, com.kachat.app.util.KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION)
+    } else {
+        stringResource(R.string.send_max_capped, com.kachat.app.util.KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION)
+    }
     /** The recipient's name: the domain it resolved from. */
     val recipientName = knsResolvedDomain
     val sourceTitle = if (isCompoundMode) stringResource(R.string.send_this_address) else sendSourceTitle(source)
@@ -1316,11 +1364,15 @@ fun SpendingAddressSendFlow(
                         footnote = when {
                             maxError != null -> maxError
                             exceedsBalance -> stringResource(R.string.send_exceeds_source)
+                            showsCappedMax -> maxCappedNote
                             available != null -> KaspaUnit.label(stringResource(R.string.send_available_kas, KaspaUnit.plain(available)))
                             else -> null
                         },
                         footnoteIsError = exceedsBalance || maxError != null,
-                        onKeyTyped = { maxError = null },
+                        onKeyTyped = {
+                            maxError = null
+                            maxCapped = false
+                        },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -1419,9 +1471,13 @@ fun SpendingAddressSendFlow(
                         },
                     )
 
-                    // the send's or Max's error, else the fee's (iOS `errorMessage ?? feeError`)
-                    (sendError ?: maxError ?: feeError)?.let {
-                        Text(it, color = LocalAppColors.current.danger, fontSize = 13.sp, textAlign = TextAlign.Center)
+                    // the send's or Max's error, else the fee's (iOS `errorMessage ?? feeError`), else
+                    // why Max isn't the whole balance (iOS d816404 `maxCappedNote`)
+                    val reviewError = sendError ?: maxError ?: feeError
+                    if (reviewError != null) {
+                        Text(reviewError, color = LocalAppColors.current.danger, fontSize = 13.sp, textAlign = TextAlign.Center)
+                    } else if (showsCappedMax) {
+                        Text(maxCappedNote, color = LocalAppColors.current.textSecondary, fontSize = 13.sp, textAlign = TextAlign.Center)
                     }
                 }
             }
@@ -1491,10 +1547,9 @@ fun IdentityAddressDetailScreen(
     val utxosLoadError by viewModel.spendingAddressUtxosError.collectAsState()
     val utxoListAddress: String? = (address as String?)?.takeIf { it.isNotEmpty() }
     val kaspaExplorer by viewModel.kaspaExplorer.collectAsState()
-    // The identity key is at least as sensitive as the seed phrase itself (it IS the wallet's
-    // main spending key) - gated behind the same biometric flag Settings > View Seed Phrase
-    // uses, not the lower-stakes biometricSpendingKeyEnabled a derived spending address uses.
-    val biometricSeedPhraseEnabled by viewModel.biometricSeedPhraseEnabled.collectAsState()
+    // View Private Key follows Settings' "Biometrics for Address Private Keys"
+    // (biometricSpendingKeyEnabled), formerly the seed phrase's flag (iOS d816404).
+    val biometricSpendingKeyEnabled by viewModel.biometricSpendingKeyEnabled.collectAsState()
     val uriHandler = LocalUriHandler.current
     // The tapped transaction, while its action chooser is up.
     var transactionActionTarget by remember { mutableStateOf<ColdStorageAddressDiscovery.AddressTransaction?>(null) }
@@ -1721,7 +1776,7 @@ fun IdentityAddressDetailScreen(
         IdentityAddressActionsSheet(
             onPrivateKey = {
                 showAddressActions = false
-                if (biometricSeedPhraseEnabled) {
+                if (biometricSpendingKeyEnabled) {
                     context.authenticateWithDeviceCredential(
                         title = "Unlock to View Private Key",
                         onSuccess = { showPrivateKey = true }
@@ -5978,8 +6033,9 @@ internal fun Modifier.chatComposerFieldModifier(): Modifier = this.iosGlass(corn
 
 /**
  * Profile > Wallet (iOS e5a9b11 `KaPostWalletView`), KaChat's and KaPay's Wallet tab in KaPost: the
- * total up top, split into the chatting and spending addresses, then Send, Receive and Request, the
- * Backup Hygiene card when it's due, then the chatting address's history. KaPost only uses the
+ * total up top, split into the chatting and spending addresses, then Send, Receive and More
+ * (Compound UTXOs, Request Payment and the chatting address's keys, iOS 7d8b258), the Backup
+ * Hygiene card when it's due, then the chatting address's history. KaPost only uses the
  * chatting address: Send leaves from it and Receive and Request are paid to it. Other addresses
  * count in the total and are managed in KaChat and KaPay. Pushed, so the dock stays under it.
  */
@@ -6011,16 +6067,29 @@ fun KaPostWalletScreen(
     var showSend by remember { mutableStateOf(false) }
     var showReceive by remember { mutableStateOf(false) }
     var showRequest by remember { mutableStateOf(false) }
+    // More: Compound UTXOs, Request Payment and the chatting address's keys, as in KaPlay (iOS 7d8b258).
+    var showMore by remember { mutableStateOf(false) }
+    var showPrivateKey by remember { mutableStateOf(false) }
+    var showPublicKey by remember { mutableStateOf(false) }
+    var showCompound by remember { mutableStateOf(false) }
+    // How many coins the chatting address holds: Compound UTXOs works once there are two.
+    var chattingUtxoCount by remember { mutableStateOf(0) }
+    val walletScope = rememberCoroutineScope()
     var transactionActionTarget by remember { mutableStateOf<ColdStorageAddressDiscovery.AddressTransaction?>(null) }
     var portfolioCandidate by remember { mutableStateOf<ColdStorageAddressDiscovery.AddressTransaction?>(null) }
     var addedPortfolioName by remember { mutableStateOf<String?>(null) }
 
-    // The balances and the history, each time the screen opens and for the account it's on.
+    // The balances, the history and the coin count, each time the screen opens and for the account it's on.
     fun refreshWallet() {
         val current = address ?: return
         viewModel.refreshBalance()
         viewModel.refreshSpendingAddress()
         viewModel.loadSpendingAddressTxHistory(current)
+        walletScope.launch {
+            // A failed read keeps what it last knew; one for another account is dropped (iOS 7d8b258).
+            val utxos = runCatching { viewModel.fetchUtxosForCoinControl(current) }.getOrNull() ?: return@launch
+            if (viewModel.address.value == current) chattingUtxoCount = utxos.size
+        }
     }
     LaunchedEffect(address) { refreshWallet() }
     // Arriving funds refresh at once (iOS `.ownAddressUtxoActivity`), a burst coalesced.
@@ -6125,9 +6194,10 @@ fun KaPostWalletScreen(
                         haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
                         showReceive = true
                     }
-                    WalletActionButton("Request", RequestPaymentIcon, Modifier.weight(1f)) {
+                    // The third button is More; Request Payment lives in it (iOS 7d8b258).
+                    WalletActionButton("More", Icons.Filled.MoreHoriz, Modifier.weight(1f)) {
                         haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
-                        showRequest = true
+                        showMore = true
                     }
                 }
             }
@@ -6200,8 +6270,8 @@ fun KaPostWalletScreen(
         IosFullSheet(
             onDismissed = {
                 showSend = false
-                viewModel.refreshBalance()
-                viewModel.loadSpendingAddressTxHistory(current)
+                // Everything, the coin count too (iOS KaPostWalletView refreshes all on close)
+                refreshWallet()
             },
             swipeToDismiss = false,
         ) { close ->
@@ -6229,6 +6299,94 @@ fun KaPostWalletScreen(
     }
     if (showRequest) {
         CreatePaymentRequestSheet(walletViewModel = viewModel, onDismissed = { showRequest = false })
+    }
+    // The More button's half sheet (iOS 7d8b258 `moreSheet`).
+    if (showMore) {
+        ActionSheetContainer(
+            title = stringResource(R.string.chatting_address),
+            subtitle = null,
+            onDismiss = { showMore = false },
+        ) {
+            // Always listed, so people know it exists; dimmed until there is something to combine.
+            ActionSheetRow(
+                icon = Icons.Default.CallMerge,
+                title = "Compound UTXOs",
+                subtitle = if (chattingUtxoCount > 1) {
+                    "Combines this address's coins into one, so later sends need fewer inputs."
+                } else {
+                    "Needs two or more coins on this address to combine."
+                },
+                enabled = chattingUtxoCount >= 2,
+            ) {
+                showMore = false
+                showCompound = true
+            }
+            ActionSheetRow(
+                icon = RequestPaymentIcon,
+                title = "Request Payment",
+                subtitle = "A link asking for an exact amount, with what it's for.",
+            ) {
+                showMore = false
+                showRequest = true
+            }
+            // Behind the address private keys' lock, as on the Chatting Address screen (iOS d816404).
+            ActionSheetRow(
+                icon = Icons.Default.Key,
+                title = "View Private Key",
+                subtitle = "The key that spends this address. Never share it.",
+            ) {
+                showMore = false
+                // Settings' "Biometrics for Address Private Keys" (iOS d816404)
+                if (viewModel.biometricSpendingKeyEnabled.value) {
+                    context.authenticateWithDeviceCredential(
+                        title = "Unlock to view this address's private key",
+                        onSuccess = { showPrivateKey = true },
+                    )
+                } else {
+                    showPrivateKey = true
+                }
+            }
+            ActionSheetRow(
+                icon = Icons.Default.Numbers,
+                title = "View Public Key",
+                subtitle = "The public half of this address, for anyone who asks for it.",
+            ) {
+                showMore = false
+                showPublicKey = true
+            }
+        }
+    }
+    if (showCompound && current != null) {
+        IosFullSheet(
+            onDismissed = {
+                showCompound = false
+                refreshWallet()
+            },
+            swipeToDismiss = false,
+        ) { close ->
+            SpendingAddressSendFlow(
+                fromAddress = current,
+                balanceSompi = chattingSompi,
+                title = "Send Kaspa",
+                viewModel = viewModel,
+                portfolioViewModel = portfolioViewModel,
+                isCompoundMode = true,
+                onDone = close,
+                presentedAsSheet = true,
+            )
+        }
+    }
+    // The keys cover the whole screen with the dock out of the way, as behind iOS's sheets, and
+    // in the app's own window so the private key's FLAG_SECURE covers it.
+    if (showPrivateKey && current != null) {
+        AccountBackupRoute(viewModel) {
+            SpendingAddressPrivateKeyOverlay(privateKeyHex = viewModel.getPrivateKeyHex(), onDismiss = { showPrivateKey = false })
+        }
+    }
+    if (showPublicKey && current != null) {
+        AccountBackupRoute(viewModel) {
+            IdentityAddressPublicKeyOverlay(address = current, onDismiss = { showPublicKey = false })
+        }
     }
     transactionActionTarget?.let { tapped ->
         TransactionActionsSheet(

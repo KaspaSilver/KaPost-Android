@@ -347,13 +347,14 @@ fun AccountBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
                 wordPage = pageCount - 1
                 step = BackupStep.WORDS
             }
-            BackupStep.PASSPHRASE -> startWordCheck()
+            // Back to a check already passed keeps its words and answers: going back is for
+            // looking again, not for being tested on new words (iOS d816404).
+            BackupStep.PASSPHRASE -> step = BackupStep.WORD_CHECK
             BackupStep.PASSPHRASE_CHECK -> step = BackupStep.PASSPHRASE
             BackupStep.TIPS -> if (passphrase != null) {
-                passphraseAnswer = ""
                 step = BackupStep.PASSPHRASE_CHECK
             } else {
-                startWordCheck()
+                step = BackupStep.WORD_CHECK
             }
         }
     }

@@ -920,8 +920,9 @@ fun SendFromSection(
         )
         if (!isLocked) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                // The From address is named "Chatting Address" (iOS 7d8b258).
                 SelectablePill(
-                    title = "Your Address",
+                    title = "Chatting Address",
                     selected = source is SendSource.Chatting,
                     modifier = Modifier.weight(1f),
                 ) { if (enabled) onSourceChange(SendSource.Chatting) }
@@ -943,7 +944,7 @@ fun SendFromSection(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
                     when (source) {
-                        SendSource.Chatting -> "Your Address"
+                        SendSource.Chatting -> "Chatting Address"
                         is SendSource.Spending -> source.label
                     },
                     color = colors.textPrimary,
@@ -1119,9 +1120,9 @@ fun OwnAddressList(
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val chatting = chattingAddress
         if (chatting != null) {
-            OwnAddressListSectionTitle("Your Address")
+            OwnAddressListSectionTitle("Chatting Address")
             OwnAddressCard(
-                title = "Your Address",
+                title = "Chatting Address",
                 address = chatting,
                 balance = chattingBalance,
                 used = used[chatting],
@@ -1696,7 +1697,7 @@ fun KaspaKeypadAmountEntry(
 }
 
 /**
- * The amount step's From (KaPay `SendFromCompactRow`): the two pills of [SendFromSection] - Your
+ * The amount step's From (KaPay `SendFromCompactRow`): the two pills of [SendFromSection] - Chatting
  * Address and Choose an Address (any of your addresses; once picked, the pill shows its name) -
  * without the address card under them, so the keypad has room. The balance it loads
  * ([onAvailableSompiChange], null while it loads) is the amount's Available.
@@ -1722,7 +1723,7 @@ fun SendFromCompactRow(
         currentOnAvailable(walletViewModel.addressBalanceSompi(address))
     }
     val sourceTitle = when (source) {
-        SendSource.Chatting -> "Your Address"
+        SendSource.Chatting -> "Chatting Address"
         is SendSource.Spending -> source.label
     }
     Row(
@@ -1740,7 +1741,7 @@ fun SendFromCompactRow(
             SelectablePill(title = sourceTitle, selected = true, modifier = Modifier.weight(1f)) {}
         } else {
             SelectablePill(
-                title = "Your Address",
+                title = "Chatting Address",
                 selected = source is SendSource.Chatting,
                 modifier = Modifier.weight(1f),
             ) { onSourceChange(SendSource.Chatting) }
@@ -1763,7 +1764,7 @@ fun SendFromCompactRow(
 }
 
 /**
- * A send's From step (iOS KaPosts da3e953 `fromStep`): "Where are you sending from?", Your
+ * A send's From step (iOS KaPosts da3e953 `fromStep`): "Where are you sending from?", Chatting
  * Address, or Choose an Address with your addresses listed right here ([OwnAddressList], no
  * sheet). [choosingFrom] is Choose an Address being on, before or after a pick; Continue waits
  * for a pick. [availableSompi] is the From's balance, loaded by the screen.
@@ -1801,7 +1802,7 @@ fun SendFromStep(
         ) {
             SendStepQuestion(stringResource(R.string.send_where_from))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SelectablePill(title = "Your Address", selected = !choosingFrom, modifier = Modifier.weight(1f)) {
+                SelectablePill(title = "Chatting Address", selected = !choosingFrom, modifier = Modifier.weight(1f)) {
                     onChoosingFromChange(false)
                     onSourceChange(SendSource.Chatting)
                 }
@@ -1832,7 +1833,7 @@ fun SendFromStep(
                             .padding(14.dp),
                     ) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text("Your Address", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Chatting Address", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                             Text(
                                 "${address.take(14)}...${address.takeLast(6)}",
                                 color = colors.textSecondary,
@@ -1860,13 +1861,13 @@ fun SendFromStep(
     }
 }
 
-/** The name a send's From goes by: "Your Address", or the spending address's name. */
+/** The name a send's From goes by: "Chatting Address" (iOS 7d8b258), or the spending address's name. */
 fun sendSourceTitle(source: SendSource): String = when (source) {
-    SendSource.Chatting -> "Your Address"
+    SendSource.Chatting -> "Chatting Address"
     is SendSource.Spending -> source.label
 }
 
-/** "To alice.kachat", "From Your Address": one line of what a step is about, as a glass chip
+/** "To alice.kachat", "From Chatting Address": one line of what a step is about, as a glass chip
  *  above its content (the amount step; iOS `SendStepChip`). [isAddress]: monospaced, cut in the
  *  middle. */
 @Composable

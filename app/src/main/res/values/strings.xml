@@ -1671,6 +1671,11 @@
     <string name="send_this_address_consolidating">This address (consolidating)</string>
     <string name="send_available_kas">Available: %1$s KAS</string>
     <string name="send_exceeds_source">This is more than the address you\'re sending from holds.</string>
+    <!-- Why Max isn't the whole balance: one transaction spends at most 80 coins (iOS d816404 maxCappedNote) -->
+    <string name="send_max_capped">Max is what one transaction can carry: its largest %1$d coins. Compound UTXOs, under More, combines the rest.</string>
+    <string name="send_compound_capped">One transaction can combine %1$d coins, so this combines the largest %1$d. Compound again for the rest.</string>
+    <!-- A room message from a chatting address with no coins (iOS d816404 notEnoughKasMessage) -->
+    <string name="room_not_enough_kas">Not enough KAS on your Chatting Address. Add some and try again.</string>
     <string name="send_set_network_fee">Set your network fee</string>
     <string name="send_fee_minimum">The network needs at least %1$s KAS. A lower fee is raised to that.</string>
     <string name="send_fee_much_more">This is much more than the network needs.</string>

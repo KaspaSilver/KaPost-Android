@@ -33,10 +33,15 @@ object KaspaUtxoSelector {
      * Whether a payment of [recipientAmounts] with [changeAmount] left over may be built from
      * [inputAmounts]: the change stands as its own output, or it is dust small enough to fold
      * into the fee. False means folding would give real change away.
+     *
+     * Folded, the recipient's output alone must fit too (iOS d816404): a small send carved from a
+     * bigger coin breaks the budget without any change (0.03 KAS from one 0.1 KAS coin), and the
+     * node would refuse it after the Review had shown the folded change as fee. Another coin
+     * lowers that mass, so the greedy selector keeps adding before giving up.
      */
     fun changeIsKeptOrFoldable(inputAmounts: List<Long>, recipientAmounts: List<Long>, changeAmount: Long): Boolean =
-        changeAmount <= MAX_FOLDED_CHANGE_SOMPI ||
-            KaspaMass.fitsStorageMass(inputAmounts, recipientAmounts + changeAmount)
+        KaspaMass.fitsStorageMass(inputAmounts, recipientAmounts + changeAmount) ||
+            (changeAmount <= MAX_FOLDED_CHANGE_SOMPI && KaspaMass.fitsStorageMass(inputAmounts, recipientAmounts))
 
     // Every selector throws IllegalStateException(UtxoMath.INVALID_AMOUNT_MESSAGE) when a coin's
     // amount, or the total, is not a real value (a broken or malicious node - audit IOS-020).
@@ -119,7 +124,9 @@ object KaspaUtxoSelector {
 
             if (totalSelected >= (amountSompi + estimatedFee)) {
                 val change = totalSelected - amountSompi - estimatedFee
-                if (amountSompi <= 0 || change <= 0 ||
+                // No change at all is the no-change shape too: the recipient's output alone must
+                // fit (iOS d816404), which [changeIsKeptOrFoldable] checks for a change of 0.
+                if (amountSompi <= 0 ||
                     changeIsKeptOrFoldable(selectedUtxos.map { it.utxoEntry.amount }, listOf(amountSompi), change)
                 ) {
                     storageMassBlocked = false

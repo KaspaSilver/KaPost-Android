@@ -387,13 +387,20 @@ fun WelcomeScreen(
                             .verticalScroll(rememberScrollState())
                     ) {
                         accounts.forEach { account ->
+                            // Creating, signing in or removing: one at a time, since each one
+                            // replaces the account in the active slot. Signing in and removing
+                            // finish on the spot here; creating runs on (iOS d816404). Checked
+                            // again after the phone's lock, which may have let a create start.
                             SavedAccountCard(
                                 account = account,
                                 requireBiometricLogin = biometricAccountLoginEnabled,
                                 notBackedUp = account.address in backupPending,
-                                onLogin = { viewModel.login(account.address) },
+                                enabled = !isCreatingAccount,
+                                onLogin = { if (!viewModel.isCreatingAccount.value) viewModel.login(account.address) },
                                 onRename = { newName -> viewModel.renameAccount(account.address, newName) },
-                                onDelete = { alsoRemoveBackup -> viewModel.deleteWallet(account.address, alsoRemoveBackup) },
+                                onDelete = { alsoRemoveBackup ->
+                                    if (!viewModel.isCreatingAccount.value) viewModel.deleteWallet(account.address, alsoRemoveBackup)
+                                },
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                         }
@@ -530,12 +537,15 @@ fun WelcomeScreen(
 }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SavedAccountCard(
     account: WalletManager.Account,
     requireBiometricLogin: Boolean = false,
     /** This account hasn't finished the backup steps: the Delete warning says so. */
     notBackedUp: Boolean = false,
+    /** False while another account action runs (a create): the row and its pencil wait. */
+    enabled: Boolean = true,
     onLogin: () -> Unit,
     onRename: (String) -> Unit,
     /** True would also remove the encrypted Nextcloud archive; the sign-in screen, like iOS's,
@@ -548,13 +558,14 @@ fun SavedAccountCard(
     var showSignInFailed by remember { mutableStateOf(false) }
     var nameInput by remember { mutableStateOf(account.name) }
     val context = LocalContext.current
+    val menuScope = rememberCoroutineScope()
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(KaChatSignInCard)
-            .clickable {
+            .clickable(enabled = enabled) {
                 if (requireBiometricLogin) {
                     context.authenticateWithDeviceCredential(
                         title = "Unlock to sign in to ${account.name.trim().ifEmpty { "Saved Account" }}",
@@ -600,7 +611,7 @@ fun SavedAccountCard(
             )
         }
 
-        IconButton(onClick = { showMenu = true }) {
+        IconButton(onClick = { showMenu = true }, enabled = enabled) {
             Icon(
                 imageVector = Icons.Default.Edit,
                 contentDescription = stringResource(R.string.edit_account),
@@ -613,19 +624,33 @@ fun SavedAccountCard(
     // Half sheet rather than a dropdown, like every other chooser in the app - and Delete gets a
     // line saying what it takes with it, which a menu of bare verbs cannot.
     if (showMenu) {
+        val menuSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        var menuChoiceMade by remember { mutableStateOf(false) }
+        // What the half sheet's choice opens, once the half sheet has finished closing (iOS
+        // d816404 `afterAccountActions`): the sheet goes down first, then Rename or Delete.
+        fun closeMenuThen(next: () -> Unit) {
+            if (menuChoiceMade) return
+            menuChoiceMade = true
+            menuScope.launch { menuSheetState.hide() }.invokeOnCompletion {
+                showMenu = false
+                next()
+            }
+        }
         ActionSheetContainer(
             title = account.name,
             subtitle = account.address,
             onDismiss = { showMenu = false },
+            sheetState = menuSheetState,
         ) {
             ActionSheetRow(
                 icon = Icons.Default.Edit,
                 title = stringResource(R.string.rename),
                 subtitle = "Gives this account a name of your own.",
             ) {
-                showMenu = false
-                nameInput = account.name
-                showRenameDialog = true
+                closeMenuThen {
+                    nameInput = account.name
+                    showRenameDialog = true
+                }
             }
             ActionSheetRow(
                 icon = Icons.Default.Delete,
@@ -633,8 +658,7 @@ fun SavedAccountCard(
                 subtitle = "Removes this account and its local data from this device.",
                 tint = LocalAppColors.current.danger,
             ) {
-                showMenu = false
-                showDeleteConfirm = true
+                closeMenuThen { showDeleteConfirm = true }
             }
         }
     }
@@ -1085,6 +1109,13 @@ fun ImportWalletScreen(
                             pasteError = "Nothing to paste."
                             return@OutlinedButton
                         }
+                        // Cleared as soon as it is read, whether or not the words are accepted:
+                        // secret words do not belong there either way (iOS d816404).
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                            pasteClipboard?.clearPrimaryClip()
+                        } else {
+                            pasteClipboard?.setPrimaryClip(android.content.ClipData.newPlainText("", ""))
+                        }
                         val pasted = raw.lowercase()
                             .split(Regex("[\\s,]+"))
                             .map { it.trim('.', ')') }
@@ -1095,18 +1126,15 @@ fun ImportWalletScreen(
                             else -> {
                                 val unknown = pasted.filterNot { wordList.contains(it) }
                                 if (unknown.isNotEmpty()) {
-                                    pasteError = "Not a valid word: ${unknown.take(3).joinToString(", ")}."
+                                    // never repeats what was pasted
+                                    pasteError = if (unknown.size == 1)
+                                        "One of the pasted words isn't a valid word. Check your copy and try again."
+                                    else
+                                        "${unknown.size} of the pasted words aren't valid words. Check your copy and try again."
                                 } else {
                                     wordCount = pasted.size
                                     words = List(24) { index -> pasted.getOrElse(index) { "" } }
                                     activeSlot = (pasted.size - 1).coerceAtLeast(0)
-                                    // A seed does not belong on the clipboard a moment longer
-                                    // than it takes to get it in here.
-                                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                                        pasteClipboard?.clearPrimaryClip()
-                                    } else {
-                                        pasteClipboard?.setPrimaryClip(android.content.ClipData.newPlainText("", ""))
-                                    }
                                     pasteHaptic(com.kachat.app.util.IosHaptic.SUCCESS)
                                 }
                             }
@@ -1221,6 +1249,9 @@ fun PassphraseSetupScreen(
     var confirm by remember { mutableStateOf("") }
     var reveal by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
+    // Where the explainer's Back returns: the question (import) or the entry screen, which links
+    // it too (iOS d816404).
+    var explainerReturnStep by remember { mutableStateOf(PassphraseStep.QUESTION) }
     val colors = LocalAppColors.current
 
     fun submitFromEntry() {
@@ -1244,7 +1275,7 @@ fun PassphraseSetupScreen(
         if (mode == PassphraseMode.CREATE) onBack() else step = PassphraseStep.QUESTION
     }
     BackHandler(enabled = step != PassphraseStep.QUESTION) {
-        if (step == PassphraseStep.ENTRY) backFromEntry() else step = PassphraseStep.QUESTION
+        if (step == PassphraseStep.ENTRY) backFromEntry() else step = explainerReturnStep
     }
 
     Surface(color = colors.background, modifier = Modifier.fillMaxSize()) {
@@ -1254,7 +1285,10 @@ fun PassphraseSetupScreen(
                 isBusy = isBusy,
                 onYes = { step = PassphraseStep.ENTRY },
                 onNo = { if (!isBusy) onProceed("") },
-                onExplain = { step = PassphraseStep.EXPLAINER },
+                onExplain = {
+                    explainerReturnStep = PassphraseStep.QUESTION
+                    step = PassphraseStep.EXPLAINER
+                },
                 onBack = onBack,
             )
             PassphraseStep.ENTRY -> PassphraseEntryStep(
@@ -1271,11 +1305,15 @@ fun PassphraseSetupScreen(
                 findAddresses = findAddresses,
                 onSelectAddressIndex = onSelectAddressIndex,
                 onSubmit = { submitFromEntry() },
+                onExplain = {
+                    explainerReturnStep = PassphraseStep.ENTRY
+                    step = PassphraseStep.EXPLAINER
+                },
                 onBack = { backFromEntry() },
             )
             PassphraseStep.EXPLAINER -> PassphraseExplainerStep(
                 mode = mode,
-                onBack = { step = PassphraseStep.QUESTION },
+                onBack = { step = explainerReturnStep },
             )
         }
     }
@@ -1415,6 +1453,7 @@ private fun PassphraseEntryStep(
     findAddresses: (suspend (String) -> List<com.kachat.app.models.FoundChattingAddress>?)?,
     onSelectAddressIndex: (Int) -> Unit,
     onSubmit: () -> Unit,
+    onExplain: () -> Unit,
     onBack: () -> Unit,
 ) {
     val colors = LocalAppColors.current
@@ -1502,13 +1541,20 @@ private fun PassphraseEntryStep(
                 colors = ButtonDefaults.buttonColors(
                     containerColor = KaspaTeal,
                     contentColor = Color.White,
-                    disabledContainerColor = if (isBusy) KaspaTeal else IosGray,
+                    // iOS: the accent whenever a passphrase is typed, the search running included
+                    disabledContainerColor = if (isBusy || passphrase.isNotEmpty()) KaspaTeal else IosGray,
                     disabledContentColor = Color.White,
                 ),
                 shape = RoundedCornerShape(14.dp),
             ) {
                 if (isBusy) {
                     com.kachat.app.ui.theme.IosActivityIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                } else if (isScanningAddresses && passphrase.isNotEmpty()) {
+                    // Import is waiting on the search: it says so (iOS d816404).
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        com.kachat.app.ui.theme.IosActivityIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                        Text("Finding your address...", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                    }
                 } else {
                     Text(
                         if (mode == PassphraseMode.CREATE) "Continue" else "Import",
@@ -1517,11 +1563,28 @@ private fun PassphraseEntryStep(
                     )
                 }
             }
+
+            // Creating opens on this screen, so the explainer is linked here too (iOS d816404).
+            Spacer(Modifier.height(20.dp))
+            Text(
+                "What is a passphrase?",
+                // iOS: subheadline semibold in the accent.
+                color = KaspaTeal,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 15.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(enabled = !isBusy, onClick = onExplain)
+                    .padding(vertical = 4.dp),
+            )
         }
     }
 }
 
-/** Plain-language explainer. Back only, so reading about it always returns to the choice. */
+/** Plain-language explainer. Back only, so reading about it always returns to the screen it was
+ *  opened from (the question, or the entry screen, which links it too). */
 /**
  * The whole reason this screen shows an address: a passphrase does not protect one account, it
  * opens a different one. Watching #0 change with every character is what makes that concrete, and

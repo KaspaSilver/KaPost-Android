@@ -418,7 +418,8 @@ class KaspadConnection internal constructor(
         )
 
         if (response.hasError()) {
-            throw IllegalStateException(response.error.message)
+            // the node's verdict on the transaction, not a lost answer (iOS d816404)
+            throw com.kachat.app.services.NodeRejectedTransactionException(response.error.message)
         }
         return response.transactionId
     }

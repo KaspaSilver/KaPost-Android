@@ -47,7 +47,7 @@ What is still KaChat-shaped underneath:
 |---|---|---|
 | Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
 | Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once; Select (top right) picks rooms for Read, Unread, Mute and Delete; rows swipe (`SwipeActionsRow`; left: Delete, Mute, Pin; right: read state), and a pinned room moves into the circles row above the list, saved per account (`KaPostRoomPins`); the tab's badge is the unread count across the rooms (`KaPostsDock.unreadPublicChats`) |
-| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and Request, the backup hygiene card, then the chatting address's history) |
+| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and More (iOS 7d8b258: Compound UTXOs, dimmed until the chatting address holds two or more coins, Request Payment, View Private Key behind the seed's lock, View Public Key, as in KaPlay), the backup hygiene card, then the chatting address's history) |
 | Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; a row opens its post on the Feed (a follow opens the follower's profile); the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
 | Settings | `settings` | `SettingsScreen`, alphabetical (iOS e5a9b11): About (version, Terms of Use, Open Source Licenses), Account Name, Back Up Account (Complete Your Backup, View 12 or 24 Words, Back Up to NFC Card), Connection (its tabs swipe; the .kachat names indexer URL is on Domains), Customization, Diagnostics, KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency; instant tips are capped at 10 KAS and ask for the phone's lock once when turned on), Notifications, Security, Storage; then Delete Account (`DeleteAccountSheet`, the warning the opening screen's Delete also shows; both ask for the phone's lock first; `WalletViewModel.deleteCurrentAccount`), Log Out |
 
@@ -174,7 +174,7 @@ Android). Change those pieces, not one screen.
    (Paste and Scan QR pills under the field; no Address Book in KaPost). On a first step Cancel
    sits at the bottom beside Continue (`SendContinueButton`); later steps have Back and Cancel in
    `SendStepHeader`.
-2. **From**: `SendFromStep` ("Where are you sending from?"): Your Address, or Choose an Address
+2. **From**: `SendFromStep` ("Where are you sending from?"): Chatting Address (iOS 7d8b258), or Choose an Address
    with your addresses listed right there (`OwnAddressList`, the same cards `OwnAddressPicker`'s
    sheet shows). Skipped when the From is fixed (an address's own Send, a post's tip).
 3. **Amount**: `KaspaKeypadAmountEntry`, the app's own number pad (`KaspaKeypad`,
@@ -207,8 +207,8 @@ Steps slide sideways (`SendStepTransition`). Where they are used:
   tip's encrypted memo and the small-amount warning.
 - Not ported: the .kachat sheets (`KachatTxSheet`, `KachatClaimSheet` in
   `KachatNamesLiveScreens.kt`) keep their one-page form; nothing in KaPost opens them (the Domains
-  tab only lists names), as in iOS KaPosts. Request (`CreatePaymentRequestSheet`, on the Wallet)
-  is amount then review, always to the chatting address.
+  tab only lists names), as in iOS KaPosts. Request (`CreatePaymentRequestSheet`, the Wallet's More > Request
+  Payment) is amount then review, always to the chatting address.
 
 ## Protocol and servers
 

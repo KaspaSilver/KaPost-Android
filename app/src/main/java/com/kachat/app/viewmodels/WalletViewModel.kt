@@ -912,7 +912,7 @@ class WalletViewModel @Inject constructor(
         manualUtxos: List<UtxoEntry>? = null,
         feeMultiplier: Long = 1L,
         customExtraFeeSompi: Long? = null,
-    ): Long? =
+    ): SendFeeModel.MaxAmount =
         estimateMaxSendableAmount(
             walletManager.deriveSpendingAddress(index), feeRateOverride, manualUtxos, feeMultiplier, customExtraFeeSompi,
             signatureScriptSize = WalletManager.signatureScriptSize(index),
@@ -932,6 +932,9 @@ class WalletViewModel @Inject constructor(
      *
      * Leaves room for the Fast / Priority / custom extra ([feeMultiplier], [customExtraFeeSompi])
      * as a flat amount, the extra derived from this same base - see [SendFeeModel.maxAfterFees].
+     *
+     * Says whether it is capped at one transaction's coins
+     * ([SendFeeModel.MaxAmount.cappedAtInputLimit], iOS d816404), so the screen can say so.
      */
     suspend fun estimateMaxSendableAmount(
         address: String,
@@ -944,18 +947,19 @@ class WalletViewModel @Inject constructor(
         signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
         /** The Wallet send's coins (iOS `sendWithdrawal`), the ones [onSendClicked] spends. */
         withdrawalCoins: Boolean = false,
-    ): Long {
+    ): SendFeeModel.MaxAmount {
         val fetched = if (withdrawalCoins) walletEngine.fetchWithdrawalUtxosOrThrow(address) else walletEngine.fetchUtxosOrThrow(address)
         if (fetched.isEmpty()) throw IllegalStateException("No spendable UTXOs")
 
         // Coin control's pick, resolved fresh by outpoint; none of it left means the whole set
         // (iOS resolveManualUtxos).
-        val utxos = if (!manualUtxos.isNullOrEmpty()) {
+        val resolvedManual = if (!manualUtxos.isNullOrEmpty()) {
             val freshByOutpoint = fetched.associateBy { it.outpoint }
-            manualUtxos.mapNotNull { freshByOutpoint[it.outpoint] }.ifEmpty { fetched }
+            manualUtxos.mapNotNull { freshByOutpoint[it.outpoint] }.ifEmpty { null }
         } else {
-            fetched
+            null
         }
+        val utxos = resolvedManual ?: fetched
 
         // Largest-first, capped at what one transaction can actually hold. Kaspa caps a
         // transaction's mass, and pricing EVERY UTXO at the address as an input - which this used
@@ -981,7 +985,9 @@ class WalletViewModel @Inject constructor(
         // maxAfterFees is 0 exactly when the balance does not exceed the fee (iOS `totalBalance > fee`).
         val max = SendFeeModel.maxAfterFees(totalBalance, capped.size, feeRateSompiPerGram, feeMultiplier, customExtraFeeSompi, signatureScriptSize = signatureScriptSize)
         if (max <= 0L) throw IllegalStateException("Balance too low to cover fee")
-        return max
+        // more coins than one transaction can spend: Max is what its largest coins can send (iOS
+        // d816404 `oneTransactionChunk`; coin control's own pick is never "capped")
+        return SendFeeModel.MaxAmount(max, cappedAtInputLimit = resolvedManual == null && capped.size < utxos.size)
     }
 
     /**
@@ -1004,7 +1010,7 @@ class WalletViewModel @Inject constructor(
         signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
         /** See [estimateMaxSendableAmount]. */
         withdrawalCoins: Boolean = false,
-    ): Pair<Long, List<UtxoEntry>>? {
+    ): SendFeeModel.ConsolidationChunk? {
         val fetched = if (withdrawalCoins) walletEngine.fetchWithdrawalUtxosOrThrow(address) else walletEngine.fetchUtxos(address)
         if (fetched.isEmpty()) return null
         val chunk = fetched.sortedByDescending { it.utxoEntry.amount }
@@ -1015,7 +1021,8 @@ class WalletViewModel @Inject constructor(
         val feeRateSompiPerGram = feeRateOverride?.coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
             ?: walletEngine.fetchQuotedFeeRateSompiPerGram()
         val maxAmount = SendFeeModel.maxAfterFees(totalBalance, chunk.size, feeRateSompiPerGram, feeMultiplier, customExtraFeeSompi, signatureScriptSize = signatureScriptSize)
-        return maxAmount to chunk
+        // the address holds more coins than this one transaction combines (iOS d816404)
+        return SendFeeModel.ConsolidationChunk(maxAmount, chunk, cappedAtInputLimit = chunk.size < fetched.size)
     }
 
     private val _spendingAddressTxHistory = MutableStateFlow<List<ColdStorageAddressDiscovery.AddressTransaction>>(emptyList())
@@ -1331,7 +1338,7 @@ class WalletViewModel @Inject constructor(
         if (trimmed.isEmpty()) return
         walletManager.renameAccount(address, trimmed)
         _accounts.value = walletManager.getAllAccounts()
-        if (_address.value == address) {
+        if (_address.value?.let { com.kachat.app.util.KaspaNetwork.isSameAccount(it, address) } == true) {
             _accountName.value = trimmed
         }
     }
@@ -1375,6 +1382,7 @@ class WalletViewModel @Inject constructor(
                         walletManager.nextDefaultAccountName(),
                         walletManager.generateMnemonic(24),
                         "",
+                        owesBackup = accountBackupStatus,
                     )
                 }
                 finishCreatingAccount()
@@ -1422,7 +1430,12 @@ class WalletViewModel @Inject constructor(
             try {
                 // Key derivation and the encrypted save are slow: off the main thread.
                 withContext(Dispatchers.Default) {
-                    walletManager.commitCreatedWallet(walletManager.nextDefaultAccountName(), words, passphrase)
+                    walletManager.commitCreatedWallet(
+                        walletManager.nextDefaultAccountName(),
+                        words,
+                        passphrase,
+                        owesBackup = accountBackupStatus,
+                    )
                 }
             } catch (e: WalletManager.AccountsNotKeptException) {
                 // The accounts already on this device couldn't be kept: nothing was changed.
@@ -1443,8 +1456,8 @@ class WalletViewModel @Inject constructor(
     }
 
     private fun finishCreatingAccount() {
-        // nobody has seen these words yet: the Feed's card stays until they're backed up
-        accountBackupStatus.markPending(walletManager.getAddress())
+        // Nobody has seen these words yet: the backup strip stays until they're backed up.
+        // Marked inside the commit, before the keys are saved (`owesBackup`, iOS d816404).
         _hasWallet.value = true
         _address.value = walletManager.getAddress()
         _accountName.value = walletManager.getAccountName()
@@ -1661,7 +1674,11 @@ class WalletViewModel @Inject constructor(
     /** A wrong passphrase still derives a valid account, just not this one. */
     fun checkNfcCardPassphrase(payload: com.kachat.app.services.NfcCardBackupPayload, passphrase: String) {
         val address = previewNfcCardAddress(payload, passphrase) ?: throw com.kachat.app.services.NfcCardError.UnreadableBackup()
-        if (address != payload.chattingAddress) throw com.kachat.app.services.NfcCardError.WrongPassphrase()
+        // Compared as an account, not a string: a card saved on mainnet holds a `kaspa:` address,
+        // and this phone may be on testnet (or the other way round) (iOS d816404).
+        if (!com.kachat.app.util.KaspaNetwork.isSameAccount(address, payload.chattingAddress)) {
+            throw com.kachat.app.services.NfcCardError.WrongPassphrase()
+        }
     }
 
     /** The same path as a typed import, so everything after it behaves the same. */

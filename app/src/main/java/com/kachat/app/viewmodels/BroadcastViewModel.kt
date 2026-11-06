@@ -1006,6 +1006,10 @@ class BroadcastViewModel @Inject constructor(
         return if (lower.contains("orphan") || lower.contains("already spent") || lower.contains("double spend")) {
             // iOS PublicChatService.friendlySendErrorMessage, word for word.
             "The network is still confirming your previous send. Please try again in a few seconds."
+        } else if (lower.contains("insufficient funds")) {
+            // No coin on the chatting address (or too few): adding KAS is the fix, not waiting
+            // (iOS d816404 `notEnoughKasMessage`). The send already fails at once here.
+            appContext.getString(com.kachat.app.R.string.room_not_enough_kas)
         } else {
             raw
         }

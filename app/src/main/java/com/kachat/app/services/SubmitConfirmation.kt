@@ -18,6 +18,13 @@ class SendOutcomeUnknownException(val txId: String, cause: Exception) : IllegalS
 }
 
 /**
+ * A node answered a submit by rejecting the transaction itself (bad fee, spent input, orphan...),
+ * iOS `NodeRejectedTransactionError`. That is a verdict on it: a lost answer to another try of the
+ * same submit no longer makes it read as "may have gone through" (iOS d816404).
+ */
+class NodeRejectedTransactionException(message: String) : IllegalStateException(message)
+
+/**
  * A failed submit is not always a failed send (iOS ad29da9, audit IOS-014).
  *
  * A node can accept a transaction while its answer times out; the retry that follows (a fresh
