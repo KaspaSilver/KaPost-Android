@@ -117,7 +117,8 @@ enum class ColdFeeTier(val label: String, val multiplier: Long) {
 @Composable
 fun CoinControlSheet(
     fromAddress: String,
-    fetchUtxos: suspend (String) -> List<UtxoEntry>,
+    /** Every coin at the address and which of them the send spends (iOS 33095ac). */
+    fetchCoins: suspend (String) -> com.kachat.app.services.KaspaWalletEngine.CoinControlCoins,
     initialSelection: List<UtxoEntry>?,
     onDone: (List<UtxoEntry>?) -> Unit,
     onDismiss: () -> Unit,
@@ -130,7 +131,7 @@ fun CoinControlSheet(
         BackHandler(onBack = close)
         CoinControlScreen(
             fromAddress = fromAddress,
-            fetchUtxos = fetchUtxos,
+            fetchCoins = fetchCoins,
             initialSelection = initialSelection,
             onDone = { selection -> onDone(selection); close() },
             onCancel = close,
@@ -154,7 +155,7 @@ fun CoinControlSheet(
 @Composable
 fun CoinControlScreen(
     fromAddress: String,
-    fetchUtxos: suspend (String) -> List<UtxoEntry>,
+    fetchCoins: suspend (String) -> com.kachat.app.services.KaspaWalletEngine.CoinControlCoins,
     initialSelection: List<UtxoEntry>?,
     onDone: (List<UtxoEntry>?) -> Unit,
     onCancel: () -> Unit,
@@ -165,6 +166,8 @@ fun CoinControlScreen(
     utxoLabels: Map<String, String> = emptyMap(),
 ) {
     var utxos by remember { mutableStateOf<List<UtxoEntry>>(emptyList()) }
+    // The coins the send would spend; the rest are listed greyed out, never picked (iOS 33095ac).
+    var spendableKeys by remember { mutableStateOf<Set<com.kachat.app.services.Outpoint>>(emptySet()) }
     var selectedKeys by remember { mutableStateOf<Set<com.kachat.app.services.Outpoint>>(emptySet()) }
     var isLoading by remember { mutableStateOf(false) }
     // The node could not be asked. Shown in place of "no coins": an outage must never read as an
@@ -175,7 +178,9 @@ fun CoinControlScreen(
     suspend fun loadUtxos() {
         isLoading = true
         try {
-            utxos = fetchUtxos(fromAddress)
+            val fetched = fetchCoins(fromAddress)
+            utxos = fetched.coins
+            spendableKeys = fetched.spendable
             loadError = null
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -185,17 +190,28 @@ fun CoinControlScreen(
         isLoading = false
     }
 
+    /** Why a send can't spend this coin, null when it can (iOS 33095ac `unavailableReason`): the
+     *  coins the send leaves out, so a selection can't be made of coins it would refuse. */
+    fun unavailableReason(utxo: UtxoEntry): Int? = when {
+        utxo.outpoint in spendableKeys -> null
+        utxo.utxoEntry.isCoinbase -> R.string.coin_unavailable_mining_reward
+        utxo.utxoEntry.blockDaaScore == 0L -> R.string.coin_unavailable_not_confirmed
+        else -> R.string.coin_unavailable_just_spent
+    }
+    val availableUtxos = utxos.filter { it.outpoint in spendableKeys }
+
     LaunchedEffect(fromAddress) {
         loadUtxos()
         if (!initialSelection.isNullOrEmpty()) {
+            // coins spent since they were picked drop out of the selection (iOS 33095ac)
             selectedKeys = com.kachat.app.util.CoinControlSelection
-                .resolve(utxos, initialSelection.map { it.outpoint }.toSet(), maxSelection)
+                .resolve(utxos.filter { it.outpoint in spendableKeys }, initialSelection.map { it.outpoint }.toSet(), maxSelection)
                 .map { it.outpoint }.toSet()
         }
     }
-    val atCap = com.kachat.app.util.CoinControlSelection.isAtCap(selectedKeys.size, utxos.size, maxSelection)
+    val atCap = com.kachat.app.util.CoinControlSelection.isAtCap(selectedKeys.size, availableUtxos.size, maxSelection)
 
-    val selectedTotalSompi = utxos.filter { selectedKeys.contains(it.outpoint) }.sumOf { it.utxoEntry.amount }
+    val selectedTotalSompi = availableUtxos.filter { selectedKeys.contains(it.outpoint) }.sumOf { it.utxoEntry.amount }
 
     // iOS's CoinControlView: an inline bar (Cancel, "Coin Control", the ellipsis.circle menu), an
     // inset grouped list of the coins with the running total as its footer, and a capsule button
@@ -224,7 +240,7 @@ fun CoinControlScreen(
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.select_all)) },
-                            onClick = { selectedKeys = com.kachat.app.util.CoinControlSelection.selectAll(utxos, maxSelection); showMenu = false }
+                            onClick = { selectedKeys = com.kachat.app.util.CoinControlSelection.selectAll(availableUtxos, maxSelection); showMenu = false }
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.automatic_clear_selection)) },
@@ -244,7 +260,7 @@ fun CoinControlScreen(
                     .clip(CircleShape)
                     .background(KaspaTeal)
                     .clickable {
-                        val selected = com.kachat.app.util.CoinControlSelection.resolve(utxos, selectedKeys, maxSelection)
+                        val selected = com.kachat.app.util.CoinControlSelection.resolve(availableUtxos, selectedKeys, maxSelection)
                         onDone(selected.ifEmpty { null })
                     }
                     .padding(vertical = 16.dp),
@@ -300,6 +316,7 @@ fun CoinControlScreen(
                     }
                     itemsIndexed(utxos, key = { _, it -> "${it.outpoint.transactionId}:${it.outpoint.index}" }) { index, utxo ->
                         val isSelected = selectedKeys.contains(utxo.outpoint)
+                        val unavailable = unavailableReason(utxo)
                         val first = index == 0
                         val last = index == utxos.lastIndex
                         val shape = RoundedCornerShape(
@@ -310,13 +327,14 @@ fun CoinControlScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
+                                    // A coin the send can't spend is never picked (iOS 33095ac).
+                                    .clickable(enabled = unavailable == null) {
                                         // Past the cap the tap is refused; the note above says why.
                                         com.kachat.app.util.CoinControlSelection
                                             .toggle(selectedKeys, utxo.outpoint, maxSelection)
                                             ?.let { selectedKeys = it }
                                     }
-                                    .alpha(if (!isSelected && atCap) 0.5f else 1f)
+                                    .alpha(if (unavailable != null || (!isSelected && atCap)) 0.5f else 1f)
                                     .padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -343,6 +361,10 @@ fun CoinControlScreen(
                                         fontSize = 11.sp,
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                     )
+                                    // Why it is greyed out, in orange (iOS 33095ac).
+                                    if (unavailable != null) {
+                                        Text(stringResource(unavailable), color = Color(0xFFFF9500), fontSize = 11.sp)
+                                    }
                                 }
                             }
                             if (!last) HorizontalDivider(color = colors.divider, thickness = 0.5.dp, modifier = Modifier.padding(start = 50.dp))

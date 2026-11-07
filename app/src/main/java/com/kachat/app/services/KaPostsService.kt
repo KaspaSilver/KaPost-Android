@@ -351,6 +351,13 @@ class KaPostsService @Inject constructor(
     companion object {
         private const val TAG = "KaPostsService"
 
+        /** When this account last put a post action on chain (epoch ms, 0 = not this run): your
+         *  profile's pages loaded before it are out of date - a new post, a delete, an edit
+         *  (iOS 33095ac `ownActivityAt`). */
+        @Volatile
+        var ownActivityAt: Long = 0L
+            private set
+
         /** How long after posting a post, reply or quote can still be edited. The indexer
          *  enforces the same window on chain time; after it the text is permanent. */
         const val EDIT_WINDOW_MS = 2 * 60 * 60 * 1000L
@@ -848,6 +855,11 @@ class KaPostsService @Inject constructor(
             amountSompi = 0,
             payloadBytes = payload.toByteArray(Charsets.UTF_8),
         )
+        // Only what shows on your profile: a post, reply, quote, edit, delete or poll (iOS 33095ac).
+        val action = payload.split(":", limit = 5).getOrNull(2)
+        if (action != null && action in setOf("post", "reply", "quote", "unquote", "edit", "delete", "poll")) {
+            ownActivityAt = System.currentTimeMillis()
+        }
         Log.d(TAG, "Submitted ${payload.take(12)} action tx ${txId.take(12)}")
         // sendKaspa refreshed the balance once, immediately; a second pass after the UTXO change
         // settles (Kaspa blocks are ~1s) is what reliably catches the fee just spent (iOS).

@@ -418,7 +418,8 @@ class KaspadConnection internal constructor(
         )
 
         if (response.hasError()) {
-            // the node's verdict on the transaction, not a lost answer (iOS d816404)
+            // the node's answer, not a lost one (iOS d816404); a verdict on the transaction only
+            // when it says the transaction itself is invalid (iOS 33095ac `isVerdict`)
             throw com.kachat.app.services.NodeRejectedTransactionException(response.error.message)
         }
         return response.transactionId

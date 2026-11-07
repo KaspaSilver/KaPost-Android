@@ -132,11 +132,15 @@ class WalletManager @Inject constructor(
 
         fun isQuantumIndex(index: Int): Boolean = index >= QUANTUM_INDEX_BASE
 
-        /** A spending row's number on its own chain, both named "Address #n" - quantum numbering
-         *  starts at 0 again; the shield is what tells the chains apart (iOS
-         *  `SpendingAddressEntry.displayTitle`, English like iOS). */
-        fun spendingAddressTitle(index: Int): String =
-            "Address #${if (isQuantumIndex(index)) index - QUANTUM_INDEX_BASE else index}"
+        /** A spending row's number on its own chain, both named "Address #n" - the shield is what
+         *  tells the chains apart (iOS `SpendingAddressEntry.displayTitle`, English like iOS). */
+        fun spendingAddressTitle(index: Int): String = "Address #${addressNumber(index)}"
+
+        /** The number people see for a spending address. The Chatting Address is #0, so the
+         *  legacy chain's first slot shows as #1; the quantum chain has no chatting address and
+         *  starts at #0. The same as KaPay (iOS 071e901 `WalletManager.addressNumber`). */
+        fun addressNumber(index: Int): Int =
+            if (isQuantumIndex(index)) index - QUANTUM_INDEX_BASE else index + 1
 
         /**
          * The legacy chain's revealed bound: the stored max, widened by the primary only while the
@@ -426,13 +430,35 @@ class WalletManager @Inject constructor(
      * `walletNeedingKeyRecovery`). A phone restored without this app's Keystore key, or a Keystore
      * that refuses the key, made EncryptedSharedPreferences throw right here - inside a Hilt
      * singleton, so the app closed before any screen. The app now opens on an empty in-memory
-     * store, and the recovery screen (WalletRecoveryScreen) asks for the 12 or 24 words. Declared
-     * before [sharedPrefs], whose initializer sets it.
+     * store, and the recovery screen (WalletRecoveryScreen) asks for the 12 or 24 words. Set only
+     * when the store's file is on the phone: iOS asks for the words only when a wallet record
+     * exists (WalletManager.loadWallet). Declared before [sharedPrefs], whose initializer sets it.
      */
     @Volatile var secureStoreFailure: Throwable? = null
         private set
 
+    /**
+     * The store could not be made on a phone that never had one (a fresh install on a Keystore
+     * that refuses): there is nothing to recover, so no recovery screen. The app runs on the
+     * in-memory store, and an import or create tries again before it saves ([requireSavableStore]).
+     * Declared before [sharedPrefs], whose initializer sets it.
+     */
+    @Volatile private var secureStoreUnavailable: Throwable? = null
+
+    /**
+     * Every read-modify-write of the account list holds this ([saveAccounts],
+     * [saveAccountsKeepingExisting], [renameAccount], [deleteAccount], [commitCreatedWallet],
+     * [importWallet]), as do the store swaps: a rename during a one-tap create read the list
+     * before the create wrote it, and its write put the list back without the new account.
+     * Reentrant (a JVM monitor), so the writers can call each other.
+     */
+    private val accountsLock = Any()
+
     @Volatile private var sharedPrefs: android.content.SharedPreferences = openSecureStoreOrInMemory()
+
+    /** The account store's file, `shared_prefs/kachat_secure_prefs.xml`. */
+    private fun secureStoreFile(): java.io.File =
+        java.io.File(context.applicationInfo.dataDir, "shared_prefs/$SECURE_PREFS_NAME.xml")
 
     /** The account store, made exactly as it always was (default AES256-GCM master key,
      *  AES256-SIV keys, AES256-GCM values). Throws when the Keystore refuses. */
@@ -450,50 +476,119 @@ class WalletManager @Inject constructor(
     }
 
     /** [createSecureStore], or an empty in-memory store when the Keystore refuses - the file on
-     *  disk is left as it is (see [secureStoreFailure]). */
-    private fun openSecureStoreOrInMemory(): android.content.SharedPreferences = try {
-        createSecureStore()
-    } catch (e: Exception) {
-        // GeneralSecurityException (KeyStoreException, AEADBadTagException), IOException and
-        // RuntimeException (ProviderException) are all Exceptions (as StartupSafety).
-        android.util.Log.e("WalletManager", "The account store could not be opened; asking for the 12 or 24 words", e)
-        secureStoreFailure = e
-        com.kachat.app.util.InMemorySharedPreferences()
+     *  disk is left as it is (see [secureStoreFailure], [secureStoreUnavailable]). */
+    private fun openSecureStoreOrInMemory(): android.content.SharedPreferences {
+        // Checked before the store is made: making it writes the file.
+        val hadStore = secureStoreFile().exists()
+        return try {
+            createSecureStore()
+        } catch (e: Exception) {
+            // GeneralSecurityException (KeyStoreException, AEADBadTagException), IOException and
+            // RuntimeException (ProviderException) are all Exceptions (as StartupSafety).
+            if (hadStore) {
+                android.util.Log.e("WalletManager", "The account store could not be opened; asking for the 12 or 24 words", e)
+                secureStoreFailure = e
+            } else {
+                android.util.Log.e("WalletManager", "A new account store could not be made; running in memory until one can", e)
+                secureStoreUnavailable = e
+            }
+            com.kachat.app.util.InMemorySharedPreferences()
+        }
     }
 
     /**
-     * The recovery screen's way on: the account store opened again, so an import is saved. Tried
-     * as it is first - a Keystore that only refused at launch opens now, and every account is
-     * back. Otherwise the unreadable file is copied aside (its bytes kept in no-backup storage,
-     * never read again) and a new, empty store is made. True when a real store is open.
+     * The store as it is, tried again: a Keystore that only refused at launch opens now, every
+     * account is back and nothing is set aside (the recovery screen's "Enter 12 or 24 Words"
+     * first, and [requireSavableStore]). True when a real store is open.
      */
-    @Synchronized
-    fun resetUnreadableSecureStore(): Boolean {
-        if (secureStoreFailure == null) return true
+    fun reopenSecureStore(): Boolean = synchronized(accountsLock) {
+        if (secureStoreFailure == null && secureStoreUnavailable == null) return@synchronized true
         val reopened = try {
             createSecureStore()
         } catch (e: Exception) {
-            android.util.Log.w("WalletManager", "The account store still can't be opened; setting it aside", e)
+            android.util.Log.w("WalletManager", "The account store still can't be opened", e)
+            return@synchronized false
+        }
+        adoptSecureStore(reopened)
+        true
+    }
+
+    /**
+     * The recovery import's commit, just before the words are saved (WalletViewModel.commitImport),
+     * and only there: nothing changes on the recovery screen or while the words are typed, so
+     * leaving Import loses nothing (iOS WalletRecoveryView). Tried as it is first. Otherwise the
+     * unreadable file is copied aside (its bytes kept in no-backup storage, never read again) and a
+     * new, empty store is made. True when a real store is open.
+     */
+    fun resetUnreadableSecureStore(): Boolean = synchronized(accountsLock) {
+        if (secureStoreFailure == null) return@synchronized true
+        if (reopenSecureStore()) return@synchronized true
+        android.util.Log.w("WalletManager", "Setting the unreadable account store aside")
+        try {
+            val file = secureStoreFile()
+            if (file.exists()) {
+                file.copyTo(java.io.File(context.noBackupFilesDir, "$SECURE_PREFS_NAME.unreadable-${System.currentTimeMillis()}.xml"))
+            }
+            context.deleteSharedPreferences(SECURE_PREFS_NAME)
+        } catch (e: Exception) {
+            android.util.Log.e("WalletManager", "The unreadable account store could not be set aside", e)
+            return@synchronized false
+        }
+        val made = try {
+            createSecureStore()
+        } catch (e: Exception) {
+            // Even a new, empty file can't be made: the master key itself refuses. It is
+            // MasterKey.DEFAULT_MASTER_KEY_ALIAS, shared with every other encrypted store
+            // (StartupSafety's - ColdStorage, ChildMode, Nextcloud, Portfolio - GroupSecretStore,
+            // the .kachat names actions), and a key that refuses here leaves those just as
+            // unreadable, so nothing readable is lost by replacing it. Only here, in the recovery
+            // import's commit, never at launch or on the recovery screen.
+            android.util.Log.w("WalletManager", "A new account store could not be made; replacing the master key", e)
             try {
-                val file = java.io.File(context.applicationInfo.dataDir, "shared_prefs/$SECURE_PREFS_NAME.xml")
-                if (file.exists()) {
-                    file.copyTo(java.io.File(context.noBackupFilesDir, "$SECURE_PREFS_NAME.unreadable-${System.currentTimeMillis()}.xml"))
-                }
+                KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
+                    .deleteEntry(MasterKey.DEFAULT_MASTER_KEY_ALIAS)
                 context.deleteSharedPreferences(SECURE_PREFS_NAME)
                 createSecureStore()
             } catch (e2: Exception) {
                 android.util.Log.e("WalletManager", "A new account store could not be made", e2)
-                return false
+                return@synchronized false
             }
         }
-        sharedPrefs = reopened
+        adoptSecureStore(made)
+        true
+    }
+
+    /** [store] is the account store from now on; everything read from the old one is dropped. */
+    private fun adoptSecureStore(store: android.content.SharedPreferences) {
+        sharedPrefs = store
         secureStoreFailure = null
+        secureStoreUnavailable = null
         accountsCache = null
         spendingAddressCacheMemo = null
         usedAddressesMemo = null
         quantumSpentMemo = null
         refreshActiveAddressFlow()
-        return true
+        refreshPrimarySpendingIndexFlow()
+    }
+
+    /** Thrown when an import / create can't be saved because the phone's secure storage can't be
+     *  opened - nothing has been changed when it is thrown. An [IllegalStateException], so
+     *  UserFacingError keeps its message. */
+    class SecureStoreUnavailableException(message: String) : IllegalStateException(message)
+
+    fun secureStoreUnavailableError() =
+        SecureStoreUnavailableException(context.getString(com.kachat.app.R.string.wallet_recovery_failed_message))
+
+    /**
+     * Before an import or create saves: a store that couldn't be opened at launch is tried again,
+     * and if it still can't be, nothing is saved to the in-memory one (the account would be gone at
+     * the next launch) - [SecureStoreUnavailableException] says so. An unreadable store is replaced
+     * only by the recovery import ([resetUnreadableSecureStore]), which runs before this.
+     */
+    private fun requireSavableStore() {
+        if ((secureStoreFailure != null || secureStoreUnavailable != null) && !reopenSecureStore()) {
+            throw secureStoreUnavailableError()
+        }
     }
 
     /**
@@ -598,7 +693,7 @@ class WalletManager @Inject constructor(
      * Writes [accounts] synchronously and reads them back; throws [AccountsNotKeptException] (with
      * the previous list put back) unless every account of [previous] survived intact.
      */
-    private fun saveAccountsKeepingExisting(accounts: List<Account>, previous: List<Account>, newAddress: String) {
+    private fun saveAccountsKeepingExisting(accounts: List<Account>, previous: List<Account>, newAddress: String) = synchronized(accountsLock) {
         val committed = try {
             sharedPrefs.edit().putString(PREF_ACCOUNTS, gson.toJson(accounts)).commit()
         } catch (e: Exception) {
@@ -618,7 +713,7 @@ class WalletManager @Inject constructor(
         refreshPrimarySpendingIndexFlow()
     }
 
-    private fun saveAccounts(accounts: List<Account>) {
+    private fun saveAccounts(accounts: List<Account>) = synchronized(accountsLock) {
         val json = gson.toJson(accounts)
         accountsCache = accounts
         sharedPrefs.edit().putString(PREF_ACCOUNTS, json).apply()
@@ -814,30 +909,36 @@ class WalletManager @Inject constructor(
         owesBackup: AccountBackupStatus? = null,
     ) {
         // A freshly created wallet is by definition a KaChat wallet: standard family, index 0.
+        // Derived before the lock: it is the slow part.
         val address = deriveIdentityAddress(mnemonic, passphrase, WalletSourceFamily.KASPA_STANDARD, 0)
-        owesBackup?.markPending(address)
-        try {
-            // The accounts already here must be kept before the list is rewritten (IOS-016).
-            val previous = accountsForReplacingWrite()
-            val accounts = previous.toMutableList()
-            // Stored in NFKD with the "nfkd" flag, as Desktop stores it (audit XP-013).
-            accounts.add(
-                Account(
-                    name,
-                    address,
-                    mnemonic.joinToString(" "),
-                    passphrase = nfkd(passphrase),
-                    passphraseForm = PassphraseForm.NFKD.stored
+        synchronized(accountsLock) {
+            // Nothing is owed or saved on a store that can't keep it.
+            requireSavableStore()
+            // On disk before the keys are: an app killed in between still owes the backup.
+            owesBackup?.markPending(address, commit = true)
+            try {
+                // The accounts already here must be kept before the list is rewritten (IOS-016).
+                val previous = accountsForReplacingWrite()
+                val accounts = previous.toMutableList()
+                // Stored in NFKD with the "nfkd" flag, as Desktop stores it (audit XP-013).
+                accounts.add(
+                    Account(
+                        name,
+                        address,
+                        mnemonic.joinToString(" "),
+                        passphrase = nfkd(passphrase),
+                        passphraseForm = PassphraseForm.NFKD.stored
+                    )
                 )
-            )
-            saveAccountsKeepingExisting(accounts, previous, address)
-        } catch (e: Exception) {
-            // nothing was created, so nothing is owed
-            owesBackup?.markDone(address)
-            throw e
+                saveAccountsKeepingExisting(accounts, previous, address)
+            } catch (e: Exception) {
+                // nothing was created, so nothing is owed
+                owesBackup?.markDone(address)
+                throw e
+            }
+            stampAccountAddedAt(address)
+            setActiveAccount(address)
         }
-        stampAccountAddedAt(address)
-        setActiveAccount(address)
     }
 
     /**
@@ -918,33 +1019,38 @@ class WalletManager @Inject constructor(
         // The family + index shape the identity path the same way (a KDX seed and a KaChat seed
         // with the same words are genuinely different accounts, on different branches).
         val address = deriveIdentityAddress(mnemonic, passphrase, family, chattingAddressIndex)
-        // The accounts already here must be kept before the list is rewritten: an unreadable
-        // stored list, or a write that doesn't read back with them intact, stops the import with
-        // nothing changed (iOS 9758568, IOS-016). Re-importing the same account is not a loss.
-        val previous = accountsForReplacingWrite()
-        val existing = previous.firstOrNull { it.address == address }
-        val accounts = previous.filter { it.address != address }.toMutableList()
-        accounts.add(
-            0,
-            Account(
-                name = name,
-                address = address,
-                mnemonic = mnemonic.joinToString(" "),
-                spendingAddressIndex = existing?.spendingAddressIndex ?: 0,
-                maxSpendingAddressIndex = existing?.maxSpendingAddressIndex ?: 0,
-                maxQuantumAddressIndex = existing?.maxQuantumAddressIndex,
-                // Stored in NFKD with the "nfkd" flag, as Desktop stores it (audit XP-013).
-                passphrase = nfkd(passphrase),
-                sourceFamily = family.name,
-                chattingAddressIndex = chattingAddressIndex,
-                passphraseForm = PassphraseForm.NFKD.stored
+        synchronized(accountsLock) {
+            // Nothing is saved on a store that can't keep it.
+            requireSavableStore()
+            // The accounts already here must be kept before the list is rewritten: an unreadable
+            // stored list, or a write that doesn't read back with them intact, stops the import
+            // with nothing changed (iOS 9758568, IOS-016). Re-importing the same account is not a
+            // loss.
+            val previous = accountsForReplacingWrite()
+            val existing = previous.firstOrNull { it.address == address }
+            val accounts = previous.filter { it.address != address }.toMutableList()
+            accounts.add(
+                0,
+                Account(
+                    name = name,
+                    address = address,
+                    mnemonic = mnemonic.joinToString(" "),
+                    spendingAddressIndex = existing?.spendingAddressIndex ?: 0,
+                    maxSpendingAddressIndex = existing?.maxSpendingAddressIndex ?: 0,
+                    maxQuantumAddressIndex = existing?.maxQuantumAddressIndex,
+                    // Stored in NFKD with the "nfkd" flag, as Desktop stores it (audit XP-013).
+                    passphrase = nfkd(passphrase),
+                    sourceFamily = family.name,
+                    chattingAddressIndex = chattingAddressIndex,
+                    passphraseForm = PassphraseForm.NFKD.stored
+                )
             )
-        )
-        saveAccountsKeepingExisting(accounts, previous, address)
-        // Only if this address has never been seen here - re-importing a seed already on the
-        // device is not the account arriving again.
-        stampAccountAddedAt(address)
-        setActiveAccount(address)
+            saveAccountsKeepingExisting(accounts, previous, address)
+            // Only if this address has never been seen here - re-importing a seed already on the
+            // device is not the account arriving again.
+            stampAccountAddedAt(address)
+            setActiveAccount(address)
+        }
     }
 
     /**
@@ -965,11 +1071,11 @@ class WalletManager @Inject constructor(
      * snapshots and the used / quantum-spent address sets (iOS WalletManager.deleteWallet's
      * `clearAll` for the last account). With others left, only this account's own entries go.
      */
-    fun deleteAccount(address: String) {
+    fun deleteAccount(address: String) = synchronized(accountsLock) {
         val accounts = getAccounts().filterNot { com.kachat.app.util.KaspaNetwork.isSameAccount(it.address, address) }
         if (accounts.isEmpty()) {
             wipe()
-            return
+            return@synchronized
         }
         saveAccounts(accounts)
         val active = sharedPrefs.getString(PREF_ACTIVE_ADDRESS, null)
@@ -981,15 +1087,21 @@ class WalletManager @Inject constructor(
     }
 
     /** [address]'s per-account entries, on both networks' encodings (iOS removes only that
-     *  account's keys and snapshot while others remain). The used / quantum-spent sets are
-     *  address-keyed and shared, so they stay until the last account goes. */
+     *  account's keys and snapshot while others remain). The used set is address-keyed and
+     *  shared, so it stays until the last account goes; the quantum-spent marks on this
+     *  account's own spending addresses go with it, as iOS's per-account `qspent` does in
+     *  `removeSpendingData` (iOS 33095ac). */
     private fun removeAccountEntries(address: String) {
         val variants = com.kachat.app.util.KaspaNetwork.accountAddressVariants(address)
         val cached = getAllCachedSpendingAddresses()
         val ownSpending = cached.filter { it.walletAddress in variants }.map { it.address }.toSet()
         val keptCache = cached.filterNot { it.walletAddress in variants }
         spendingAddressCacheMemo = keptCache
+        val ownSpendingLowered = ownSpending.map { it.trim().lowercase() }.toSet()
+        val keptQuantumSpent = quantumSpentAddresses() - ownSpendingLowered
+        quantumSpentMemo = keptQuantumSpent
         val editor = sharedPrefs.edit()
+        editor.putString(PREF_QUANTUM_SPENT_ADDRESSES, gson.toJson(keptQuantumSpent))
         for (variant in variants) {
             editor.remove("receive_index_$variant")
             editor.remove("${PREF_MANAGE_ADDRESSES_SNAPSHOT}_$variant")
@@ -1214,7 +1326,7 @@ class WalletManager @Inject constructor(
      *  The list is the account's stored record here (iOS's Keychain wallet record), so the new
      *  name is what every later launch and sign-in reads (iOS d816404). Matched as an account,
      *  not a string, like iOS's `isSameAccount`. */
-    fun renameAccount(address: String, newName: String) {
+    fun renameAccount(address: String, newName: String) = synchronized(accountsLock) {
         val accounts = getAccounts().map {
             if (com.kachat.app.util.KaspaNetwork.isSameAccount(it.address, address)) it.copy(name = newName) else it
         }

@@ -49,11 +49,17 @@ import com.kachat.app.viewmodels.WalletViewModel
 
 /** Opens the backup steps behind the seed phrase's biometric gate, when enabled. */
 internal fun unlockAccountBackup(context: Context, biometricEnabled: Boolean, show: () -> Unit) {
-    val admitted = { SecretRouteGate.grant(); show() }
+    unlockAccountBackupInline(context, biometricEnabled) { SecretRouteGate.grant(); show() }
+}
+
+/** The same gate for words shown on the screen already open (Backup Hygiene's "Can't Complete
+ *  This"): no route opens, so nothing is granted - a grant left pending would let the next
+ *  restored route through. */
+internal fun unlockAccountBackupInline(context: Context, biometricEnabled: Boolean, show: () -> Unit) {
     if (biometricEnabled) {
-        context.authenticateWithDeviceCredential(title = "Unlock to view your 12 or 24 words", onSuccess = admitted)
+        context.authenticateWithDeviceCredential(title = "Unlock to view your 12 or 24 words", onSuccess = show)
     } else {
-        admitted()
+        show()
     }
 }
 
@@ -686,7 +692,7 @@ fun BackupHygieneScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(6.dp))
-                .clickable { unlockAccountBackup(context, biometricEnabled) { redoingBackup = true } }
+                .clickable { unlockAccountBackupInline(context, biometricEnabled) { redoingBackup = true } }
                 .padding(vertical = 4.dp),
         )
     }

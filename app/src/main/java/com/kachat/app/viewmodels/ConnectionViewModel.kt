@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import javax.inject.Inject
 
 /** How long the pool must stay empty before the dot is allowed to turn red. */
@@ -227,12 +228,16 @@ class ConnectionViewModel @Inject constructor(
     /**
      * Trimmed, without a trailing slash; null for an http:// value (iOS `isCleartextHTTP`). A bare
      * host ("indexer.kachat.app") gets https:// (iOS `normalizedHTTPSURL`); blank stays blank.
+     * Null too when the result isn't a URL with a host (a lone "https://" became
+     * "https://https:"), so the dialog shows its error instead of saving it.
      */
     fun httpsUrlOrNull(value: String): String? {
         val trimmed = value.trim().trimEnd('/')
         if (trimmed.isEmpty()) return trimmed
         if (trimmed.startsWith("http://", ignoreCase = true)) return null
-        return if (trimmed.startsWith("https://", ignoreCase = true)) trimmed else "https://$trimmed"
+        val url = if (trimmed.startsWith("https://", ignoreCase = true)) trimmed else "https://$trimmed"
+        val parsed = url.toHttpUrlOrNull() ?: return null
+        return if (parsed.host.isBlank()) null else url
     }
 
     /**

@@ -323,9 +323,19 @@ class BroadcastViewModel @Inject constructor(
         liveViewingHandle = broadcastScanningService.startLiveViewing(channelName)
         liveViewingChannel = channelName
         notificationHelper.setActiveChannel(channelName) // suppress a notification for the channel already on screen
-        // And clear the one already in the shade: NotificationHelper.showBroadcast posts it
+        // And clear the ones already in the shade: NotificationHelper.showBroadcast posts it
         // under "bcast:<room>".hashCode(), no tag (iOS acquire's clearDeliveredNotifications).
-        runCatching { androidx.core.app.NotificationManagerCompat.from(appContext).cancel("bcast:$channelName".hashCode()) }
+        val ownId = "bcast:$channelName".hashCode()
+        runCatching { androidx.core.app.NotificationManagerCompat.from(appContext).cancel(ownId) }
+        // A push the system drew by itself has the tx id as its tag, id 0 and "#room" as its
+        // title: every delivered one of this room goes too (iOS clears thread broadcast:<room>).
+        runCatching {
+            val manager = appContext.getSystemService(android.app.NotificationManager::class.java) ?: return@runCatching
+            for (sbn in manager.activeNotifications) {
+                val title = sbn.notification.extras?.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString()
+                if (sbn.id == ownId || title == "#$channelName") manager.cancel(sbn.tag, sbn.id)
+            }
+        }
     }
 
     fun stopLiveViewing() {
@@ -337,6 +347,7 @@ class BroadcastViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        roomClosed = true
         stopLiveViewing()
         // Avoid leaking a live MediaRecorder if the screen/ViewModel is torn down mid-recording.
         if (_voiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) {
@@ -727,13 +738,24 @@ class BroadcastViewModel @Inject constructor(
      * Room Info's Save: stores the override, says so, then asks the indexer the room now reads
      * from - the one just saved, or the app-wide one a cleared field falls back to - for one row.
      * A wrong URL is otherwise silent: the room just stops filling in (iOS `saveIndexer`).
+     *
+     * https only, by the app's rule for every server address: http:// is refused with the app's
+     * words and nothing is saved, and a bare host gets https://. Returns what the field should
+     * now show (the address as saved), or null when nothing was saved. A save while the last one
+     * is still being checked goes ahead: that check is cancelled, and its late answer ignored.
      */
-    fun saveIndexerOverride(channelName: String, typed: String, stored: String) {
-        val trimmed = typed.trim()
-        if (trimmed == stored.trim()) return
-        if (_indexerCheck.value == IndexerCheck.Checking) return
+    fun saveIndexerOverride(channelName: String, typed: String, stored: String): String? {
+        val trimmed = BroadcastRepository.httpsUrlOrNull(typed) ?: run {
+            indexerProbeJob?.cancel()
+            indexerCheckGeneration++
+            _indexerCheck.value = IndexerCheck.Failed(BroadcastRepository.HTTPS_REQUIRED)
+            return null
+        }
+        if (trimmed == stored.trim()) return trimmed
+        indexerProbeJob?.cancel()
+        val generation = ++indexerCheckGeneration
         _indexerCheck.value = IndexerCheck.Checking
-        viewModelScope.launch {
+        indexerProbeJob = viewModelScope.launch {
             settings.setBroadcastIndexerOverride(channelName, trimmed)
             com.kachat.app.ui.screens.IosToasts.show(
                 if (trimmed.isEmpty()) "This room follows the app's indexer again."
@@ -743,18 +765,28 @@ class BroadcastViewModel @Inject constructor(
             val target = trimmed.ifEmpty { settings.broadcastIndexerUrl.first().trim() }
             // Nothing to check: following the app-wide setting on a network without an indexer.
             if (target.isEmpty()) {
-                _indexerCheck.value = IndexerCheck.Idle
+                if (generation == indexerCheckGeneration) _indexerCheck.value = IndexerCheck.Idle
                 return@launch
             }
-            _indexerCheck.value = try {
+            val result = if (BroadcastRepository.isCleartextHttp(target)) {
+                IndexerCheck.Failed(BroadcastRepository.HTTPS_REQUIRED)
+            } else try {
                 IndexerCheck.Reachable(broadcastRepository.probeIndexer(target, channelName))
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 IndexerCheck.Failed("Could not reach it: ${e.message ?: e.toString()}")
             }
+            // A newer Save owns the row now.
+            if (generation == indexerCheckGeneration) _indexerCheck.value = result
         }
+        return trimmed
     }
+
+    /** The check behind Room Info's last Save, cancelled by the next one. */
+    private var indexerProbeJob: Job? = null
+    /** Bumped by every Save: an older check's answer never lands over a newer one's. */
+    private var indexerCheckGeneration = 0
 
     fun getMessages(channelName: String) = broadcastRepository.getMessages(channelName)
 
@@ -876,6 +908,10 @@ class BroadcastViewModel @Inject constructor(
     fun isLoadingEarlier(channelName: String): Flow<Boolean> =
         loadingEarlier.map { channelName in it }.distinctUntilChanged()
 
+    /** The same, read now: cleared just before the widened window's first answer is handed on,
+     *  so it is never behind the window the screen has. */
+    fun isLoadingEarlierNow(channelName: String): Boolean = channelName in loadingEarlier.value
+
     /** Widens [channelName]'s window by another [BroadcastRepository.ROOM_WINDOW_SIZE]. A tap
      *  while the last one is still loading does nothing, as on iOS. */
     fun loadEarlier(channelName: String) {
@@ -930,9 +966,12 @@ class BroadcastViewModel @Inject constructor(
         // by anyone else (same guard as [sendReaction]).
         if (targetTxId.startsWith("pending_")) return
         _editingMessage.value = null
-        viewModelScope.launch {
+        // On the repository's scope, so Back doesn't cancel it (see [BroadcastRepository.sendScope]).
+        broadcastRepository.sendScope.launch {
             try {
                 broadcastRepository.sendBroadcast(channelName, com.kachat.app.util.MessageEdit.encode(targetTxId, clean))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("BroadcastViewModel", "Error sending broadcast edit", e)
                 // A toast, as iOS PublicChatChannelView.send shows (3 s).
@@ -969,12 +1008,17 @@ class BroadcastViewModel @Inject constructor(
         } else {
             content
         }
-        viewModelScope.launch {
+        // Finishes after the room is closed, as iOS's send on the shared service does: Back
+        // cancelling it would mark a send that went out failed, and its Retry would pay twice.
+        broadcastRepository.sendScope.launch {
             _sendBroadcastState.value = SendBroadcastUiState(status = SendBroadcastStatus.SENDING)
             try {
                 broadcastRepository.sendBroadcast(channelName, payload, feeRateOverride = feeRate)
                 _replyingTo.value = null
                 _sendBroadcastState.value = SendBroadcastUiState()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _sendBroadcastState.value = SendBroadcastUiState()
+                throw e
             } catch (e: Exception) {
                 Log.e("BroadcastViewModel", "Error sending broadcast", e)
                 _sendBroadcastState.value = SendBroadcastUiState()
@@ -983,8 +1027,14 @@ class BroadcastViewModel @Inject constructor(
         }
     }
 
-    /** iOS PublicChatChannelView.showToast: "<prefix>: <reason>", up for 3 s. */
+    /** Set once the room's view model is gone: a send still finishing then says nothing, as an
+     *  iOS toast on a closed room shows nowhere. */
+    @Volatile
+    private var roomClosed = false
+
+    /** iOS PublicChatChannelView.showToast: "<prefix>: <reason>", up for 3 s. Never for a cancel. */
     private fun showFailureToast(prefix: String, e: Exception) {
+        if (roomClosed || e is kotlinx.coroutines.CancellationException) return
         com.kachat.app.ui.screens.IosToasts.show(
             "$prefix: ${humanizeSendError(e)}",
             durationMs = com.kachat.app.ui.screens.IosToastDuration.LONG,
@@ -998,9 +1048,14 @@ class BroadcastViewModel @Inject constructor(
      * orphan retry is exhausted) to plain language; anything unrecognized passes through as-is.
      */
     private fun humanizeSendError(e: Exception): String {
-        // A send that may have landed says so, and its row stays pending with no Retry (iOS
-        // e5a9b11): never a "try again", which could post and pay twice.
+        // A send that may have landed says so, and its row shows "Not confirmed" with no Retry
+        // (iOS 33095ac): never a "try again", which could post and pay twice.
         if (e is com.kachat.app.services.SendOutcomeUnknownException) return com.kachat.app.services.SendOutcomeUnknownException.MESSAGE
+        // Every coin is being mined or held by a send in flight: waiting frees one, so it isn't
+        // "Not enough KAS" (iOS 33095ac `noSpendableFundsYetMessage`).
+        if (e is com.kachat.app.services.NoCoinFreeYetException) {
+            return appContext.getString(com.kachat.app.R.string.room_no_spendable_funds_yet)
+        }
         val raw = e.message ?: e.toString()
         val lower = raw.lowercase()
         return if (lower.contains("orphan") || lower.contains("already spent") || lower.contains("double spend")) {
@@ -1017,13 +1072,16 @@ class BroadcastViewModel @Inject constructor(
 
     /** Re-attempts a failed broadcast — shown via a "Retry Send" option on a failed message's own dropdown menu, matching 1:1 chat's retry. */
     fun retryBroadcast(message: BroadcastMessageEntity) {
-        viewModelScope.launch {
+        // Not cancelled by Back (see [BroadcastRepository.sendScope]).
+        broadcastRepository.sendScope.launch {
             try {
                 broadcastRepository.retryBroadcast(message)
             } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
-                // The retry may have landed: the row stays pending with no Retry. No toast, as
-                // iOS retryPublicChat (its handleSendFailure shows none).
+                // The retry may have landed: the row shows "Not confirmed" with no Retry (iOS
+                // 33095ac). No toast, as iOS retryPublicChat (its handleSendFailure shows none).
                 Log.w("BroadcastViewModel", "Broadcast retry outcome unknown", e)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("BroadcastViewModel", "Error retrying broadcast", e)
             }
@@ -1112,7 +1170,8 @@ class BroadcastViewModel @Inject constructor(
      *  on-chain audio envelope below, with a toast so the sender knows. Mirrors ChatViewModel's
      *  1:1/group Nextcloud voice gates exactly. */
     private fun sendVoiceMessage(channelName: String, file: java.io.File, viaNextcloud: Boolean) {
-        viewModelScope.launch {
+        // The upload and the send both outlive the room (see [BroadcastRepository.sendScope]).
+        broadcastRepository.sendScope.launch {
             try {
                 val bytes = withContext(Dispatchers.IO) { file.readBytes() }
                 if (viaNextcloud) {
@@ -1126,24 +1185,29 @@ class BroadcastViewModel @Inject constructor(
                         }
                         // The recorder already names files voice_<timestamp>.<ext> — keep that name.
                         val url = nextcloudService.uploadMediaAndShare(bytes, file.name, mimeType)
-                        sendBroadcast(channelName, url, failurePrefix = "Failed to send voice message")
+                        // A voice note: never dropped because a text send is still going out.
+                        sendBroadcast(channelName, url, isVoice = true, failurePrefix = "Failed to send voice message")
                         // Warm the preview cache in the background so the sender's own bubble
                         // renders the audio attachment card immediately instead of after its
                         // LinkPreviewCard's lazy fetch round-trips.
                         launch { LinkPreviewService.fetchPreview(url) }
                         return@launch
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.w("BroadcastViewModel", "Nextcloud broadcast voice upload failed, falling back to on-chain send", e)
                         // The public room's toast: iOS PublicChatChannelView's, success-styled and up for 3 s.
-                        com.kachat.app.ui.screens.IosToasts.show("Nextcloud upload failed — sending on-chain instead", durationMs = com.kachat.app.ui.screens.IosToastDuration.LONG)
+                        if (!roomClosed) com.kachat.app.ui.screens.IosToasts.show("Nextcloud upload failed — sending on-chain instead", durationMs = com.kachat.app.ui.screens.IosToastDuration.LONG)
                     }
                 }
                 val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                 val json = VoiceMessage.encode(fileName = file.name, sizeBytes = bytes.size.toLong(), base64Audio = base64)
                 sendBroadcast(channelName, json, isVoice = true, failurePrefix = "Failed to send voice message")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("BroadcastViewModel", "Error preparing voice message", e)
-                if (e !is kotlinx.coroutines.CancellationException) showFailureToast("Failed to send voice message", e)
+                showFailureToast("Failed to send voice message", e)
             } finally {
                 file.delete()
             }
@@ -1171,9 +1235,12 @@ class BroadcastViewModel @Inject constructor(
         // A still-pending target has no real txId yet — reacting to it would put a useless
         // "pending_<uuid>" target on-chain that no other client could ever resolve.
         if (targetTxId.startsWith("pending_")) return
-        viewModelScope.launch {
+        // Not cancelled by Back (see [BroadcastRepository.sendScope]).
+        broadcastRepository.sendScope.launch {
             try {
                 broadcastRepository.sendBroadcast(channelName, MessageReaction.encode(targetTxId, emoji, action))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // The pending reaction row flips to "failed" inside sendBroadcast — the pill shows
                 // the red error icon and a Retry appears under the message, same as groups. One
@@ -1186,9 +1253,11 @@ class BroadcastViewModel @Inject constructor(
 
     /** Retries a reaction whose send previously failed — re-attempts the stored reaction message row (see the pill's error icon + Retry, matching groups). */
     fun retryReaction(reaction: ReactionEntity) {
-        viewModelScope.launch {
+        broadcastRepository.sendScope.launch {
             try {
                 broadcastRepository.retryReactionMessage(reaction.reactionTxId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("BroadcastViewModel", "Error retrying broadcast reaction", e)
             }

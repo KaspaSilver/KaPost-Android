@@ -1165,7 +1165,8 @@ fun BroadcastChannelScreen(
     val jumpToReply: (String) -> Unit = { targetId ->
         val index = messages.indexOfFirst { it.id == targetId }
         if (index < 0) {
-            IosToasts.show("Original message not available.")
+            // A room's toast: up for 3 s, as iOS PublicChatChannelView.showToast.
+            IosToasts.show("Original message not available.", durationMs = IosToastDuration.LONG)
         } else {
             coroutineScope.launch {
                 listState.animateScrollToItem(index + listOffset)
@@ -1210,12 +1211,19 @@ fun BroadcastChannelScreen(
     // grew the count and ran this again, so a filling room animated to the bottom once per page
     // (iOS 9c9e3e0).
     var hasPositionedAtLatest by remember(channelName) { mutableStateOf(false) }
+    // Older messages land above the one the reader was at the top of: put them back on it
+    // (iOS `keepInPlaceAfterOlderLoad`), rather than at the start of the new batch. Declared here:
+    // the scroll to the newest below stands aside while it is set.
+    var keepInPlaceId by remember(channelName) { mutableStateOf<String?>(null) }
     LaunchedEffect(channelName, messages.lastOrNull()?.id) {
         if (messages.isEmpty()) return@LaunchedEffect
         if (!hasPositionedAtLatest) {
             listState.scrollToItem(messages.size - 1 + listOffset)
             hasPositionedAtLatest = true
         } else {
+            // Earlier messages are loading: a new one arriving meanwhile doesn't pull the reader
+            // down (iOS PublicChatChannelView's `guard keepInPlaceAfterOlderLoad == nil`).
+            if (keepInPlaceId != null) return@LaunchedEffect
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             // Someone reading further up stays where they are; your own message still brings
             // you down to it (iOS e5a9b11).
@@ -1223,6 +1231,16 @@ fun BroadcastChannelScreen(
             if (mine || (lastVisible >= messages.size - 3 + listOffset && !listState.isScrollInProgress)) {
                 listState.animateScrollToItem(messages.size - 1 + listOffset)
             }
+        }
+    }
+    // History paging in above a freshly opened room: someone at the bottom stays there instead
+    // of being left in the history (iOS 33095ac). Keyed on the OLDEST message, so only a page of
+    // older history runs it; the newest message showing is what "at the bottom" means.
+    LaunchedEffect(channelName, messages.firstOrNull()?.id) {
+        if (messages.isEmpty() || !hasPositionedAtLatest || keepInPlaceId != null) return@LaunchedEffect
+        val lastVisibleKey = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.key
+        if (lastVisibleKey == messages.last().id && !listState.isScrollInProgress) {
+            listState.scrollToItem(messages.size - 1 + listOffset)
         }
     }
 
@@ -1239,16 +1257,17 @@ fun BroadcastChannelScreen(
         }
     }
 
-    // Older messages land above the one the reader was at the top of: put them back on it
-    // (iOS `keepInPlaceAfterOlderLoad`), rather than at the start of the new batch.
-    var keepInPlaceId by remember(channelName) { mutableStateOf<String?>(null) }
-    LaunchedEffect(messages.firstOrNull()?.id) {
+    // Put back on the anchor once the widened window's first answer is in, then cleared whether
+    // or not that window added an earlier message: a stale anchor would jump the list on some
+    // later change (iOS clears it on the first change after the load). Keyed on the load ending
+    // too, since a window that came back the same as before is not a new value.
+    LaunchedEffect(loadedWindow, isLoadingEarlier) {
         val anchor = keepInPlaceId ?: return@LaunchedEffect
+        // Still the old window on screen; the view model's flag is the up-to-date one.
+        if (broadcastViewModel.isLoadingEarlierNow(channelName)) return@LaunchedEffect
         val index = messages.indexOfFirst { it.id == anchor }
-        if (index > 0) {
-            listState.scrollToItem(index + listOffset)
-            keepInPlaceId = null
-        }
+        if (index > 0) listState.scrollToItem(index + listOffset)
+        keepInPlaceId = null
     }
 
     // Only show the "jump to latest" button once the last message isn't even partially
@@ -1695,7 +1714,8 @@ fun BroadcastChannelScreen(
                     onPayInKaspa = { sendTarget = address },
                     onCopyAddress = {
                         sheetClipboard.setText(AnnotatedString(address))
-                        com.kachat.app.util.showAddressCopiedToast(sheetContext, address, haptic = false)
+                        // A room's toasts stay up 3 s (iOS PublicChatChannelView.showToast).
+                        com.kachat.app.util.showAddressCopiedToast(sheetContext, address, haptic = false, durationMs = IosToastDuration.LONG)
                     },
                     // Per-room since 4.0: hides this sender in THIS room only.
                     onHide = { broadcastViewModel.hideSender(address, channelName) },
@@ -1832,6 +1852,8 @@ fun BroadcastChannelScreen(
                         internalLinkMatch != null
                     val messageReactions = reactionsByTxId[message.id] ?: emptyList()
                     var showMenu by remember { mutableStateOf(false) }
+                    // The link a long-press landed on, for its own Open / Copy sheet.
+                    var linkMenuUrl by remember { mutableStateOf<String?>(null) }
                     // Who reacted to this message, when the reader asks from the long-press menu.
                     var showReactions by remember { mutableStateOf(false) }
                     val clipboardManager = LocalClipboardManager.current
@@ -2043,6 +2065,8 @@ fun BroadcastChannelScreen(
                                     }
                                     // iOS: body text padded 14 by 10 on secondarySystemBackground (the
                                     // outgoing teal for your own) in a 16-rounded bubble, 280 at most.
+                                    // Where the text's links sit, for a long-press on one.
+                                    var bodyLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
                                     Column(
                                         modifier = Modifier
                                             .widthIn(max = 280.dp)
@@ -2053,16 +2077,38 @@ fun BroadcastChannelScreen(
                                             annotatedBody,
                                             color = if (isMine) LocalAppColors.current.onOutgoingBubble else LocalAppColors.current.textPrimary,
                                             fontSize = 17.sp,
+                                            onTextLayout = { bodyLayout = it },
                                             modifier = Modifier
                                                 .padding(horizontal = 14.dp, vertical = 10.dp)
                                                 .pointerInput(annotatedBody) {
                                                     detectTapGestures(
-                                                        onLongPress = { showMenu = true },
+                                                        // On a link: Open / Copy for that link (iOS
+                                                        // onLinkLongPress → LinkActionsSheet).
+                                                        // Anywhere else: the message's menu.
+                                                        onLongPress = { position ->
+                                                            val url = bodyLayout?.let { layout -> linkAt(layout, annotatedBody, position) }
+                                                            if (url != null) linkMenuUrl = url else showMenu = true
+                                                        },
                                                         onDoubleTap = { QuickReactionBarState.activeId = message.id },
                                                     )
                                                 },
                                         )
                                     }
+                                }
+
+                                linkMenuUrl?.let { url ->
+                                    // iOS PublicChatChannelView's link sheet: open it anywhere
+                                    // (a KaChat link opens its screen), or copy it.
+                                    LinkActionsSheet(
+                                        url = url,
+                                        onDismiss = { linkMenuUrl = null },
+                                        onOpen = {
+                                            val internal = KaChatLink.parse(url)
+                                            if (internal != null) openKaChatLink(internal)
+                                            else uriHandler.openUri(url)
+                                        },
+                                        onCopy = { clipboardManager.setText(AnnotatedString(url)) },
+                                    )
                                 }
 
                                 if (showMenu) {
@@ -2312,7 +2358,8 @@ fun BroadcastChannelScreen(
 
                             // The time under every message, exactly as in a 1:1 chat, and under your own
                             // the status after it: "Sending", "Sent" with the green check, "Failed · Tap
-                            // to retry" (iOS fc6aec6). Rooms are long feeds, so other days carry the day.
+                            // to retry" (iOS fc6aec6), or "Not confirmed" with no Retry for a send whose
+                            // outcome is unknown (iOS 33095ac). Rooms are long feeds, so other days carry the day.
                             MessageTimeLine(
                                 timestampMs = message.blockTimestamp,
                                 showsDay = true,
@@ -2659,4 +2706,16 @@ private fun PublicChatsBulkBar(
         )
         BulkButton("Delete", Icons.Default.Delete, tint = colors.danger, onClick = onDelete)
     }
+}
+
+/**
+ * The "URL" annotation under [position] in a message's text, or null when the press landed off
+ * every link - past the end of a line counts as off, not as the line's last character.
+ */
+private fun linkAt(layout: TextLayoutResult, text: AnnotatedString, position: Offset): String? {
+    val line = layout.getLineForVerticalPosition(position.y)
+    if (position.y < layout.getLineTop(line) || position.y > layout.getLineBottom(line)) return null
+    if (position.x < layout.getLineLeft(line) || position.x > layout.getLineRight(line)) return null
+    val offset = layout.getOffsetForPosition(position)
+    return text.getStringAnnotations("URL", offset, offset).firstOrNull()?.item
 }

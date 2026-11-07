@@ -32,12 +32,49 @@ What is still KaChat-shaped underneath:
   profile editor and the Wallet's Domains tab reach them. The Domains tab
   (`KaPostAddressDomainsTab`) only lists the names: registering, renewing, selling and editing
   them is KaChat Wallet's, which its button opens (KaPay, `kapay.kachat.app`, listed in the manifest's
-  `<queries>`). `.kachat` is the
+  `<queries>`). The Wallet's Your Domains (iOS 071e901, below) reaches the rest: the .kachat
+  list (`KachatLiveDomainsTab`), a name's live page and the marketplace (Inscribe). `.kachat` is the
   only name service KaPosts reads: KNS (.kas), dotk (.k) and Kaspa Names (.kaspa) are switched
   off at their entry points (`KnsService.IS_ENABLED`, `NameServicesClient.OTHER_SERVICES_ENABLED`),
-  so the Domains tab, address fields, mentions and search see .kachat names only.
+  so the Domains tab, address fields, mentions and search see .kachat names only. iOS 071e901
+  keeps them off, so Your Domains' .kas, .k and .kaspa cards open empty lists. Name pushes stay
+  dropped (see Protocol and servers).
 - Chats live in KaChat: a profile's Chat button opens `kachat://profile/<address>?chat=1` (or its
   kachat.app page).
+
+## Full wallet (KaPay's Wallet tab, iOS 071e901)
+
+Every KaChat app has KaPay's full wallet (owner's call, 2026-11-07; it replaced "chatting address
+only" from 2026-11-05). Profile > Wallet (`KaPostWalletScreen`) is KaPay's Wallet tab: the total
+split into chatting and spending, Send, Receive and More (Compound UTXOs, Request Payment, the
+chatting address's keys), Backup Hygiene when due, then the Manage Addresses and Chatting Address
+squares (`WalletAddressSquares`), Your Domains (below) and Help (`WalletHelpScreen`, the .kachat
+names guide); then the history. The squares, Manage Addresses (`ManageAddressesScreen`, its
+floating Address Actions button: Generate, Discover, Address Visibility), a spending address's page
+(`SpendingAddressTxHistoryScreen`, route `spending_address_detail/{index}`), Address Visibility, the
+Chatting Address QR page (`chatting_address_qr`) and Receive's fresh address (`ReceiveKaspaQrPage`)
+are in `ui/screens/WalletAccountScreens.kt`, ported from KaPay Android; Manage Addresses' Chatting
+Address row opens `IdentityAddressDetailScreen` (`identity_address_detail`). No Contacts (saved
+addresses): people use KaChat or KaPay for that (owner's call, 2026-11-07).
+Send has the From step (`SpendingAddressSendFlow`'s `lockedSource` is null unless an address's own
+Send opens it), Receive shows a fresh address (`WalletViewModel.resolveFreshReceiveAddress`, warmed
+when the Wallet opens, revealed when the QR shows), and Request Payment offers Fresh Address or
+Choose an Address. Ported from KaPay: keep these in unison with it, and port KaPay changes here.
+Spending addresses number from #1 (`WalletManager.addressNumber`; the quantum chain from #0).
+
+## Your Domains (iOS 071e901)
+
+Profile > Wallet > Your Domains (`WalletYourDomainsRow` on `KaPostWalletScreen`, route
+`kns_domains`; `ui/screens/WalletDomainScreens.kt`, iOS `Views/Wallet/WalletDomainViews.swift`),
+ported from KaPay's: the row counts every name the account owns (.kachat, KNS, .k, .kaspa).
+`KnsDomainsScreen` is one square card per service, each opening its list; .kachat is
+`KachatLiveDomainsTab` (names, My Offers, Inscribe opening `KachatMarketScreen`; a name opens
+`KachatLiveNameDetailScreen`; the list shows the saved copy first, `KachatOwnedNamesCache`). A .kas
+domain opens `KnsDomainDetailScreen`: Asset ID, Primary Domain or Set as Primary (a failure is said in
+place, success is a toast) and Send, which opens `KnsDomainSendScreen` in a sheet (Cancel / Send,
+the phone's lock first, the progress sheet, then `SentConfirmationSheet`). No Customize Profile:
+profiles are edited on KaPost's own Profile. Android's `KnsAsset` has no listing status, so iOS's
+Status: Listed row has nothing to show.
 
 ## Dock
 
@@ -47,9 +84,9 @@ What is still KaChat-shaped underneath:
 |---|---|---|
 | Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
 | Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once; Select (top right) picks rooms for Read, Unread, Mute and Delete; rows swipe (`SwipeActionsRow`; left: Delete, Mute, Pin; right: read state), and a pinned room moves into the circles row above the list, saved per account (`KaPostRoomPins`); the tab's badge is the unread count across the rooms (`KaPostsDock.unreadPublicChats`) |
-| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and More (iOS 7d8b258: Compound UTXOs, dimmed until the chatting address holds two or more coins, Request Payment, View Private Key behind the seed's lock, View Public Key, as in KaPlay), the backup hygiene card, then the chatting address's history) |
+| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and More (iOS 7d8b258: Compound UTXOs, dimmed until the chatting address holds two or more coins, Request Payment, View Private Key behind the seed's lock, View Public Key, as in KaPlay), the backup hygiene card, the Manage Addresses and Chatting Address squares, Your Domains and Help (iOS 071e901, see Full wallet), then the chatting address's history) |
 | Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; a row opens its post on the Feed (a follow opens the follower's profile); the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
-| Settings | `settings` | `SettingsScreen`, alphabetical (iOS e5a9b11): About (version, Terms of Use, Open Source Licenses), Account Name, Back Up Account (Complete Your Backup, View 12 or 24 Words, Back Up to NFC Card), Connection (its tabs swipe; the .kachat names indexer URL is on Domains), Customization, Diagnostics, KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency; instant tips are capped at 10 KAS and ask for the phone's lock once when turned on), Notifications, Security, Storage; then Delete Account (`DeleteAccountSheet`, the warning the opening screen's Delete also shows; both ask for the phone's lock first; `WalletViewModel.deleteCurrentAccount`), Log Out |
+| Settings | `settings` | `SettingsScreen`, alphabetical (iOS e5a9b11): About (version, Terms of Use, Open Source Licenses), Account Name, Back Up Account (Complete Your Backup, View 12 or 24 Words, Back Up to NFC Card), Connection (its tabs swipe; the .kachat names indexer URL is on Domains), Customization, Diagnostics, KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency; instant tips are capped at 10 KAS and ask for the phone's lock once when turned on; Tips From, iOS 071e901), Notifications, Security, Storage; then Delete Account (`DeleteAccountSheet`, the warning the opening screen's Delete also shows; both ask for the phone's lock first; `WalletViewModel.deleteCurrentAccount`), Log Out |
 
 The dock stays in reach on every screen and steps aside for the keyboard. Pushed screens keep the
 real one (`AboveDock` lays them out above it; the Wallet, a room and the tabs run on under it
@@ -71,7 +108,8 @@ finished `AccountBackupBanner` sits above every tab's title (Feed, Public Chats,
 Notifications, Settings, the Wallet; red once the chatting or spending addresses hold funds) and
 the Delete Account warning leads with Back Up Account; deleting is never blocked. Imported and older accounts are never owed one. An import that answers Yes to the
 passphrase question checks the first 50 addresses, picks the first with funds and lets you pick
-another (Import waits until that search ends); one without a passphrase opens address #0.
+another (Import waits for that search at most 12 s, with Skip and Search Again, iOS 33095ac); one
+without a passphrase opens address #0.
 "Advanced: Create with a Passphrase" opens straight on the passphrase field. Importing or finishing the steps starts a
 six-month timer; when it runs out the same place shows `BackupHygieneCard`, and `BackupHygieneScreen` asks for
 five random words, then the passphrase if there is one. A cold start goes back into the active
@@ -108,6 +146,14 @@ older saved "on" is switched off once per install (`KEY_ACCOUNT_LOGIN_BIOMETRICS
   confirmed, non-coinbase coins (iOS `sendWithdrawal`).
 - Endpoint URLs refuse `http://` ("Use https. Unencrypted connections are not supported.") and add
   `https://` to a bare host (`ConnectionViewModel.httpsUrlOrNull`).
+- Accounts (iOS 33095ac): deleting an account clears both networks' stores and its spending-address
+  data (`WalletManager.removeAccountEntries`, its quantum-spent marks too). A failed write puts the
+  previous account list back (`saveAccountsKeepingExisting`). Import or Log Out clears a stale
+  recovery screen. The Screen Lock Required dialog is its own window and shows once at a time. iOS's
+  Keychain-only items (snapshots, tightening seed items at launch, the active slot) have no Android
+  counterpart: every account sits in the one encrypted store.
+- The diagnostics export shortens every Kaspa address in the logs it bundles to its last 8
+  characters (`redactingKaspaAddresses`, iOS `AppLog.log`).
 
 ## NFC card backup (as iOS 9653c04)
 
@@ -115,7 +161,8 @@ older saved "on" is switched off once per install (`KEY_ACCOUNT_LOGIN_BIOMETRICS
 `docs/PROTOCOL.md` in KaChat-NFC, so a card works across apps; `family` uses iOS's names, and iOS's
 payload version 2 (the doc still shows version 1). In every build, Play too (iOS e5a9b11).
 Settings > Back Up Account > Back Up to NFC Card only exists for an account with a BIP39 passphrase,
-which is never written to the card. Import Account > Restore from NFC Card. Android has no system
+which is never written to the card. A new PIN is typed twice (iOS 33095ac). Import Account > Restore
+from NFC Card; an account already saved here keeps its name. Android has no system
 scan sheet, so the app draws `NfcScanSheet` while reader mode runs.
 
 ## Moderation (as iOS 9e22075)
@@ -176,7 +223,8 @@ Android). Change those pieces, not one screen.
    `SendStepHeader`.
 2. **From**: `SendFromStep` ("Where are you sending from?"): Chatting Address (iOS 7d8b258), or Choose an Address
    with your addresses listed right there (`OwnAddressList`, the same cards `OwnAddressPicker`'s
-   sheet shows). Skipped when the From is fixed (an address's own Send, a post's tip).
+   sheet shows). Skipped when the From is fixed (an address's own Send). The tip sheet has its
+   own From (`KaPostTipFromStep`, iOS 071e901).
 3. **Amount**: `KaspaKeypadAmountEntry`, the app's own number pad (`KaspaKeypad`,
    `KeypadAmountText`), so no system keyboard, under "To ..." and "From ..." chips
    (`SendStepChip`). The From's balance is the Available under the amount, red when the amount is
@@ -189,26 +237,48 @@ Android). Change those pieces, not one screen.
    network's minimum, a warning above ten times it); Confirm goes back to the review.
 
 Swipe up to Send asks for the phone's lock first (`authenticateWithDeviceCredential`, "Confirm
-sending Kaspa") and sends at 30% of the screen (120dp at least). KaPost sends only from the chatting
-address (iOS e5a9b11): Send, tips and Request offer no other address, and the From step is skipped.
+sending Kaspa") and sends at 30% of the screen (120dp at least). Send and tips have the From step
+again (iOS 071e901, KaPay's full wallet; see Full wallet and Tips).
 The fee total includes change too small to keep (`SendFeeModel` folded change).
 
 Send safety (from KaPay): a node's answer must carry the locally computed transaction id, and a send
 the network never answered throws `SendOutcomeUnknownException` ("This may have gone through...").
 That shows "Not confirmed" with only Done on the swipe screen, and posts, replies, room messages and
-instant tips marked `UNCONFIRMED` offer no Retry, which could post and pay twice.
+instant tips marked `UNCONFIRMED` offer no Retry, which could post and pay twice. A room message
+whose outcome is unknown keeps its row as `deliveryStatus` "unconfirmed" under the transaction's
+id, and its delivered copy (indexer or block scan) makes it "sent"; a pending row an earlier run
+left is settled the same way, never marked failed (iOS 33095ac). Coin Control lists every coin at
+the address and greys out, unselectable, the ones the send won't spend (spent by a send in flight,
+held by a scheduled post, unconfirmed, or a mining reward where the send takes neither).
 
 Steps slide sideways (`SendStepTransition`). Where they are used:
 - `SpendingAddressSendFlow` (`Screens.kt`): the Wallet's Send, a room sender's Send, paying a
   chat-payment request (other requests go to KaPay), Compound UTXOs. A pre-filled recipient or a
   request opens on From (a request's amount is fixed: no keypad), Compound on the review.
-- `KaPostTipSheet` (`KaPostsScreens.kt`): no To (the poster is the recipient); From only for a
-  profile's tip (a post's tip comes from your address), then the amount; the review also has the
-  tip's encrypted memo and the small-amount warning.
+- `KaPostTipSheet` (`KaPostsScreens.kt`): no To (the poster is the recipient); it opens on From
+  (`KaPostTipFromStep`, built from the From step's pieces, with a line under the pills saying what
+  the choice means), set to Tips From, then the amount; the review also has the tip's encrypted
+  memo and the small-amount warning.
 - Not ported: the .kachat sheets (`KachatTxSheet`, `KachatClaimSheet` in
-  `KachatNamesLiveScreens.kt`) keep their one-page form; nothing in KaPost opens them (the Domains
-  tab only lists names), as in iOS KaPosts. Request (`CreatePaymentRequestSheet`, the Wallet's More > Request
-  Payment) is amount then review, always to the chatting address.
+  `KachatNamesLiveScreens.kt`) keep their one-page form; Your Domains' .kachat list and
+  marketplace now open them (iOS 071e901). Request (`CreatePaymentRequestSheet`, the Wallet's More > Request
+  Payment) is where (Fresh Address, reserved only once the link is copied or shared, or Choose an
+  Address), amount, then review (iOS 071e901, as in KaPay).
+- `SpendingAddressSendFlow` from a spending address's page (`SpendingAddressTxHistoryScreen`) has
+  that address locked as the From; the Wallet's Send, a room sender's Send and a chat-payment
+  request open on From (iOS 071e901 `lockedSource` nil).
+
+Tips (iOS 071e901, KAPOSTS_INDEXER.md 5.11): only a tip from the chatting address is a tip: it
+names the post, counts on it and lists the tipper. From another address a tip is private (owner's
+call, 2026-11-07): `ChatViewModel.sendPayment` drops the tip and sends a plain payment with the chat
+notice, so the author gets it in your chat but it names no post, isn't counted and doesn't list
+you; the fee preview and Max price it the same way (`previewPaymentFee`, `paymentMaxSompi`). KaPost
+Settings > Tips From (`KaPostTipSourcePage`, `AppSettingsRepository.kaPostsDefaultTipSourceIndex`,
+resolved by `kaPostDefaultTipSource`; a spending index that can't be derived reads as the chatting
+address) picks the instant tip's address and the tip sheet's first choice; an instant tip from
+another address isn't counted on the post and its toast says "privately". Compound Max at Fast /
+Priority already priced its own coins and skipped coins in flight
+(`WalletViewModel.maxConsolidatableChunk`), so iOS 071e901's fix there needed no change.
 
 ## Protocol and servers
 
@@ -242,8 +312,10 @@ wallet app (KaChat-Wallet-Android, `kapay.kachat.app`): a post shows the link as
 (`KaPostPaymentRequestCard`), and a tap, a pasted link or one opened from outside goes through
 `PaymentRequestSheetHost`, which opens `kapay://pay/<same tail>` (`KaPayHandoff`). Your own request
 and a chat-payment request (`chat=1`, an encrypted chat payment KaPay can't make) open here.
-Without KaPay installed, the Play Store opens (`KaPayHandoff.STORE_URL`: a search for KaPay until
-it is listed). KaChat follows the same rule.
+Without KaPay installed, the KaChat apps' install page opens (`KaPayHandoff.STORE_URL`,
+`https://home.kachat.app/install/`, which links each app). KaChat follows the same rule. A KaPlay
+challenge (`KaPlayChallengeViews.kt`) opens in KaPlay, and without it the same install page
+(iOS 33095ac `KaPlayHandoff`).
 
 Links to KaChat's own site (`home.kachat.app`, any page, `KaChatSiteLink`) preview by themselves: a
 post draws the page's card (`LinkPreviewCard`) in place of the link's text, and a room loads it

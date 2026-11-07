@@ -4005,7 +4005,273 @@ fun kachatNameBadge(n: NameInfo, graceMs: Long): String? = when (n.status(graceM
     Status.LAPSED -> stringResource(R.string.kn_available)
 }
 
+/** Your Domains > .kachat card's bottom-right corner: when the name expires - or, once it has,
+ *  when its grace period ends (renew before then to keep it) (iOS 72b7dc7 `expiryLine`; in KaPost
+ *  since iOS 071e901). */
+@Composable
+fun kachatNameExpiryLine(n: NameInfo, graceMs: Long): String? = when (n.status(graceMs)) {
+    Status.ACTIVE -> stringResource(R.string.kn_expires_on, KachatLive.day(n.expiresAt))
+    Status.GRACE -> stringResource(R.string.kn_grace_ends, KachatLive.day(n.expiresAt + graceMs))
+    Status.LAPSED -> null
+}
 
+/**
+ * The offers this wallet made, as tiles that open their half sheet: Withdraw, and Refund once
+ * expired. Shown in Wallet > Your Domains > .kachat, under your names (iOS 0765ce0
+ * `KachatMyOffersSection`; reachable in KaPost since iOS 071e901).
+ */
+@Composable
+fun KachatMyOffersSection(offers: List<OfferInfo>, vm: KachatLiveViewModel, onOpen: (OfferInfo) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        KachatLiveSectionHeader(stringResource(R.string.kn_my_offers), stringResource(R.string.kn_my_offers_detail))
+        KachatNameGrid(offers) { o ->
+            KachatOfferTile(rememberKachatOfferState(o, vm, isBuyer = true, isOwner = false), showsName = true) { onOpen(o) }
+        }
+    }
+}
+
+/**
+ * How many .kachat names [walletAddress] holds, for its Your Domains card (iOS 071e901
+ * `KNSDomainsListView.refreshKachatCount`): the same read [KachatLiveDomainsTab] does, reduced to a
+ * count - the whole wallet's held names for the own chatting address, the one address's otherwise.
+ * Counted again whenever the registry revision moves. Null until the first count lands (the card
+ * shows a dash, not a made-up 0).
+ */
+@Composable
+fun rememberKachatHeldCount(
+    walletAddress: String,
+    vm: KachatLiveViewModel? = if (KachatNamesService.isLaunched) hiltViewModel() else null,
+): Int? {
+    // `vm` is null for the screen's whole life where the registry isn't launched.
+    val revision = vm?.registry?.revision?.collectAsState()?.value
+    var count by remember { mutableStateOf<Int?>(null) }
+    val cacheContext = LocalContext.current
+    LaunchedEffect(revision, walletAddress) {
+        if (vm == null || !KachatNamesService.isEnabled) { count = 0; return@LaunchedEffect }
+        // the saved list's count at once; the reads below correct it when they answer
+        if (count == null) {
+            com.kachat.app.services.kachatnames.KachatOwnedNamesCache.load(cacheContext, walletAddress)?.let { count = it.names.size }
+        }
+        if (vm.registry.refreshedAt.value == null) vm.registry.refresh()
+        val own = if (walletAddress.lowercase() == vm.actions.myAddress) {
+            try {
+                vm.actions.ownNamesAndOffers(heldOnly = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        val key = KachatNamesRegistry.keyOf(walletAddress)
+        count = when {
+            own != null -> own.first.size
+            key != null -> try {
+                vm.registry.heldNames(key).size
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                count
+            }
+            else -> 0
+        }
+    }
+    return count
+}
+
+/**
+ * Wallet > Your Domains > .kachat: the wallet's names (iOS 071e901 `KachatLiveDomainsTab`, as
+ * KaPay's). Where the registry isn't launched [vm] is null and the tab is its empty state with the
+ * Inscribe button, without ever building the registry. Inscribe opens the .kachat marketplace.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun KachatLiveDomainsTab(
+    walletAddress: String,
+    onOpen: (NameInfo) -> Unit,
+    /** Inscribe: the .kachat marketplace over Your Domains. */
+    onInscribe: () -> Unit = {},
+    /** Set when the marketplace was just closed: the list refreshes so a new name shows at once. */
+    refreshRequested: Boolean = false,
+    onRefreshHandled: () -> Unit = {},
+    vm: KachatLiveViewModel? = if (KachatNamesService.isLaunched) hiltViewModel() else null,
+) {
+    val colors = LocalAppColors.current
+    val revision = vm?.registry?.revision?.collectAsState()?.value
+    val upgrading = vm?.service?.registryUpgrading?.collectAsState()?.value == true
+    var names by remember { mutableStateOf<List<NameInfo>>(emptyList()) }
+    // the offers this wallet made
+    var myOffers by remember { mutableStateOf<List<OfferInfo>>(emptyList()) }
+    // The offer whose half sheet is open: held here, not in My Offers, so its receipt stays up
+    // when the last offer leaves the list.
+    var openOffer by remember { mutableStateOf<OfferInfo?>(null) }
+    var loaded by remember { mutableStateOf(vm == null) }
+    val cacheContext = LocalContext.current
+
+    LaunchedEffect(revision, walletAddress) {
+        val key = KachatNamesRegistry.keyOf(walletAddress)
+        if (vm == null || key == null) { loaded = true; return@LaunchedEffect }
+        // The names this wallet had last time, straight away - they rarely change. The read below
+        // checks the registry and replaces them when it answers (KachatOwnedNamesCache).
+        if (!loaded) {
+            com.kachat.app.services.kachatnames.KachatOwnedNamesCache.load(cacheContext, walletAddress)?.let { cached ->
+                val grace = vm.registry.graceMs
+                names = cached.names.filter { it.status(grace) != Status.LAPSED }
+                myOffers = cached.offers
+                loaded = true
+            }
+        }
+        if (vm.registry.refreshedAt.value == null) vm.registry.refresh()
+        // A lapsed name is no longer yours. Expired names in grace stay, to be renewed. Your own
+        // list (the chatting address's) holds the names and offers on every address of this wallet.
+        val own = if (walletAddress.lowercase() == vm.actions.myAddress) {
+            try {
+                vm.actions.ownNamesAndOffers(heldOnly = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        // Only an answer replaces what is shown (and the saved copy); a failed read keeps it.
+        val held = if (own != null || walletAddress.lowercase() == vm.actions.myAddress) {
+            null
+        } else {
+            try {
+                vm.registry.heldNames(key)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        }
+        if (own != null) {
+            names = own.first
+            myOffers = own.second
+            com.kachat.app.services.kachatnames.KachatOwnedNamesCache.save(cacheContext, names, myOffers, walletAddress)
+        } else if (held != null) {
+            names = held
+            myOffers = try {
+                vm.registry.myOffers(key)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                myOffers
+            }
+            com.kachat.app.services.kachatnames.KachatOwnedNamesCache.save(cacheContext, names, myOffers, walletAddress)
+        }
+        if (myOffers.isNotEmpty()) {
+            // expired offers, and ones made to an earlier owner, come back on their own
+            vm.actions.refreshVirtualDaa()
+            vm.actions.returnExpiredOffers(myOffers)
+            vm.actions.withdrawDeclinedOffers(myOffers)
+        }
+        loaded = true
+        // a name that lapses while this is open leaves right then
+        vm.registry.dropLapsed(names) { names = it }
+    }
+
+    LaunchedEffect(refreshRequested) {
+        if (refreshRequested) {
+            onRefreshHandled()
+            vm?.registry?.refresh()
+        }
+    }
+
+    val pullState = rememberPullToRefreshState()
+    LaunchedEffect(pullState.isRefreshing) {
+        if (pullState.isRefreshing) {
+            vm?.registry?.refresh()
+            pullState.endRefresh()
+        }
+    }
+    // Your Domains runs on under the dock: the Inscribe button is pinned above it, and without
+    // the button the list clears it itself.
+    val dockInset = LocalDockInset.current
+    val showsInscribe = loaded && !upgrading
+    Column(Modifier.fillMaxSize()) {
+    Box(Modifier.weight(1f).fillMaxWidth().nestedScroll(pullState.nestedScrollConnection)) {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)
+                .padding(bottom = if (showsInscribe) 0.dp else dockInset),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            when {
+                !loaded -> Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) { IosActivityIndicator(color = KaspaTeal) }
+                // the bundled manifest is for the previous registry: calm, no error
+                upgrading -> Column(
+                    Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Default.Hardware, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(40.dp))
+                    Text(stringResource(R.string.kn_setting_up), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                    Text(stringResource(R.string.kn_registry_being_upgraded), color = colors.textSecondary, fontSize = 15.sp, textAlign = TextAlign.Center)
+                }
+                else -> {
+                    if (names.isEmpty()) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(KachatSymbols.AtCircle, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(44.dp))
+                            Text(stringResource(R.string.km_no_names), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                        }
+                    } else {
+                        names.forEach { n ->
+                            DomainNameCard(
+                                title = n.display,
+                                badge = kachatNameBadge(n, vm?.graceMs ?: 0L),
+                                modifier = Modifier.clickable { onOpen(n) },
+                                footnote = kachatNameExpiryLine(n, vm?.graceMs ?: 0L),
+                            )
+                        }
+                    }
+                    if (vm != null && myOffers.isNotEmpty()) {
+                        // the section's own 16 dp gutters, flush with the list's
+                        Box(Modifier.padding(top = 8.dp).layout { measurable, constraints ->
+                            val wide = constraints.copy(maxWidth = constraints.maxWidth + 32.dp.roundToPx(), minWidth = constraints.minWidth + 32.dp.roundToPx())
+                            val placeable = measurable.measure(wide)
+                            layout(constraints.maxWidth, placeable.height) { placeable.place(-16.dp.roundToPx(), 0) }
+                        }) {
+                            KachatMyOffersSection(myOffers, vm) { openOffer = it }
+                        }
+                    }
+                }
+            }
+        }
+        PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter))
+    }
+    // Pinned under the list like the other name services' "Get a domain" button - the same
+    // outlined capsule - whenever the registry is live.
+    if (showsInscribe) {
+        val hint = stringResource(R.string.kn_opens_marketplace)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = dockInset)
+                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                .clip(RoundedCornerShape(28.dp))
+                .background(colors.surface)
+                .border(androidx.compose.foundation.BorderStroke(1.5.dp, KaspaTeal), RoundedCornerShape(28.dp))
+                .clickable(onClickLabel = hint) { onInscribe() }
+                .padding(vertical = 16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(stringResource(R.string.inscribe), color = KaspaTeal, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        }
+    }
+    }
+    if (vm != null) {
+        openOffer?.let { o ->
+            KachatOfferDetailSheet(rememberKachatOfferState(o, vm, isBuyer = true, isOwner = false), onClose = { openOffer = null }, vm = vm)
+        }
+    }
+}
 
 
 // MARK: - A name opened from a notification

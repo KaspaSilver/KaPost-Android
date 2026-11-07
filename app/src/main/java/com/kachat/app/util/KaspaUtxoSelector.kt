@@ -17,6 +17,20 @@ object KaspaUtxoSelector {
      */
     const val MAX_INPUTS_PER_TRANSACTION = 80
 
+    /** A send that needs more than [MAX_INPUTS_PER_TRANSACTION] inputs: the engine's refusal, and
+     *  the fee preview's (iOS selectUtxosForPayment's wording). */
+    const val TOO_MANY_INPUTS_MESSAGE =
+        "This send needs more than $MAX_INPUTS_PER_TRANSACTION inputs. Compound (consolidate) this address's UTXOs first, then try again."
+
+    /** Coin control picked more than [MAX_INPUTS_PER_TRANSACTION] coins (iOS
+     *  selectManualUtxosForPayment's wording). */
+    fun tooManySelectedMessage(count: Int): String =
+        "Too many inputs selected ($count). Kaspa transactions are limited to about $MAX_INPUTS_PER_TRANSACTION inputs - select fewer, or compound this address first."
+
+    /** iOS's buffer on a payment's fee (`+ 3`, against an under-fee rejection), priced into the
+     *  no-change shape as iOS prices it. */
+    const val FEE_BUFFER_SOMPI = 3L
+
     /**
      * The most a payment may fold into its fee when its change cannot stand as an output (iOS
      * dd4d977). A change output is only ever too small for KIP-9 storage mass below about
@@ -55,7 +69,11 @@ object KaspaUtxoSelector {
         val requiredAmount: Long,
         /** Funds were enough, but no input set fit storage mass without paying real change away
          *  as fee - see [MAX_FOLDED_CHANGE_SOMPI]. The send must be refused. */
-        val storageMassBlocked: Boolean = false
+        val storageMassBlocked: Boolean = false,
+        /** The no-change shape (iOS `emitChange: false`): [estimatedFee] is priced on the
+         *  recipient's output alone, so no change output may be added - [changeAmount] goes to
+         *  the fee whole. */
+        val noChangeShape: Boolean = false
     ) {
         /**
          * Change too small to keep: there is no output for it, so it goes to the fee, and the
@@ -65,6 +83,8 @@ object KaspaUtxoSelector {
          */
         val foldedChangeSompi: Long
             get() {
+                // priced without a change output: what is left is folded, whatever its size
+                if (noChangeShape) return changeAmount.coerceAtLeast(0L)
                 if (changeAmount <= 0 || changeAmount > MAX_FOLDED_CHANGE_SOMPI) return 0L
                 val recipient = if (finalAmount > 0) listOf(finalAmount) else emptyList()
                 val kept = KaspaMass.fitsStorageMass(selectedUtxos.map { it.utxoEntry.amount }, recipient + changeAmount)
@@ -109,6 +129,7 @@ object KaspaUtxoSelector {
         // change does not fit keeps adding inputs (a smaller coin brings the mass back under)
         // rather than stopping there and later folding the change into the fee.
         var storageMassBlocked = false
+        var noChangeShape = false
         for (utxo in utxos.sortedByDescending { it.utxoEntry.amount }) {
             selectedUtxos.add(utxo)
             // Node-supplied: a nonsense amount is refused, never wrapped into a total (IOS-020).
@@ -121,8 +142,26 @@ object KaspaUtxoSelector {
                 sigScriptLens = KaspaMass.sigScriptLensFor(selectedUtxos.size, signatureScriptSize)
             )
             estimatedFee = KaspaMass.calculateFee(mass, feeRateSompiPerGram) + extraFeeSompi
+            noChangeShape = false
 
-            if (totalSelected >= (amountSompi + estimatedFee)) {
+            if (totalSelected < (amountSompi + estimatedFee) && amountSompi > 0 && totalSelected > amountSompi) {
+                // Too little left to pay for a change output at all (a Max send): try without
+                // change, as iOS does (selectUtxosForPayment) - the recipient's output alone, + the
+                // buffer, + the extra, with what is left folded into the fee.
+                val feeNoChange = noChangeFee(selectedUtxos.size, recipientScriptLen, payloadSize, feeRateSompiPerGram, extraFeeSompi, signatureScriptSize)
+                if (totalSelected - amountSompi >= feeNoChange) {
+                    estimatedFee = feeNoChange
+                    noChangeShape = true
+                    // The recipient's output alone must fit too: a small send carved from a
+                    // bigger coin breaks the budget without any change. Another coin lowers that
+                    // mass, so keep adding before giving up.
+                    if (noChangeFits(selectedUtxos, amountSompi, totalSelected - amountSompi - feeNoChange)) {
+                        storageMassBlocked = false
+                        break
+                    }
+                    storageMassBlocked = true
+                }
+            } else if (totalSelected >= (amountSompi + estimatedFee)) {
                 val change = totalSelected - amountSompi - estimatedFee
                 // No change at all is the no-change shape too: the recipient's output alone must
                 // fit (iOS d816404), which [changeIsKeptOrFoldable] checks for a change of 0.
@@ -151,13 +190,40 @@ object KaspaUtxoSelector {
             finalAmount = finalAmount,
             changeAmount = changeAmount,
             requiredAmount = requiredAmount,
-            storageMassBlocked = storageMassBlocked
+            storageMassBlocked = storageMassBlocked,
+            noChangeShape = noChangeShape
         )
     }
 
+    /** iOS's no-change fee (`feeNoChange`): [inputCount] inputs paying the recipient's output
+     *  alone, + [FEE_BUFFER_SOMPI], + the extra. */
+    private fun noChangeFee(
+        inputCount: Int,
+        recipientScriptLen: Int,
+        payloadSize: Int,
+        feeRateSompiPerGram: Long,
+        extraFeeSompi: Long,
+        signatureScriptSize: Int
+    ): Long {
+        val mass = KaspaMass.calculateMass(
+            numInputs = inputCount,
+            outputScriptLens = listOf(recipientScriptLen),
+            payloadSize = payloadSize,
+            sigScriptLens = KaspaMass.sigScriptLensFor(inputCount, signatureScriptSize)
+        )
+        return KaspaMass.calculateFee(mass, feeRateSompiPerGram) + FEE_BUFFER_SOMPI + extraFeeSompi
+    }
+
+    /** Whether the no-change shape may be sent: what is left is dust ([MAX_FOLDED_CHANGE_SOMPI])
+     *  and the recipient's output alone fits storage mass (iOS's guard on it). */
+    private fun noChangeFits(selected: List<UtxoEntry>, amountSompi: Long, leftover: Long): Boolean =
+        leftover <= MAX_FOLDED_CHANGE_SOMPI &&
+            KaspaMass.fitsStorageMass(selected.map { it.utxoEntry.amount }, listOf(amountSompi))
+
     /**
      * Coin control: prices and validates a user-picked, fixed set of UTXOs instead of greedily
-     * growing one. Same always-price-a-change-output policy as [selectUtxosAndCalculateFee].
+     * growing one. Same always-price-a-change-output policy as [selectUtxosAndCalculateFee],
+     * with the same no-change try when the coins can't pay for a change output.
      */
     fun selectManualUtxosAndCalculateFee(
         utxos: List<UtxoEntry>,
@@ -181,7 +247,19 @@ object KaspaUtxoSelector {
             payloadSize = payloadBytes?.size ?: 0,
             sigScriptLens = KaspaMass.sigScriptLensFor(utxos.size, signatureScriptSize)
         )
-        val estimatedFee = KaspaMass.calculateFee(mass, feeRateSompiPerGram) + extraFeeSompi
+        var estimatedFee = KaspaMass.calculateFee(mass, feeRateSompiPerGram) + extraFeeSompi
+        var noChangeShape = false
+        var storageMassBlocked = false
+        if (totalSelected < (amountSompi + estimatedFee) && amountSompi > 0 && totalSelected > amountSompi && utxos.isNotEmpty()) {
+            // The no-change try, as the greedy selector (iOS selectManualUtxosForPayment): the
+            // fixed set can't be grown, so a shape whose recipient output doesn't fit is refused.
+            val feeNoChange = noChangeFee(utxos.size, recipientScriptLen, payloadBytes?.size ?: 0, feeRateSompiPerGram, extraFeeSompi, signatureScriptSize)
+            if (totalSelected - amountSompi >= feeNoChange) {
+                estimatedFee = feeNoChange
+                noChangeShape = true
+                storageMassBlocked = !noChangeFits(utxos, amountSompi, totalSelected - amountSompi - feeNoChange)
+            }
+        }
 
         // No "close enough" cut - see [selectUtxosAndCalculateFee].
         val finalAmount = amountSompi
@@ -194,7 +272,9 @@ object KaspaUtxoSelector {
             estimatedFee = estimatedFee,
             finalAmount = finalAmount,
             changeAmount = changeAmount,
-            requiredAmount = requiredAmount
+            requiredAmount = requiredAmount,
+            storageMassBlocked = storageMassBlocked,
+            noChangeShape = noChangeShape
         )
     }
 }

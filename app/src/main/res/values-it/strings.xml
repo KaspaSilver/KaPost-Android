@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">Conserva questo in un luogo sicuro. Chiunque abbia queste parole puo accedere al tuo account.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">Riprova</string>
+    <string name="kaposts_reply_not_on_network">Questo post non è ancora sulla rete, quindi non è possibile rispondere. Riprova quando sarà pubblicato.</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">commissione: -------- KAS</string>
     <string name="composer_fee_unknown">commissione: -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">Rilascia oltre metà per inviare.</string>
     <string name="swipe_failed">Non riuscito</string>
     <string name="swipe_send_failed_fallback">L\'invio non è partito.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">Non confermato</string>
+    <string name="passphrase_skip_search">Salta la ricerca: importa sull\'indirizzo #0</string>
+    <string name="passphrase_search_incomplete">La ricerca di fondi sugli altri indirizzi di questo account non è terminata, quindi Importa usa l\'indirizzo #0.</string>
+    <string name="passphrase_search_again">Cerca di nuovo</string>
+    <string name="nfc_card_reenter_pin">Reinserisci il PIN</string>
+    <string name="nfc_card_pins_dont_match">I PIN non corrispondono.</string>
+    <string name="send_fee_changed">La commissione di rete ora è di %1$s KAS, più di quanto mostrava il riepilogo. Non è stato inviato nulla: controlla la nuova commissione e scorri di nuovo.</string>
+    <string name="room_no_spendable_funds_yet">Non ci sono ancora fondi spendibili disponibili. Attendi le conferme e riprova.</string>
+    <string name="coin_unavailable_mining_reward">Ricompensa di mining, non spendibile qui</string>
+    <string name="coin_unavailable_not_confirmed">Non ancora confermato</string>
+    <string name="coin_unavailable_just_spent">Appena speso da un post o un invio</string>
+    <string name="room_not_enough_kas">KAS insufficienti sul tuo indirizzo chat. Aggiungine e riprova.</string>
+    <string name="kaposts_tips_from">Mance da</string>
+    <string name="kaposts_tip_from_chatting_note">Dal tuo Chatting Address la mancia conta sul post e compari tra chi ha lasciato mance.</string>
+    <string name="kaposts_tip_from_private_note">Da un altro indirizzo la mancia è privata: l\'autore la riceve e la vede nella vostra chat, ma non conta sul post e non ti nomina.</string>
+    <string name="kaposts_tips_from_footnote">Le mance dal tuo Chatting Address contano sul post e compari tra chi ha lasciato mance. Da un altro indirizzo una mancia è privata: l\'autore la riceve e la vede nella vostra chat, ma non conta sul post e non ti nomina.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">I tuoi domini</string>
+    <string name="primary_domain">Dominio principale</string>
+    <string name="send_domain">Invia dominio</string>
+    <string name="set_as_primary">Imposta come principale</string>
+    <string name="asset_id">ID risorsa</string>
+    <string name="wd_fee">Tassa</string>
+    <string name="wd_domain">Dominio</string>
+    <string name="wd_confirm_sending_domain">Conferma l\'invio di questo dominio</string>
+    <string name="wd_transfer_two_transactions">Il trasferimento di un dominio richiede due transazioni, quindi ci vuole un attimo. Tieni l\'app aperta finché non finisce.</string>
+    <string name="wd_transfer_fee_footer">Se la rete è occupata, Veloce o Priorità paga una commissione più alta per confermare prima il tuo trasferimento. Tocca l\'importo della commissione per impostarne una personalizzata.</string>
+    <string name="wd_kachat_names_coming_body">Qui ci saranno i nomi di KaChat: rivendicane uno, rendilo il tuo nome e condividilo come link del profilo.</string>
+    <string name="wd_primary_set_to">Dominio principale impostato su %1$s.</string>
+    <string name="wd_transferred_to">%1$s trasferito a %2$s.</string>
+    <string name="wd_transfer_submitted">Trasferimento inviato per %1$s.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">Un indirizzo nuovo, mai usato. I Kaspa inviati qui arrivano su questo account e contano nel saldo di spesa. Usalo per tutto tranne i nomi .kachat.</string>
+    <string name="pr_where_paid">Dove vuoi essere pagato?</string>
+    <string name="pr_fresh_address_note">Un tuo indirizzo nuovissimo, mai usato né condiviso.</string>
+    <string name="pr_anyone_note_wallet">Chi la apre in KaPay o KaChat trova Invia Kaspa già compilato e vede che è stata creata dal tuo indirizzo di chat (firmata con la sua chiave).</string>
+    <string name="pr_how_much">Quanto?</string>
+    <string name="pr_youre_requesting">Stai richiedendo</string>
+    <string name="ma_notify_on_receive">Notifica alla ricezione</string>
+    <string name="ma_notify_on_receive_detail">Quando un indirizzo di spesa riceve Kaspa da qualcun altro.</string>
+    <string name="ma_no_spending_addresses">Nessun indirizzo di spesa</string>
+    <string name="ma_generate_one_below">Generane uno qui sotto per inviare pagamenti da un indirizzo diverso da quello principale.</string>
+    <string name="ma_address_hidden">Indirizzo nascosto. Riattivalo in Visibilità indirizzi.</string>
+    <string name="ma_cant_hide">Questo indirizzo non può essere nascosto.</string>
+    <string name="ma_none_found">Nessun indirizzo con saldo o dominio trovato.</string>
+    <string name="ma_rename_detail">Dà a questo indirizzo un\'etichetta tua.</string>
+    <string name="ma_copy_detail">Copia l\'indirizzo completo negli appunti.</string>
+    <string name="ma_qr_detail">Schermo intero, da scansionare con un altro dispositivo.</string>
+    <string name="ma_hide_address">Nascondi indirizzo</string>
+    <string name="ma_hide_detail">Lo toglie da questo elenco. Riattivalo in Visibilità indirizzi.</string>
+    <string name="contains_domain">Contiene un dominio</string>
+    <string name="address_visibility">Visibilità dell\'indirizzo</string>
+    <string name="ma_rename_message">Dai un\'etichetta a questo indirizzo per aiutarti a riconoscerlo.</string>
+    <string name="ma_label">Etichetta</string>
+    <string name="ma_none_yet">Ancora nessun indirizzo con un saldo o un dominio</string>
+    <string name="ma_scan_note">Controlla i primi mille indirizzi, anche con dei vuoti in mezzo, poi continua finché ne trova altri.</string>
+    <string name="ma_close_keep_scanning">Chiudi e continua la scansione</string>
+    <string name="ma_generate_detail">Mostra il prossimo indirizzo non usato di questo wallet.</string>
+    <string name="ma_visibility_detail">Spunta ogni indirizzo che vuoi nell\'elenco, in una sola volta.</string>
+    <string name="address_visibility_derive_failed">Non è stato possibile ricavare questi indirizzi ora. Torna indietro di una pagina o riapri questa schermata per riprovare.</string>
+    <string name="compound_utxos_spending_description">Unisce gli UTXO di questo indirizzo per ridurre gli input necessari per un futuro invio. Una singola transazione può unirne solo un certo numero alla volta: se questo indirizzo ne ha moltissimi, tocca di nuovo Combina dopo la conferma per continuare a ridurli.</string>
+    <string name="unlock_address_private_key">Sblocca per vedere la chiave privata di questo indirizzo</string>
 </resources>

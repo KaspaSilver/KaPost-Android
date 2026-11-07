@@ -72,8 +72,15 @@ class KaPostsUnseenStore @Inject constructor(
         reloadIfNeeded()
         val wallet = loadedWallet ?: return
         _unseenCount.value += count
+        lastArrivalAt = System.currentTimeMillis()
         prefs.edit().putInt(key(wallet), _unseenCount.value).apply()
     }
+
+    /** When activity last arrived (this run, epoch ms, 0 = none): the notifications screen
+     *  reloads when it is newer than its own last load (iOS 33095ac). */
+    @Volatile
+    var lastArrivalAt: Long = 0L
+        private set
 
     /** The user has opened the KaPosts notifications screen; nothing is unseen any more. */
     @Synchronized

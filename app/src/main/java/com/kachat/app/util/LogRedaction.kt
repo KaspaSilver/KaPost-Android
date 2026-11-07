@@ -12,3 +12,18 @@ package com.kachat.app.util
  * probe failure you cannot attribute to a node is not a diagnostic.
  */
 fun String.redactedForLog(): String = if (length <= 8) this else "…" + takeLast(8)
+
+/** A Kaspa address, with or without its prefix's colon (in a URL, or `kaspa_` as a key name) - iOS
+ *  33095ac `AppLog.addressPattern`. */
+private val kaspaAddressInText = Regex(
+    "(kaspa|kaspatest|kaspadev|kaspasim)[:_]([a-z0-9]{8,})(?=[a-z0-9]{8})([a-z0-9]{8})",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
+ * Every Kaspa address in [this] by its last 8 characters only: an exported log names nobody's
+ * account (iOS 33095ac, where `AppLog.log` does it so no call site can skip it). Android logs
+ * through `android.util.Log` from everywhere, so it is done where the lines leave the phone:
+ * DiagnosticsExportService runs every log it bundles through this.
+ */
+fun String.redactingKaspaAddresses(): String = kaspaAddressInText.replace(this, "…$3")

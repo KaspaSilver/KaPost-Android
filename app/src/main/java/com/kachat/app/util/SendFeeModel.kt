@@ -84,10 +84,19 @@ object SendFeeModel {
         payloadSize: Int = 0,
         /** See [baseFee]. */
         signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
+        /** The recipient's real script length: a P2SH or ECDSA address's is a byte longer than
+         *  the standard one, and the send prices it (iOS `estimateSendAllFee` takes the real
+         *  recipient script). */
+        recipientScriptLen: Int = STANDARD_SCRIPT_LEN,
+        /** The change address's script length, as the send prices it. */
+        changeScriptLen: Int = STANDARD_SCRIPT_LEN,
+        /** Kept back on top of the fees: iOS `estimateSendAllFee`'s `+ 3`
+         *  ([KaspaUtxoSelector.FEE_BUFFER_SOMPI]) on a Max. */
+        bufferSompi: Long = 0L,
     ): Long {
-        val base = baseFee(inputCount, feeRateSompiPerGram, payloadSize, signatureScriptSize = signatureScriptSize)
+        val base = baseFee(inputCount, feeRateSompiPerGram, payloadSize, recipientScriptLen, changeScriptLen, signatureScriptSize)
         val extra = extraFee(base, feeMultiplier, customExtraFeeSompi)
-        return (totalSompi - base - extra).coerceAtLeast(0L)
+        return (totalSompi - base - bufferSompi - extra).coerceAtLeast(0L)
     }
 
     /** What an automatic-selection send of a given amount spends, and what it pays. Passing
@@ -163,10 +172,62 @@ object SendFeeModel {
             extraFeeSompi = extraFeeSompi,
             signatureScriptSize = signatureScriptSize,
         )
-        amountSompi > 0 && selection.changeAmount > 0 &&
-            !KaspaUtxoSelector.changeIsKeptOrFoldable(selection.selectedUtxos.map { it.utxoEntry.amount }, listOf(amountSompi), selection.changeAmount)
+        // the no-change shape's recipient output alone doesn't fit (the selector says so itself)
+        val noChangeBlocked = selection.totalSelected >= selection.requiredAmount && selection.storageMassBlocked
+        amountSompi > 0 && (noChangeBlocked || selection.changeAmount > 0 &&
+            !KaspaUtxoSelector.changeIsKeptOrFoldable(selection.selectedUtxos.map { it.utxoEntry.amount }, listOf(amountSompi), selection.changeAmount))
     } catch (e: IllegalStateException) {
         false
+    }
+
+    /**
+     * Coin control's [Preview]: a send of exactly [utxos] with [extraFeeSompi] on top, priced by
+     * the selector the send runs ([KaspaUtxoSelector.selectManualUtxosAndCalculateFee]) - its
+     * no-change shape included - so [Preview.totalFeeSompi] plus [Preview.foldedChangeSompi] is
+     * what the send pays. Null when the coins don't cover it, or their amounts are not real
+     * values ([UtxoMath]). Throws [KaspaUtxoSelector.tooManySelectedMessage] over
+     * [KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION] coins, and
+     * [KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE] when the change can neither stand nor fold
+     * (iOS d816404 selectManualUtxosForPayment).
+     */
+    fun previewManualSelection(
+        utxos: List<UtxoEntry>,
+        amountSompi: Long,
+        feeRateSompiPerGram: Long,
+        extraFeeSompi: Long,
+        recipientScriptLen: Int = STANDARD_SCRIPT_LEN,
+        changeScriptLen: Int = STANDARD_SCRIPT_LEN,
+        /** See [baseFee]. */
+        signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
+        /** See [previewAutomaticSelection]. */
+        payloadSize: Int = 0,
+    ): Preview? {
+        if (amountSompi <= 0 || utxos.isEmpty()) return null
+        // a fixed set over the input cap would be rejected by the node (iOS selectManualUtxosForPayment)
+        if (utxos.size > KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION) {
+            throw IllegalStateException(KaspaUtxoSelector.tooManySelectedMessage(utxos.size))
+        }
+        val selection = try {
+            KaspaUtxoSelector.selectManualUtxosAndCalculateFee(
+                utxos = utxos,
+                amountSompi = amountSompi,
+                feeRateSompiPerGram = feeRateSompiPerGram,
+                recipientScriptLen = recipientScriptLen,
+                changeScriptLen = changeScriptLen,
+                payloadBytes = payloadStandIn(payloadSize),
+                extraFeeSompi = extraFeeSompi,
+                signatureScriptSize = signatureScriptSize,
+            )
+        } catch (e: IllegalStateException) {
+            return null // invalid node data (UtxoMath): no preview rather than a wrong one
+        }
+        if (selection.totalSelected < selection.requiredAmount) return null
+        if (selection.storageMassBlocked || (selection.changeAmount > 0 &&
+                !KaspaUtxoSelector.changeIsKeptOrFoldable(selection.selectedUtxos.map { it.utxoEntry.amount }, listOf(amountSompi), selection.changeAmount))
+        ) {
+            throw IllegalStateException(KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE)
+        }
+        return Preview(selection.selectedUtxos, selection.estimatedFee - extraFeeSompi, extraFeeSompi, selection.foldedChangeSompi)
     }
 
     /**
@@ -180,7 +241,9 @@ object SendFeeModel {
      * on, [Preview.baseFeeSompi] is priced on the inputs selected WITH [Preview.extraFeeSompi], so
      * a send passing that extra pays [Preview.totalFeeSompi]. Null when the coins cannot cover it,
      * or when their amounts are not real values ([UtxoMath]). Throws
-     * [KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE] when they cover it but no set fits storage mass.
+     * [KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE] when they cover it but no set fits storage mass,
+     * and [KaspaUtxoSelector.TOO_MANY_INPUTS_MESSAGE] when it takes more than
+     * [KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION] coins.
      */
     fun previewAutomaticSelection(
         utxos: List<UtxoEntry>,
@@ -215,6 +278,11 @@ object SendFeeModel {
                 )
             } catch (e: IllegalStateException) {
                 return null // invalid node data (UtxoMath): no preview rather than a wrong one
+            }
+            // More coins than one transaction can spend: the send refuses it, so the Review says
+            // why (iOS selectUtxosForPayment stops at the input cap).
+            if (selection.selectedUtxos.size > KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION) {
+                throw IllegalStateException(KaspaUtxoSelector.TOO_MANY_INPUTS_MESSAGE)
             }
             if (selection.totalSelected < selection.requiredAmount) return null
             // No coin set fits storage mass without giving real change away: the send refuses

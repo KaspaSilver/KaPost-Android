@@ -772,28 +772,59 @@ class NodePoolManager @Inject constructor(
      */
     suspend fun submitConfirmingKnown(transaction: RawTransaction, rest: KaspaRestApi?, submit: suspend () -> String): String {
         val txId = runCatching { com.kachat.app.util.KaspaTransactionId.compute(transaction) }.getOrDefault("")
-        return submitConfirmingKnown(txId, rest, submit)
+        return submitConfirmingKnown(txId, rest, transaction.inputs.map { it.previousOutpoint }, submit)
     }
 
     /**
      * [submitConfirmingKnown] for a transaction whose id the caller already computed
      * ([expectedTxId]): the version-1 `.kachat` builders, whose transactions aren't
      * [RawTransaction]s (iOS 9139e88 `submitRpcTransaction(_:expectedTxId:)`, audit IOS-014).
+     * [inputs] are the coins it spends, held back as in the other overload (iOS 33095ac).
      */
-    suspend fun submitConfirmingKnown(expectedTxId: String, rest: KaspaRestApi?, submit: suspend () -> String): String {
+    suspend fun submitConfirmingKnown(
+        expectedTxId: String,
+        rest: KaspaRestApi?,
+        inputs: List<Outpoint> = emptyList(),
+        submit: suspend () -> String,
+    ): String {
         val txId = expectedTxId.lowercase()
-        return SubmitConfirmation.submitOrConfirmKnown(
-            txId = txId,
-            isKnown = { isTransactionKnown(it, rest) },
-            onRecovered = { e ->
-                Log.w("NodePoolManager", "Submit of ${txId.take(12)} reported \"${e.message}\" but the network has it: treated as sent")
-            },
-            onForeignAnswer = { Log.w("NodePoolManager", "A node answered a submit with a different id than ${txId.take(12)}") },
-            onAnswered = { resendIfNetworkCantSee(txId, rest, submit) },
-            lookup = { id -> isInAnyMempool(id) || (rest != null && isAcceptedViaRest(rest, id)) },
-            submit = submit,
-        )
+        // Whatever it spends is held back from the next send, here rather than at each caller:
+        // on success, and on an unknown outcome, which may yet land (iOS 33095ac `reserveInputs`).
+        val sent = try {
+            SubmitConfirmation.submitOrConfirmKnown(
+                txId = txId,
+                isKnown = { isTransactionKnown(it, rest) },
+                onRecovered = { e ->
+                    Log.w("NodePoolManager", "Submit of ${txId.take(12)} reported \"${e.message}\" but the network has it: treated as sent")
+                },
+                onForeignAnswer = { Log.w("NodePoolManager", "A node answered a submit with a different id than ${txId.take(12)}") },
+                onAnswered = { resendIfNetworkCantSee(txId, rest, submit) },
+                lookup = { id -> isInAnyMempool(id) || (rest != null && isAcceptedViaRest(rest, id)) },
+                // a node turned it down: only a mempool or the built-in REST server can call it sent
+                isKnownAfterRejection = { isTransactionKnown(it, rest, builtInServerOnly = true) },
+                submit = submit,
+            )
+        } catch (unknown: SendOutcomeUnknownException) {
+            submittedInputs.record(SUBMITTED_INPUTS_KEY, inputs)
+            throw unknown
+        }
+        submittedInputs.record(SUBMITTED_INPUTS_KEY, inputs)
+        return sent
     }
+
+    /**
+     * Every submitted transaction's inputs, held back from the next send (iOS 33095ac
+     * `NodePoolService.reserveInputs` -> `ChatService.reserveOutpointKeys`): on success, and on an
+     * unknown outcome, which may yet land. Kept here rather than at each caller, so no path (posts,
+     * tips, room messages, scheduled posts, KNS, `.kachat`) can skip it, and [KaspaWalletEngine]
+     * leaves them out of every coin fetch it builds, prices or counts from. For 120 s
+     * ([PendingSpentOutpoints.TTL_MS], iOS `pendingMessageUtxoTTL`).
+     */
+    private val submittedInputs = PendingSpentOutpoints()
+
+    /** [utxos] without the coins a transaction submitted in the last 120 s spent ([submittedInputs]). */
+    fun withoutSubmittedInputs(utxos: List<UtxoEntry>): List<UtxoEntry> =
+        submittedInputs.filter(SUBMITTED_INPUTS_KEY, utxos)
 
     /**
      * In the background, a transaction the network can't see a moment after a node took it goes out
@@ -897,13 +928,26 @@ class NodePoolManager @Inject constructor(
     }
 
     /** Whether the network already has [txId]: in a mempool (up to three nodes), or accepted
-     *  (REST API) - asked twice, 1.5 s apart (iOS NodePoolService.isTransactionKnown). */
-    suspend fun isTransactionKnown(txId: String, rest: KaspaRestApi?): Boolean =
-        SubmitConfirmation.isKnown(
+     *  (REST API) - asked twice, 1.5 s apart (iOS NodePoolService.isTransactionKnown).
+     *  [builtInServerOnly]: a node turned the transaction down, so a REST server typed into
+     *  Settings isn't enough to call it sent - only a mempool, or the built-in REST server (iOS
+     *  33095ac `isTransactionKnown(afterRejection:)`). */
+    suspend fun isTransactionKnown(txId: String, rest: KaspaRestApi?, builtInServerOnly: Boolean = false): Boolean {
+        val restUsable = rest != null && (!builtInServerOnly || isBuiltInRestServer())
+        return SubmitConfirmation.isKnown(
             txId = txId,
             inMempool = { isInAnyMempool(it) },
-            acceptedViaRest = { id -> rest != null && isAcceptedViaRest(rest, id) },
+            acceptedViaRest = { id -> restUsable && rest != null && isAcceptedViaRest(rest, id) },
         )
+    }
+
+    /** Whether the REST server in use is the app's own default for this network (iOS
+     *  `AppSettings.defaultKaspaRestURL(for:)`), compared without a trailing slash. */
+    private suspend fun isBuiltInRestServer(): Boolean {
+        fun trimmed(url: String) = url.trim().removeSuffix("/").lowercase()
+        val inUse = settings.kaspaRestUrl.first()
+        return trimmed(inUse) == trimmed(AppSettingsRepository.defaultKaspaRestUrl(com.kachat.app.util.KaspaNetwork.selected.value))
+    }
 
     /** Whether a node still holds [txId] in its mempool ([isInAnyMempool]): a `.kachat` commit
      *  that isn't on chain yet is waiting there, or was dropped (iOS b219bb0 `getMempoolEntry`). */
@@ -1004,5 +1048,8 @@ class NodePoolManager @Inject constructor(
          * covers metered WiFi and cellular, the only paths where the 400 / 800 ms tiers would apply.
          */
         const val FEE_HEDGE_DELAY_MS = 3_000L
+
+        /** [submittedInputs]' one key: an outpoint names a coin on whatever address holds it. */
+        const val SUBMITTED_INPUTS_KEY = "*"
     }
 }

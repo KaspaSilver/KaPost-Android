@@ -1016,6 +1016,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">این را در جای امنی نگهداری کنید. هر کسی با این کلمات می‌تواند به حسابتان دسترسی پیدا کند.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">تلاش دوباره</string>
+    <string name="kaposts_reply_not_on_network">این پست هنوز روی شبکه نیست، پس نمی‌توان به آن پاسخ داد. پس از انتشار دوباره امتحان کنید.</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">کارمزد: -------- KAS</string>
     <string name="composer_fee_unknown">کارمزد: -- KAS</string>
@@ -1431,4 +1432,63 @@
     <string name="swipe_hint_send">پس از نیمه رها کنید تا ارسال شود.</string>
     <string name="swipe_failed">ناموفق</string>
     <string name="swipe_send_failed_fallback">ارسال انجام نشد.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">تأیید نشد</string>
+    <string name="passphrase_skip_search">رد شدن از جستجو: وارد کردن روی آدرس #0</string>
+    <string name="passphrase_search_incomplete">جستجوی موجودی در آدرس‌های دیگر این حساب تمام نشد، پس وارد کردن از آدرس #0 استفاده می‌کند.</string>
+    <string name="passphrase_search_again">جستجوی دوباره</string>
+    <string name="nfc_card_reenter_pin">PIN را دوباره وارد کنید</string>
+    <string name="nfc_card_pins_dont_match">PINها یکسان نیستند.</string>
+    <string name="send_fee_changed">کارمزد شبکه اکنون %1$s KAS است، بیشتر از آنچه بازبینی نشان داد. چیزی ارسال نشد: کارمزد جدید را بررسی کنید و دوباره بکشید.</string>
+    <string name="room_no_spendable_funds_yet">هنوز موجودی قابل خرج در دسترس نیست. منتظر تاییدها بمانید و دوباره تلاش کنید.</string>
+    <string name="coin_unavailable_mining_reward">پاداش استخراج، اینجا قابل خرج نیست</string>
+    <string name="coin_unavailable_not_confirmed">هنوز تأیید نشده</string>
+    <string name="coin_unavailable_just_spent">همین الان در یک پست یا ارسال خرج شد</string>
+    <string name="room_not_enough_kas">KAS کافی در نشانی گفتگوی شما نیست. مقداری اضافه کنید و دوباره امتحان کنید.</string>
+    <string name="kaposts_tips_from">انعام از</string>
+    <string name="kaposts_tip_from_chatting_note">انعام از Chatting Address روی پست شمرده می‌شود و نام شما در فهرست انعام‌دهندگان می‌آید.</string>
+    <string name="kaposts_tip_from_private_note">انعام از آدرس دیگر خصوصی است: نویسنده آن را دریافت می‌کند و در گفتگوی شما می‌بیند، اما روی پست شمرده نمی‌شود و نامی از شما نمی‌برد.</string>
+    <string name="kaposts_tips_from_footnote">انعام‌ها از Chatting Address روی پست شمرده می‌شوند و نام شما در فهرست انعام‌دهندگان می‌آید. انعام از آدرس دیگر خصوصی است: نویسنده آن را دریافت می‌کند و در گفتگوی شما می‌بیند، اما روی پست شمرده نمی‌شود و نامی از شما نمی‌برد.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">دامنه‌های شما</string>
+    <string name="wd_fee">هزینه</string>
+    <string name="wd_domain">دامنه</string>
+    <string name="wd_confirm_sending_domain">تأیید ارسال این دامنه</string>
+    <string name="wd_transfer_two_transactions">انتقال دامنه دو تراکنش است، پس کمی طول می‌کشد. تا پایان کار برنامه را باز نگه دارید.</string>
+    <string name="wd_transfer_fee_footer">اگر شبکه شلوغ باشد، «سریع» یا «اولویت‌دار» کارمزد بیشتری می‌پردازد تا انتقال شما زودتر تأیید شود. برای تعیین کارمزد دلخواه روی مبلغ کارمزد ضربه بزنید.</string>
+    <string name="wd_kachat_names_coming_body">نام‌های خود KaChat اینجا خواهند بود: یکی را بگیرید، نام خود کنید و به‌عنوان پیوند نمایه به اشتراک بگذارید.</string>
+    <string name="wd_primary_set_to">دامنه اصلی روی %1$s تنظیم شد.</string>
+    <string name="wd_transferred_to">%1$s به %2$s منتقل شد.</string>
+    <string name="wd_transfer_submitted">انتقال برای %1$s ارسال شد.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">یک آدرس تازه که هرگز استفاده نشده. Kaspa ارسال‌شده به اینجا به این حساب می‌آید و در موجودی خرج حساب می‌شود. برای همه‌چیز جز نام‌های ‎.kachat از آن استفاده کنید.</string>
+    <string name="pr_where_paid">می‌خواهید پرداخت به کجا برسد؟</string>
+    <string name="pr_fresh_address_note">یک نشانی کاملاً تازه از شما که هرگز استفاده یا به کسی داده نشده است.</string>
+    <string name="pr_anyone_note_wallet">هر کس آن را در KaPay یا KaChat باز کند، صفحهٔ ارسال کاسپا را با همین اطلاعات پرشده می‌بیند و می‌فهمد که نشانی گفتگوی شما آن را ساخته است (با کلید آن امضا شده).</string>
+    <string name="pr_how_much">چقدر؟</string>
+    <string name="pr_youre_requesting">درخواست شما</string>
+    <string name="ma_notify_on_receive">اعلان هنگام دریافت</string>
+    <string name="ma_notify_on_receive_detail">وقتی یک آدرس خرج کردن از کس دیگری Kaspa دریافت می‌کند.</string>
+    <string name="ma_no_spending_addresses">هیچ آدرس خرج کردنی وجود ندارد</string>
+    <string name="ma_generate_one_below">برای ارسال پرداخت از آدرسی غیر از آدرس اصلی، یکی در پایین بسازید.</string>
+    <string name="ma_address_hidden">آدرس پنهان شد. از نمایش آدرس‌ها دوباره فعالش کنید.</string>
+    <string name="ma_cant_hide">این آدرس را نمی‌توان پنهان کرد.</string>
+    <string name="ma_none_found">آدرسی با موجودی یا دامنه پیدا نشد.</string>
+    <string name="ma_rename_detail">به این آدرس برچسبی از خودتان می‌دهد.</string>
+    <string name="ma_copy_detail">کل آدرس را در کلیپ‌بورد کپی می‌کند.</string>
+    <string name="ma_qr_detail">تمام‌صفحه، برای اسکن با دستگاه دیگر.</string>
+    <string name="ma_hide_address">پنهان کردن آدرس</string>
+    <string name="ma_hide_detail">آن را از این فهرست برمی‌دارد. از نمایش آدرس‌ها دوباره فعالش کنید.</string>
+    <string name="contains_domain">شامل دامنه</string>
+    <string name="address_visibility">نمایان بودن آدرس</string>
+    <string name="ma_rename_message">به این آدرس برچسبی بدهید تا به شناسایی آن کمک کند.</string>
+    <string name="ma_label">برچسب</string>
+    <string name="ma_none_yet">هنوز آدرسی با موجودی یا دامنه نیست</string>
+    <string name="ma_scan_note">هزار آدرس اول را بدون توجه به فاصله‌های خالی بررسی می‌کند و تا وقتی مورد جدیدی پیدا شود ادامه می‌دهد.</string>
+    <string name="ma_close_keep_scanning">بستن و ادامه اسکن</string>
+    <string name="ma_generate_detail">آدرس استفاده‌نشده بعدی این کیف پول را نشان می‌دهد.</string>
+    <string name="ma_visibility_detail">همه آدرس‌هایی را که در فهرست می‌خواهید یک‌جا علامت بزنید.</string>
+    <string name="address_visibility_derive_failed">این آدرس‌ها فعلاً قابل استخراج نیستند. یک صفحه برگردید یا این صفحه را دوباره باز کنید تا دوباره امتحان شود.</string>
+    <string name="compound_utxos_spending_description">UTXOهای این آدرس را ادغام می‌کند تا ورودی‌های لازم برای ارسال‌های بعدی کمتر شود. یک تراکنش فقط تعداد محدودی را می‌تواند یکجا ادغام کند؛ اگر این آدرس تعداد بسیار زیادی دارد، بعد از تأیید دوباره روی ادغام ضربه بزنید تا کمتر هم شود.</string>
+    <string name="unlock_address_private_key">برای دیدن کلید خصوصی این آدرس قفل را باز کنید</string>
 </resources>

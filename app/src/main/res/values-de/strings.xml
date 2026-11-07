@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">Bewahre dies an einem sicheren Ort auf. Jeder mit diesen Wörtern kann auf dein Konto zugreifen.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">Erneut versuchen</string>
+    <string name="kaposts_reply_not_on_network">Dieser Beitrag ist noch nicht im Netzwerk, daher kann nicht darauf geantwortet werden. Versuche es erneut, sobald er gepostet ist.</string>
     <!-- QR scanner sheet (iOS QRScannerView) -->
     <string name="qr_point_camera">Kamera auf einen QR-Code richten</string>
     <string name="qr_camera_access_required">Kamerazugriff erforderlich</string>
@@ -1397,4 +1398,67 @@
     <string name="swipe_hint_send">Über die Hälfte hinaus loslassen, um zu senden.</string>
     <string name="swipe_failed">Fehlgeschlagen</string>
     <string name="swipe_send_failed_fallback">Die Sendung ist nicht rausgegangen.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">Nicht bestätigt</string>
+    <string name="passphrase_skip_search">Suche überspringen: auf Adresse #0 importieren</string>
+    <string name="passphrase_search_incomplete">Die Suche nach Guthaben auf den anderen Adressen dieses Kontos wurde nicht abgeschlossen, daher importiert Import auf Adresse #0.</string>
+    <string name="passphrase_search_again">Erneut suchen</string>
+    <string name="nfc_card_reenter_pin">PIN erneut eingeben</string>
+    <string name="nfc_card_pins_dont_match">Die PINs stimmen nicht überein.</string>
+    <string name="send_fee_changed">Die Netzwerkgebühr beträgt jetzt %1$s KAS, mehr als die Übersicht zeigte. Es wurde nichts gesendet: Prüfe die neue Gebühr und wische erneut.</string>
+    <string name="room_no_spendable_funds_yet">Noch keine ausgabefähigen Mittel verfügbar. Bitte auf Bestätigungen warten und erneut versuchen.</string>
+    <string name="coin_unavailable_mining_reward">Mining-Belohnung, hier nicht ausgebbar</string>
+    <string name="coin_unavailable_not_confirmed">Noch nicht bestätigt</string>
+    <string name="coin_unavailable_just_spent">Gerade von einem Beitrag oder einer Sendung ausgegeben</string>
+    <string name="room_not_enough_kas">Nicht genug KAS auf deiner Chat-Adresse. Füge welche hinzu und versuche es erneut.</string>
+    <string name="kaposts_tips_from">Trinkgeld von</string>
+    <string name="kaposts_tip_from_chatting_note">Von deiner Chatting Address zählt das Trinkgeld beim Beitrag, und du stehst in der Liste der Trinkgeldgeber.</string>
+    <string name="kaposts_tip_from_private_note">Von einer anderen Adresse ist das Trinkgeld privat: Der Autor erhält es und sieht es in eurem Chat, aber es zählt nicht beim Beitrag und nennt dich nicht als Trinkgeldgeber.</string>
+    <string name="kaposts_tips_from_footnote">Trinkgeld von deiner Chatting Address zählt beim Beitrag, und du stehst in der Liste der Trinkgeldgeber. Von einer anderen Adresse ist ein Trinkgeld privat: Der Autor erhält es und sieht es in eurem Chat, aber es zählt nicht beim Beitrag und nennt dich nicht.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">Deine Domains</string>
+    <string name="primary_domain">Primäre Domain</string>
+    <string name="send_domain">Domain senden</string>
+    <string name="set_as_primary">Als Hauptnamen festlegen</string>
+    <string name="asset_id">Asset-ID</string>
+    <string name="wd_fee">Gebühr</string>
+    <string name="wd_domain">Domain</string>
+    <string name="wd_confirm_sending_domain">Senden dieser Domain bestätigen</string>
+    <string name="wd_transfer_two_transactions">Eine Domain-Übertragung besteht aus zwei Transaktionen und dauert deshalb einen Moment. Lass die App geöffnet, bis sie fertig ist.</string>
+    <string name="wd_transfer_fee_footer">Wenn das Netzwerk ausgelastet ist, zahlst du mit „Schnell“ oder „Priorität“ eine höhere Gebühr, damit deine Überweisung schneller bestätigt wird. Tippe auf die Gebühr, um eine eigene festzulegen.</string>
+    <string name="wd_kachat_names_coming_body">Hier werden KaChats eigene Namen stehen: sichere dir einen, mach ihn zu deinem Namen und teile ihn als Profil-Link.</string>
+    <string name="wd_primary_set_to">Primäre Domäne auf %1$s festgelegt.</string>
+    <string name="wd_transferred_to">%1$s wurde an %2$s übertragen.</string>
+    <string name="wd_transfer_submitted">Überweisung für %1$s eingereicht.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">Eine neue, nie benutzte Adresse. Hierhin gesendete Kaspa landen in diesem Konto und zählen zu deinem Ausgabenguthaben. Nutze sie für alles außer .kachat-Namen.</string>
+    <string name="pr_where_paid">Wohin möchtest du bezahlt werden?</string>
+    <string name="pr_fresh_address_note">Eine brandneue Adresse von dir, die noch nie benutzt oder weitergegeben wurde.</string>
+    <string name="pr_anyone_note_wallet">Wer sie in KaPay oder KaChat öffnet, bekommt Kaspa senden mit diesen Angaben ausgefüllt und sieht, dass sie von deiner Chat-Adresse stammt (mit ihrem Schlüssel signiert).</string>
+    <string name="pr_how_much">Wie viel?</string>
+    <string name="pr_youre_requesting">Du forderst an</string>
+    <string name="ma_notify_on_receive">Beim Empfang benachrichtigen</string>
+    <string name="ma_notify_on_receive_detail">Wenn eine Ausgabeadresse Kaspa von jemand anderem erhält.</string>
+    <string name="ma_no_spending_addresses">Keine Ausgabeadressen</string>
+    <string name="ma_generate_one_below">Erzeuge unten eine, um Zahlungen von einer anderen Adresse als deiner Hauptadresse zu senden.</string>
+    <string name="ma_address_hidden">Adresse ausgeblendet. Unter Adressen-Sichtbarkeit kannst du sie wieder einblenden.</string>
+    <string name="ma_cant_hide">Diese Adresse kann nicht ausgeblendet werden.</string>
+    <string name="ma_none_found">Keine Adressen mit Guthaben oder Domain gefunden.</string>
+    <string name="ma_rename_detail">Gibt dieser Adresse eine eigene Bezeichnung.</string>
+    <string name="ma_copy_detail">Kopiert die vollständige Adresse in die Zwischenablage.</string>
+    <string name="ma_qr_detail">Vollbild, zum Scannen mit einem anderen Gerät.</string>
+    <string name="ma_hide_address">Adresse ausblenden</string>
+    <string name="ma_hide_detail">Entfernt sie aus dieser Liste. Unter Adressen-Sichtbarkeit kannst du sie wieder einblenden.</string>
+    <string name="contains_domain">Enthält Domain</string>
+    <string name="address_visibility">Sichtbarkeit der Adresse</string>
+    <string name="ma_rename_message">Gib dieser Adresse ein Label, damit du sie wiedererkennst.</string>
+    <string name="ma_label">Label</string>
+    <string name="ma_none_yet">Noch keine Adressen mit Guthaben oder Domain</string>
+    <string name="ma_scan_note">Prüft die ersten tausend Adressen, auch bei Lücken, und macht dann weiter, solange noch etwas gefunden wird.</string>
+    <string name="ma_close_keep_scanning">Schließen und weiter scannen</string>
+    <string name="ma_generate_detail">Zeigt die nächste unbenutzte Adresse dieses Wallets.</string>
+    <string name="ma_visibility_detail">Hake jede Adresse ab, die auf der Liste stehen soll, in einem Durchgang.</string>
+    <string name="address_visibility_derive_failed">Diese Adressen konnten gerade nicht abgeleitet werden. Geh eine Seite zurück oder öffne diesen Bildschirm erneut, um es noch einmal zu versuchen.</string>
+    <string name="compound_utxos_spending_description">Fasst die UTXOs dieser Adresse zusammen, damit eine spätere Zahlung weniger Eingänge braucht. Eine einzelne Transaktion kann nur begrenzt viele auf einmal zusammenführen. Hat diese Adresse sehr viele, tippe nach der Bestätigung erneut auf „Zusammenführen“, um weiter zu reduzieren.</string>
+    <string name="unlock_address_private_key">Entsperren, um den privaten Schlüssel dieser Adresse anzuzeigen</string>
 </resources>

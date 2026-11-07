@@ -913,7 +913,11 @@ object KaChatLink {
     fun parse(raw: String): KaChatLinkRef? {
         val trimmed = raw.trim()
         PAY_LINK_REGEX.matchEntire(trimmed)?.let { return paymentRequestRef(it.groupValues[1]) }
-        val match = LINK_REGEX.matchEntire(trimmed) ?: return null
+        // iOS LinkPreviewService.parse reads only the path: a query or fragment on a post, room
+        // or profile link (a share's ?utm_..., a #) is ignored rather than sending it to the
+        // browser. The payment request above keeps its query - it carries the amount.
+        val pathOnly = trimmed.substringBefore('?').substringBefore('#')
+        val match = LINK_REGEX.matchEntire(pathOnly) ?: return null
         return refFor(match)
     }
 

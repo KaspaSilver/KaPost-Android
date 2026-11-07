@@ -135,12 +135,11 @@ data class KaPlayBotChallenge(
     }
 }
 
-/** A challenge opens in KaPlay. Without KaPlay installed, the store opens to get it. */
+/** A challenge opens in KaPlay. Without KaPlay installed, the KaChat apps' install page opens
+ *  (iOS 33095ac). */
 object KaPlayHandoff {
-    /** KaPlay isn't listed yet, so this is a Play Store search for it; swap in its page
-     *  (`details?id=kaplay.kachat.app`) once it is (iOS `appStoreURL`). */
-    private const val STORE_URL = "market://search?q=KaPlay&c=apps"
-    private const val STORE_WEB_URL = "https://play.google.com/store/search?q=KaPlay&c=apps"
+    /** The KaChat apps' install page, which links each app (iOS `appStoreURL`). */
+    private const val INSTALL_URL = "https://home.kachat.app/install/"
 
     fun open(context: Context, challenge: KaPlayBotChallenge) {
         fun view(url: String): Boolean = try {
@@ -150,7 +149,7 @@ object KaPlayHandoff {
             false
         }
         if (view(challenge.url)) return
-        if (!view(STORE_URL)) view(STORE_WEB_URL)
+        view(INSTALL_URL)
     }
 }
 

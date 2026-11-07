@@ -162,6 +162,7 @@ private fun dockOwnerRoute(route: String?): String? = when (route) {
     "chat/{contactId}?paymentMode={paymentMode}", "group_chat/{groupId}" -> Screen.Chats.route
     "cold_storage_detail/{accountId}", "cold_storage_tx_history/{address}" -> Screen.ColdStorage.route
     "help", "manage_addresses", "identity_address_detail", "spending_address_detail/{index}",
+    "manage_addresses_visibility", "chatting_address_qr",
     "kns_domains", Screen.Wallet.route -> Screen.Profile.route
     "portfolio_price_chart", "portfolio_value_chart", "portfolio_hashrate_chart" -> Screen.Portfolio.route
     "broadcast_room_info/{channelName}" -> Screen.Broadcasts.route
@@ -588,6 +589,14 @@ fun MainShell(
         } else if (pendingKaPostTxId != null) {
             KaPostsDeepLink.pendingPostTxId.value = null
         }
+    }
+
+    // A tapped scheduled-post reminder: the Feed tab shows, where KaPostsScreen opens the
+    // Scheduled list and clears the flag (iOS KaPostsApp `pendingOpenScheduled`). Watched here
+    // too, so a cold start whose tab request came before the shell was listening still lands.
+    val pendingOpenScheduled by KaPostsDeepLink.pendingOpenScheduled.collectAsState()
+    LaunchedEffect(pendingOpenScheduled) {
+        if (pendingOpenScheduled) showTab(Screen.KaPosts)
     }
 
     // A pre-written post from another app (kaposts://compose): every cover closes and the Feed
@@ -1098,6 +1107,74 @@ fun MainShell(
                     com.kachat.app.ui.screens.KaPostWalletScreen(
                         navController = navController,
                         viewModel = walletViewModel,
+                    )
+                }
+            }
+            // KaPay's full wallet (iOS 071e901): Wallet > Manage Addresses, a spending address's
+            // page, the chatting address's page, Address Visibility, the Chatting Address square's
+            // QR and Help. Pushed, the dock left in place; they run on under it.
+            composable("manage_addresses") {
+                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
+                    com.kachat.app.ui.screens.ManageAddressesScreen(
+                        viewModel = walletViewModel,
+                        onBack = { navController.popBackStack() },
+                        onNavigateToTxHistory = { index -> navController.navigate("spending_address_detail/$index") },
+                        onOpenChattingAddress = { navController.navigate("identity_address_detail") },
+                        onNavigateToVisibility = { navController.navigate("manage_addresses_visibility") },
+                    )
+                }
+            }
+            composable("manage_addresses_visibility") {
+                AboveDock(pushedDockPad) {
+                    com.kachat.app.ui.screens.AddressVisibilityScreen(
+                        viewModel = walletViewModel,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+            }
+            composable(
+                "spending_address_detail/{index}",
+                arguments = listOf(androidx.navigation.navArgument("index") { type = androidx.navigation.NavType.IntType }),
+            ) { backStackEntry ->
+                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
+                    com.kachat.app.ui.screens.SpendingAddressTxHistoryScreen(
+                        index = backStackEntry.arguments?.getInt("index") ?: 0,
+                        onBack = { navController.popBackStack() },
+                        viewModel = walletViewModel,
+                    )
+                }
+            }
+            // Manage Addresses' Chatting Address row (iOS `ChattingAddressManageView`).
+            composable("identity_address_detail") {
+                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
+                    com.kachat.app.ui.screens.IdentityAddressDetailScreen(
+                        onBack = { navController.popBackStack() },
+                        viewModel = walletViewModel,
+                    )
+                }
+            }
+            composable("chatting_address_qr") {
+                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
+                    com.kachat.app.ui.screens.ChattingAddressQrRoute(
+                        viewModel = walletViewModel,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+            }
+            composable("help") {
+                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
+                    com.kachat.app.ui.screens.WalletHelpScreen(
+                        onBack = { navController.popBackStack() },
+                        onKachatGuide = { navController.navigate("kachat_setup_guide") },
+                    )
+                }
+            }
+            // Wallet > Your Domains (iOS 071e901 `KNSDomainsListView`), runs on under the dock.
+            composable("kns_domains") {
+                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
+                    com.kachat.app.ui.screens.KnsDomainsScreen(
+                        viewModel = walletViewModel,
+                        onBack = { navController.popBackStack() },
                     )
                 }
             }

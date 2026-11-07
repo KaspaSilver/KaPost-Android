@@ -87,11 +87,24 @@ fun Context.authenticateWithDeviceCredential(
  * One dialog, from wherever the reveal was asked: the callers are spread over several screens
  * that have no shared message surface. Mirrors iOS's `presentPasscodeRequired`, naming Android's
  * own setting instead of the iPhone's.
+ *
+ * iOS 33095ac moved its alert into a window of its own, because one presented from a sheet that
+ * was closing went away with it. An Android AlertDialog already is its own window over the
+ * activity's, so a Compose sheet closing (Delete Account's dismiss-then-confirm) can't take it
+ * down; what is ported is iOS's one-at-a-time guard (`passcodeAlertWindow == nil`).
  */
 private fun presentScreenLockRequired(activity: FragmentActivity) {
-    AlertDialog.Builder(activity)
+    if (screenLockAlert?.get()?.isShowing == true || activity.isFinishing) return
+    val dialog = AlertDialog.Builder(activity)
         .setTitle(activity.getString(R.string.screen_lock_required))
         .setMessage(activity.getString(R.string.screen_lock_required_message))
         .setPositiveButton(android.R.string.ok, null)
-        .show()
+        .create()
+    dialog.setOnDismissListener { screenLockAlert = null }
+    screenLockAlert = java.lang.ref.WeakReference(dialog)
+    dialog.show()
 }
+
+/** The alert above, while it's up (iOS 33095ac `passcodeAlertWindow`). Weak, so it never holds
+ *  the activity past its life. */
+private var screenLockAlert: java.lang.ref.WeakReference<AlertDialog>? = null

@@ -868,6 +868,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">Simpan ini di tempat yang aman. Siapa pun dengan kata-kata ini dapat mengakses akun Anda.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">Coba lagi</string>
+    <string name="kaposts_reply_not_on_network">Postingan ini belum ada di jaringan, jadi belum bisa dibalas. Coba lagi setelah terposting.</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">biaya: -------- KAS</string>
     <string name="composer_fee_unknown">biaya: -- KAS</string>
@@ -1272,4 +1273,66 @@
     <string name="swipe_hint_send">Lepaskan lewat setengah untuk mengirim.</string>
     <string name="swipe_failed">Gagal</string>
     <string name="swipe_send_failed_fallback">Pengiriman tidak terkirim.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">Belum dikonfirmasi</string>
+    <string name="passphrase_skip_search">Lewati pencarian: impor ke alamat #0</string>
+    <string name="passphrase_search_incomplete">Pencarian dana di alamat lain akun ini belum selesai, jadi Impor memakai alamat #0.</string>
+    <string name="passphrase_search_again">Cari lagi</string>
+    <string name="nfc_card_reenter_pin">Masukkan ulang PIN</string>
+    <string name="nfc_card_pins_dont_match">PIN tidak cocok.</string>
+    <string name="send_fee_changed">Biaya jaringan sekarang %1$s KAS, lebih tinggi dari yang ditampilkan di Tinjauan. Tidak ada yang terkirim: periksa biaya baru lalu geser lagi.</string>
+    <string name="room_no_spendable_funds_yet">Belum ada dana yang dapat dibelanjakan. Tunggu konfirmasi dan coba lagi.</string>
+    <string name="coin_unavailable_mining_reward">Hadiah penambangan, tidak bisa dibelanjakan di sini</string>
+    <string name="coin_unavailable_not_confirmed">Belum dikonfirmasi</string>
+    <string name="coin_unavailable_just_spent">Baru saja dipakai oleh postingan atau pengiriman</string>
+    <string name="room_not_enough_kas">KAS di alamat chat Anda tidak cukup. Tambahkan dan coba lagi.</string>
+    <string name="kaposts_tips_from">Tip Dari</string>
+    <string name="kaposts_tip_from_chatting_note">Dari Chatting Address, tip dihitung di postingan dan Anda tercantum sebagai pemberi tip.</string>
+    <string name="kaposts_tip_from_private_note">Dari alamat lain, tip bersifat privat: penulis menerimanya dan melihatnya di chat kalian, tapi tidak dihitung di postingan dan tidak menyebut Anda.</string>
+    <string name="kaposts_tips_from_footnote">Tip dari Chatting Address dihitung di postingan dan Anda tercantum sebagai pemberi tip. Dari alamat lain, tip bersifat privat: penulis menerimanya dan melihatnya di chat kalian, tapi tidak dihitung di postingan dan tidak menyebut Anda.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">Domain Anda</string>
+    <string name="primary_domain">Domain Utama</string>
+    <string name="send_domain">Kirim Domain</string>
+    <string name="set_as_primary">Jadikan Utama</string>
+    <string name="wd_fee">Biaya</string>
+    <string name="wd_domain">Domain</string>
+    <string name="wd_confirm_sending_domain">Konfirmasi pengiriman domain ini</string>
+    <string name="wd_transfer_two_transactions">Transfer domain terdiri dari dua transaksi, jadi perlu waktu sebentar. Biarkan aplikasi tetap terbuka sampai selesai.</string>
+    <string name="wd_transfer_fee_footer">Jika jaringan sibuk, Cepat atau Prioritas membayar biaya lebih tinggi agar transfer Anda terkonfirmasi lebih cepat. Ketuk jumlah biaya untuk mengatur biaya kustom.</string>
+    <string name="wd_kachat_names_coming_body">Nama milik KaChat akan ada di sini: klaim satu, jadikan nama Anda, dan bagikan sebagai tautan profil.</string>
+    <string name="wd_primary_set_to">Domain utama diatur ke %1$s.</string>
+    <string name="wd_transferred_to">%1$s ditransfer ke %2$s.</string>
+    <string name="wd_transfer_submitted">Transfer diajukan untuk %1$s.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">Alamat baru yang belum pernah dipakai. Kaspa yang dikirim ke sini masuk ke akun ini dan dihitung di saldo belanja. Pakai untuk semuanya kecuali nama .kachat.</string>
+    <string name="pr_where_paid">Kamu ingin dibayar ke mana?</string>
+    <string name="pr_fresh_address_note">Alamat baru milikmu yang belum pernah dipakai atau dibagikan.</string>
+    <string name="pr_anyone_note_wallet">Siapa pun yang membukanya di KaPay atau KaChat mendapat Kirim Kaspa yang sudah terisi, dan melihat bahwa ini dibuat oleh alamat chat-mu (ditandatangani dengan kuncinya).</string>
+    <string name="pr_how_much">Berapa?</string>
+    <string name="pr_youre_requesting">Kamu meminta</string>
+    <string name="ma_notify_on_receive">Beri tahu saat menerima</string>
+    <string name="ma_notify_on_receive_detail">Saat alamat pengeluaran menerima Kaspa dari orang lain.</string>
+    <string name="ma_no_spending_addresses">Tidak Ada Alamat Pengeluaran</string>
+    <string name="ma_generate_one_below">Buat satu di bawah untuk mengirim pembayaran dari alamat selain alamat utama.</string>
+    <string name="ma_address_hidden">Alamat disembunyikan. Aktifkan lagi di Visibilitas Alamat.</string>
+    <string name="ma_cant_hide">Alamat ini tidak bisa disembunyikan.</string>
+    <string name="ma_none_found">Tidak ada alamat dengan saldo atau domain.</string>
+    <string name="ma_rename_detail">Memberi alamat ini label milik Anda.</string>
+    <string name="ma_copy_detail">Menyalin alamat lengkap ke papan klip.</string>
+    <string name="ma_qr_detail">Layar penuh, untuk dipindai dengan perangkat lain.</string>
+    <string name="ma_hide_address">Sembunyikan Alamat</string>
+    <string name="ma_hide_detail">Menghapusnya dari daftar ini. Aktifkan lagi di Visibilitas Alamat.</string>
+    <string name="contains_domain">Mengandung domain</string>
+    <string name="address_visibility">Visibilitas Alamat</string>
+    <string name="ma_rename_message">Beri label alamat ini untuk membantu Anda mengenalinya.</string>
+    <string name="ma_label">Label</string>
+    <string name="ma_none_yet">Belum ada alamat dengan saldo atau domain</string>
+    <string name="ma_scan_note">Memeriksa seribu alamat pertama meskipun ada celah, lalu terus berlanjut selama masih ada yang ditemukan.</string>
+    <string name="ma_close_keep_scanning">Tutup dan Lanjutkan Memindai</string>
+    <string name="ma_generate_detail">Menampilkan alamat berikutnya yang belum dipakai di dompet ini.</string>
+    <string name="ma_visibility_detail">Centang setiap alamat yang Anda mau di daftar, sekaligus.</string>
+    <string name="address_visibility_derive_failed">Alamat-alamat ini tidak dapat diturunkan saat ini. Kembali satu halaman atau buka ulang layar ini untuk mencoba lagi.</string>
+    <string name="compound_utxos_spending_description">Menggabungkan UTXO alamat ini untuk mengurangi input yang dibutuhkan pengiriman berikutnya. Satu transaksi hanya bisa menggabungkan sejumlah terbatas sekaligus, jadi jika alamat ini punya sangat banyak, ketuk Gabungkan lagi setelah terkonfirmasi untuk terus mengurangi.</string>
+    <string name="unlock_address_private_key">Buka kunci untuk melihat kunci privat alamat ini</string>
 </resources>

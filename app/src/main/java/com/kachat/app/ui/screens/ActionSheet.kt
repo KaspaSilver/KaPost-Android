@@ -53,6 +53,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Block
@@ -824,7 +825,8 @@ fun SenderActionsSheet(
 fun TransactionActionsSheet(
     tx: ColdStorageAddressDiscovery.AddressTransaction,
     onOpenExplorer: () -> Unit,
-    onAddToPortfolio: () -> Unit,
+    /** Null leaves the row out: KaPost's sheet is Open in Explorer only (iOS KaPosts ActionSheet.swift). */
+    onAddToPortfolio: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     ActionSheetContainer(
@@ -839,12 +841,14 @@ fun TransactionActionsSheet(
             subtitle = "Opens this transaction on the block explorer.",
             onClick = onOpenExplorer,
         )
-        ActionSheetRow(
-            icon = Icons.Default.PieChart,
-            title = "Add to Portfolio",
-            subtitle = "Records it as a buy or a sell in a portfolio of your choosing.",
-            onClick = onAddToPortfolio,
-        )
+        if (onAddToPortfolio != null) {
+            ActionSheetRow(
+                icon = Icons.Default.PieChart,
+                title = "Add to Portfolio",
+                subtitle = "Records it as a buy or a sell in a portfolio of your choosing.",
+                onClick = onAddToPortfolio,
+            )
+        }
     }
 }
 
@@ -1382,7 +1386,11 @@ fun MessageTimeLine(
     }
 }
 
-enum class DeliveryStatus { PENDING, SENT, FAILED, WARNING }
+enum class DeliveryStatus {
+    PENDING, SENT, FAILED, WARNING,
+    /** May have gone through: no Retry (iOS 33095ac `.unconfirmed`). */
+    UNCONFIRMED,
+}
 
 /** Maps the persisted `deliveryStatus` string onto [DeliveryStatus]; anything unknown reads as sent,
  *  which is what the old `else ->` branch did. */
@@ -1390,6 +1398,7 @@ fun deliveryStatusOf(raw: String?): DeliveryStatus = when (raw) {
     "pending" -> DeliveryStatus.PENDING
     "failed" -> DeliveryStatus.FAILED
     "warning" -> DeliveryStatus.WARNING
+    "unconfirmed" -> DeliveryStatus.UNCONFIRMED
     else -> DeliveryStatus.SENT
 }
 
@@ -1415,11 +1424,14 @@ fun DeliveryStatusLabel(
         DeliveryStatus.PENDING -> colors.textSecondary
         DeliveryStatus.FAILED -> LocalAppColors.current.danger
         DeliveryStatus.WARNING -> Color(0xFFFF9500)
+        DeliveryStatus.UNCONFIRMED -> Color(0xFFFF9500)
     }
     val icon = when (status) {
         DeliveryStatus.SENT -> if (compact) Icons.Default.Check else Icons.Default.CheckCircle
         DeliveryStatus.PENDING -> Icons.Default.Schedule
         DeliveryStatus.FAILED, DeliveryStatus.WARNING -> Icons.Default.Error
+        // iOS questionmark.circle
+        DeliveryStatus.UNCONFIRMED -> Icons.AutoMirrored.Outlined.HelpOutline
     }
     val retryable = status == DeliveryStatus.FAILED && onRetry != null
     val label = when (status) {
@@ -1429,6 +1441,7 @@ fun DeliveryStatusLabel(
             if (retryable) stringResource(R.string.delivery_failed_tap_to_retry)
             else stringResource(R.string.delivery_failed)
         DeliveryStatus.WARNING -> stringResource(R.string.delivery_needs_attention)
+        DeliveryStatus.UNCONFIRMED -> stringResource(R.string.delivery_not_confirmed)
     }
     val spoken = if (retryable) stringResource(R.string.delivery_failed_retry_accessibility) else label
     Row(

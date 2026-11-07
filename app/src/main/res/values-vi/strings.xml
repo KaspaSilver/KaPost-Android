@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">Lưu trữ ở nơi an toàn. Bất kỳ ai có những từ này đều có thể truy cập tài khoản của bạn.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">Thử lại</string>
+    <string name="kaposts_reply_not_on_network">Bài đăng này chưa có trên mạng nên chưa thể trả lời. Hãy thử lại khi bài đã được đăng.</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">phí: -------- KAS</string>
     <string name="composer_fee_unknown">phí: -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">Thả sau nửa đường để gửi.</string>
     <string name="swipe_failed">Thất bại</string>
     <string name="swipe_send_failed_fallback">Giao dịch chưa được gửi đi.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">Chưa xác nhận</string>
+    <string name="passphrase_skip_search">Bỏ qua tìm kiếm: nhập vào địa chỉ #0</string>
+    <string name="passphrase_search_incomplete">Việc tìm số dư trên các địa chỉ khác của tài khoản này chưa xong, nên Nhập sẽ dùng địa chỉ #0.</string>
+    <string name="passphrase_search_again">Tìm lại</string>
+    <string name="nfc_card_reenter_pin">Nhập lại mã PIN</string>
+    <string name="nfc_card_pins_dont_match">Mã PIN không khớp.</string>
+    <string name="send_fee_changed">Phí mạng hiện là %1$s KAS, cao hơn mức trong phần xem lại. Chưa gửi gì: hãy kiểm tra phí mới và vuốt lại.</string>
+    <string name="room_no_spendable_funds_yet">Hiện chưa có số dư có thể chi tiêu. Hãy đợi xác nhận rồi thử lại.</string>
+    <string name="coin_unavailable_mining_reward">Phần thưởng đào, không thể chi ở đây</string>
+    <string name="coin_unavailable_not_confirmed">Chưa được xác nhận</string>
+    <string name="coin_unavailable_just_spent">Vừa được chi bởi một bài đăng hoặc giao dịch gửi</string>
+    <string name="room_not_enough_kas">Không đủ KAS trên địa chỉ trò chuyện. Hãy thêm và thử lại.</string>
+    <string name="kaposts_tips_from">Tiền tip từ</string>
+    <string name="kaposts_tip_from_chatting_note">Từ Chatting Address, tiền tip được tính trên bài đăng và bạn có tên trong danh sách người tip.</string>
+    <string name="kaposts_tip_from_private_note">Từ địa chỉ khác, tiền tip là riêng tư: tác giả nhận và thấy trong cuộc trò chuyện, nhưng không tính trên bài đăng và không nêu tên bạn.</string>
+    <string name="kaposts_tips_from_footnote">Tiền tip từ Chatting Address được tính trên bài đăng và bạn có tên trong danh sách người tip. Từ địa chỉ khác, tiền tip là riêng tư: tác giả nhận và thấy trong cuộc trò chuyện, nhưng không tính trên bài đăng và không nêu tên bạn.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">Tên miền của bạn</string>
+    <string name="primary_domain">Tên miền chính</string>
+    <string name="send_domain">Gửi tên miền</string>
+    <string name="set_as_primary">Đặt làm tên chính</string>
+    <string name="asset_id">ID nội dung</string>
+    <string name="wd_fee">Phí</string>
+    <string name="wd_domain">Lãnh địa</string>
+    <string name="wd_confirm_sending_domain">Xác nhận gửi tên miền này</string>
+    <string name="wd_transfer_two_transactions">Chuyển tên miền gồm hai giao dịch nên sẽ mất một lúc. Hãy giữ ứng dụng mở cho đến khi hoàn tất.</string>
+    <string name="wd_transfer_fee_footer">Nếu mạng bận, Nhanh hoặc Ưu tiên trả phí cao hơn để giao dịch của bạn được xác nhận sớm hơn. Chạm vào số phí để đặt phí tùy chỉnh.</string>
+    <string name="wd_kachat_names_coming_body">Tên riêng của KaChat sẽ ở đây: nhận một tên, đặt làm tên của bạn và chia sẻ như liên kết hồ sơ.</string>
+    <string name="wd_primary_set_to">Tên miền chính được đặt thành %1$s.</string>
+    <string name="wd_transferred_to">%1$s đã chuyển sang %2$s.</string>
+    <string name="wd_transfer_submitted">Đã gửi chuyển khoản với giá %1$s.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">Một địa chỉ mới, chưa từng dùng. Kaspa gửi tới đây vào tài khoản này và tính vào số dư chi tiêu. Dùng cho mọi thứ trừ tên .kachat.</string>
+    <string name="pr_where_paid">Bạn muốn nhận tiền ở đâu?</string>
+    <string name="pr_fresh_address_note">Một địa chỉ hoàn toàn mới của bạn, chưa từng được dùng hay chia sẻ.</string>
+    <string name="pr_anyone_note_wallet">Ai mở nó trong KaPay hoặc KaChat sẽ thấy màn hình Gửi Kaspa đã điền sẵn và biết yêu cầu này do địa chỉ trò chuyện của bạn tạo (ký bằng khóa của nó).</string>
+    <string name="pr_how_much">Bao nhiêu?</string>
+    <string name="pr_youre_requesting">Bạn đang yêu cầu</string>
+    <string name="ma_notify_on_receive">Thông báo khi nhận</string>
+    <string name="ma_notify_on_receive_detail">Khi một địa chỉ chi tiêu nhận Kaspa từ người khác.</string>
+    <string name="ma_no_spending_addresses">Không có địa chỉ chi tiêu</string>
+    <string name="ma_generate_one_below">Tạo một địa chỉ bên dưới để gửi thanh toán từ địa chỉ khác địa chỉ chính.</string>
+    <string name="ma_address_hidden">Đã ẩn địa chỉ. Bật lại trong Hiển thị địa chỉ.</string>
+    <string name="ma_cant_hide">Không thể ẩn địa chỉ này.</string>
+    <string name="ma_none_found">Không tìm thấy địa chỉ nào có số dư hoặc tên miền.</string>
+    <string name="ma_rename_detail">Đặt cho địa chỉ này một nhãn của riêng bạn.</string>
+    <string name="ma_copy_detail">Sao chép toàn bộ địa chỉ vào bộ nhớ tạm.</string>
+    <string name="ma_qr_detail">Toàn màn hình, để quét bằng thiết bị khác.</string>
+    <string name="ma_hide_address">Ẩn địa chỉ</string>
+    <string name="ma_hide_detail">Gỡ khỏi danh sách này. Bật lại trong Hiển thị địa chỉ.</string>
+    <string name="contains_domain">Chứa tên miền</string>
+    <string name="address_visibility">Hiển thị địa chỉ</string>
+    <string name="ma_rename_message">Đặt nhãn cho địa chỉ này để giúp bạn nhận ra nó.</string>
+    <string name="ma_label">Nhãn</string>
+    <string name="ma_none_yet">Chưa có địa chỉ nào có số dư hoặc tên miền</string>
+    <string name="ma_scan_note">Kiểm tra một nghìn địa chỉ đầu tiên dù có khoảng trống, rồi tiếp tục chừng nào còn tìm thấy.</string>
+    <string name="ma_close_keep_scanning">Đóng và tiếp tục quét</string>
+    <string name="ma_generate_detail">Hiện địa chỉ chưa dùng tiếp theo của ví này.</string>
+    <string name="ma_visibility_detail">Đánh dấu mọi địa chỉ bạn muốn có trong danh sách, trong một lần.</string>
+    <string name="address_visibility_derive_failed">Hiện chưa thể tạo các địa chỉ này. Hãy quay lại một trang hoặc mở lại màn hình này để thử lại.</string>
+    <string name="compound_utxos_spending_description">Gộp các UTXO của địa chỉ này để giảm số đầu vào mà lần gửi sau cần. Một giao dịch chỉ gộp được một số lượng nhất định cùng lúc, nên nếu địa chỉ này có rất nhiều, hãy chạm Hợp nhất lần nữa sau khi giao dịch được xác nhận để tiếp tục giảm.</string>
+    <string name="unlock_address_private_key">Mở khóa để xem khóa riêng của địa chỉ này</string>
 </resources>

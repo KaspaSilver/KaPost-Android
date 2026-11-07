@@ -466,7 +466,7 @@ class BroadcastScanningService @Inject constructor(
     ) {
         if (isSenderHidden(senderAddress, parsed.channel)) return
 
-        database.broadcastDao().insertMessageIfAbsent(
+        val stored = database.broadcastDao().insertMessageIfAbsent(
             BroadcastMessageEntity(
                 id = txId,
                 channelName = parsed.channel,
@@ -475,6 +475,9 @@ class BroadcastScanningService @Inject constructor(
                 blockTimestamp = blockTimestampMillis
             )
         )
+        // Already stored: if it was our send whose outcome was unknown, this is its delivered
+        // copy, so it is sent now (iOS 33095ac `insertMessages`).
+        if (stored == -1L) database.broadcastDao().settleUnconfirmed(txId, blockTimestampMillis)
 
         // Global notification center (Profile bell): neither a reaction nor an edit ever
         // surfaces as a row.

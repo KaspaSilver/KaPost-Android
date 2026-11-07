@@ -17,12 +17,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -40,16 +35,16 @@ import com.kachat.app.viewmodels.WalletViewModel
  * Shown instead of the app when the account store can't be opened (iOS WalletRecoveryView): a
  * phone restored without KaPost's Keystore key, or a Keystore that refuses it. The store used to
  * throw while WalletManager was built, and the app closed before any screen. This says what
- * happened and leads into Import ([WalletViewModel.leaveKeyRecovery]).
+ * happened and leads into Import ([WalletViewModel.enterKeyRecoveryWords]). Nothing changes until
+ * an import completes, and leaving Import comes back here (iOS WalletRecoveryView).
  *
  * Unlike iOS it can't name the account (its record is in the store that can't be read), and it
- * has no "Remove This Account From the Phone": entering the words already sets the unreadable
+ * has no "Remove This Account From the Phone": a completed import already sets the unreadable
  * store aside, and the message history it would delete is not in that store.
  */
 @Composable
 fun WalletRecoveryScreen(viewModel: WalletViewModel) {
     val colors = LocalAppColors.current
-    var failed by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -87,7 +82,7 @@ fun WalletRecoveryScreen(viewModel: WalletViewModel) {
         }
         Spacer(Modifier.weight(1f))
         Button(
-            onClick = { failed = !viewModel.leaveKeyRecovery(openImport = true) },
+            onClick = { viewModel.enterKeyRecoveryWords() },
             colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal),
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
@@ -102,19 +97,5 @@ fun WalletRecoveryScreen(viewModel: WalletViewModel) {
                 fontWeight = FontWeight.SemiBold,
             )
         }
-    }
-
-    if (failed) {
-        com.kachat.app.ui.theme.IosAlertDialog(
-            onDismissRequest = { failed = false },
-            containerColor = colors.surface,
-            title = { Text(stringResource(R.string.error), color = colors.textPrimary) },
-            text = { Text(stringResource(R.string.wallet_recovery_failed_message), color = colors.textSecondary) },
-            confirmButton = {
-                TextButton(onClick = { failed = false }) {
-                    Text(stringResource(R.string.ok), color = KaspaTeal, fontWeight = FontWeight.Bold)
-                }
-            },
-        )
     }
 }

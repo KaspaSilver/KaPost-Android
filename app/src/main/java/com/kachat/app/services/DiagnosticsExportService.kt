@@ -8,6 +8,7 @@ import androidx.core.content.FileProvider
 import com.google.gson.GsonBuilder
 import com.kachat.app.repository.AppSettingsRepository
 import com.kachat.app.repository.ChatRepository
+import com.kachat.app.util.redactingKaspaAddresses
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import java.io.File
@@ -60,11 +61,17 @@ class DiagnosticsExportService @Inject constructor(
     /** Builds the diagnostics zip in app-private cache and returns a content:// URI ready for a share sheet. */
     suspend fun exportDiagnostics(): Uri {
         val exportDir = File(context.cacheDir, "diagnostics_exports").apply { mkdirs() }
+        // Only the newest export is kept: each one carries logs and settings, and they used to
+        // pile up in the cache with every export.
+        exportDir.listFiles { file -> file.isFile && file.name.endsWith(".zip") }
+            ?.forEach { runCatching { it.delete() } }
         val fileTimestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replace(":", "-")
         val zipFile = File(exportDir, "kachat-diagnostics-$fileTimestamp.zip")
 
         val diagnosticsJson = gson.toJson(buildDiagnosticsArchive())
-        val logs = collectAppLogs()
+        // Addresses by their last 8 characters only, in every log the archive carries (iOS
+        // 33095ac AppLog): an exported log names nobody's account.
+        val logs = collectAppLogs().redactingKaspaAddresses()
 
         ZipOutputStream(zipFile.outputStream()).use { zip ->
             zip.putNextEntry(ZipEntry("diagnostics.json"))
@@ -78,7 +85,7 @@ class DiagnosticsExportService @Inject constructor(
             // The system's crash log buffer holds this app's fatal entries - Java and native -
             // from EARLIER processes too, which the pid-filtered app.log above cannot see.
             zip.putNextEntry(ZipEntry("crash-buffer.log"))
-            zip.write(collectCrashBuffer().toByteArray())
+            zip.write(collectCrashBuffer().redactingKaspaAddresses().toByteArray())
             zip.closeEntry()
 
             // Crashes from EARLIER launches. app.log above is this process only, so a crash
@@ -86,7 +93,7 @@ class DiagnosticsExportService @Inject constructor(
             // - would otherwise never make it into the archive. See CrashRecorder.
             for (crash in CrashRecorder.crashFiles(context)) {
                 zip.putNextEntry(ZipEntry("crashes/${crash.name}"))
-                zip.write(crash.readBytes())
+                zip.write(crash.readText().redactingKaspaAddresses().toByteArray())
                 zip.closeEntry()
             }
         }

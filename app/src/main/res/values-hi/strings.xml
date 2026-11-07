@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">इसे सुरक्षित स्थान पर रखें। इन शब्दों से कोई भी आपके खाते तक पहुंच सकता है।</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">फिर कोशिश करें</string>
+    <string name="kaposts_reply_not_on_network">यह पोस्ट अभी नेटवर्क पर नहीं है, इसलिए इसका जवाब नहीं दिया जा सकता। पोस्ट हो जाने पर फिर कोशिश करें।</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">शुल्क: -------- KAS</string>
     <string name="composer_fee_unknown">शुल्क: -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">भेजने के लिए आधे से आगे छोड़ें।</string>
     <string name="swipe_failed">विफल</string>
     <string name="swipe_send_failed_fallback">भेजना नहीं हो पाया।</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">पुष्टि नहीं हुई</string>
+    <string name="passphrase_skip_search">खोज छोड़ें: पते #0 पर इम्पोर्ट करें</string>
+    <string name="passphrase_search_incomplete">इस खाते के दूसरे पतों पर फंड की खोज पूरी नहीं हुई, इसलिए इम्पोर्ट पता #0 इस्तेमाल करेगा।</string>
+    <string name="passphrase_search_again">फिर से खोजें</string>
+    <string name="nfc_card_reenter_pin">PIN फिर से डालें</string>
+    <string name="nfc_card_pins_dont_match">PIN मेल नहीं खाते।</string>
+    <string name="send_fee_changed">नेटवर्क शुल्क अब %1$s KAS है, समीक्षा में दिखाए गए से ज़्यादा। कुछ नहीं भेजा गया: नया शुल्क देखें और फिर से स्वाइप करें।</string>
+    <string name="room_no_spendable_funds_yet">अभी खर्च करने योग्य फंड उपलब्ध नहीं हैं। पुष्टि होने तक प्रतीक्षा करें और फिर से प्रयास करें।</string>
+    <string name="coin_unavailable_mining_reward">माइनिंग इनाम, यहाँ खर्च नहीं हो सकता</string>
+    <string name="coin_unavailable_not_confirmed">अभी पुष्टि नहीं हुई</string>
+    <string name="coin_unavailable_just_spent">अभी-अभी किसी पोस्ट या भेजने में खर्च हुआ</string>
+    <string name="room_not_enough_kas">आपके चैटिंग पते पर पर्याप्त KAS नहीं है। कुछ जोड़ें और फिर से कोशिश करें।</string>
+    <string name="kaposts_tips_from">टिप किससे</string>
+    <string name="kaposts_tip_from_chatting_note">Chatting Address से दी गई टिप पोस्ट पर गिनी जाती है, और आप टिप देने वालों में दिखते हैं।</string>
+    <string name="kaposts_tip_from_private_note">दूसरे पते से टिप निजी है: लेखक को मिलती है और आपकी चैट में दिखती है, पर पोस्ट पर नहीं गिनी जाती और आपका नाम नहीं आता।</string>
+    <string name="kaposts_tips_from_footnote">Chatting Address से दी गई टिप पोस्ट पर गिनी जाती है, और आप टिप देने वालों में दिखते हैं। दूसरे पते से टिप निजी है: लेखक को मिलती है और आपकी चैट में दिखती है, पर पोस्ट पर नहीं गिनी जाती और आपका नाम नहीं आता।</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">आपके डोमेन</string>
+    <string name="primary_domain">प्राथमिक डोमेन</string>
+    <string name="send_domain">डोमेन भेजें</string>
+    <string name="set_as_primary">मुख्य के रूप में सेट करें</string>
+    <string name="asset_id">संपत्ति आईडी</string>
+    <string name="wd_fee">शुल्क</string>
+    <string name="wd_domain">कार्यक्षेत्र</string>
+    <string name="wd_confirm_sending_domain">इस डोमेन को भेजने की पुष्टि करें</string>
+    <string name="wd_transfer_two_transactions">डोमेन ट्रांसफ़र में दो लेन-देन होते हैं, इसलिए थोड़ा समय लगता है। पूरा होने तक ऐप खुला रखें।</string>
+    <string name="wd_transfer_fee_footer">नेटवर्क व्यस्त हो तो तेज़ या प्राथमिकता में ज़्यादा शुल्क लगता है ताकि आपका ट्रांसफ़र जल्दी कन्फ़र्म हो। कस्टम शुल्क तय करने के लिए शुल्क की राशि पर टैप करें।</string>
+    <string name="wd_kachat_names_coming_body">KaChat के अपने नाम यहाँ होंगे: एक नाम लें, उसे अपना नाम बनाएँ और प्रोफ़ाइल लिंक के रूप में साझा करें।</string>
+    <string name="wd_primary_set_to">प्राथमिक डोमेन %1$s पर सेट है।</string>
+    <string name="wd_transferred_to">%1$s को %2$s में स्थानांतरित कर दिया गया।</string>
+    <string name="wd_transfer_submitted">%1$s के लिए स्थानांतरण सबमिट किया गया।</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">एक नया पता, जो कभी इस्तेमाल नहीं हुआ। यहाँ भेजा गया Kaspa इस खाते में आता है और आपके खर्च बैलेंस में गिना जाता है। .kachat नामों को छोड़ हर चीज़ के लिए इसका उपयोग करें।</string>
+    <string name="pr_where_paid">आप भुगतान कहाँ लेना चाहते हैं?</string>
+    <string name="pr_fresh_address_note">आपका बिल्कुल नया पता, जो कभी इस्तेमाल या साझा नहीं हुआ।</string>
+    <string name="pr_anyone_note_wallet">जो भी इसे KaPay या KaChat में खोलेगा, उसे यह भरी हुई Kaspa भेजें स्क्रीन मिलेगी, और दिखेगा कि इसे आपके चैट पते ने बनाया है (उसकी कुंजी से हस्ताक्षरित)।</string>
+    <string name="pr_how_much">कितना?</string>
+    <string name="pr_youre_requesting">आप माँग रहे हैं</string>
+    <string name="ma_notify_on_receive">प्राप्त होने पर सूचित करें</string>
+    <string name="ma_notify_on_receive_detail">जब किसी खर्च पते को किसी और से Kaspa मिलता है।</string>
+    <string name="ma_no_spending_addresses">कोई खर्च पता नहीं</string>
+    <string name="ma_generate_one_below">मुख्य पते के बजाय दूसरे पते से भुगतान भेजने के लिए नीचे एक पता बनाएँ।</string>
+    <string name="ma_address_hidden">पता छिपा दिया गया। पता दृश्यता में इसे फिर से दिखाएँ।</string>
+    <string name="ma_cant_hide">यह पता छिपाया नहीं जा सकता।</string>
+    <string name="ma_none_found">बैलेंस या डोमेन वाला कोई पता नहीं मिला।</string>
+    <string name="ma_rename_detail">इस पते को अपना एक लेबल देता है।</string>
+    <string name="ma_copy_detail">पूरा पता क्लिपबोर्ड पर कॉपी करता है।</string>
+    <string name="ma_qr_detail">पूरी स्क्रीन, दूसरे डिवाइस से स्कैन करने के लिए।</string>
+    <string name="ma_hide_address">पता छिपाएँ</string>
+    <string name="ma_hide_detail">इसे इस सूची से हटाता है। पता दृश्यता में इसे फिर से दिखाएँ।</string>
+    <string name="contains_domain">डोमेन शामिल है</string>
+    <string name="address_visibility">पते की दृश्यता</string>
+    <string name="ma_rename_message">इसे पहचानने में मदद के लिए इस पते को एक लेबल दें।</string>
+    <string name="ma_label">लेबल</string>
+    <string name="ma_none_yet">अभी तक कोई बैलेंस या डोमेन वाला पता नहीं</string>
+    <string name="ma_scan_note">पहले एक हज़ार पते जांचता है, चाहे बीच में खाली पते हों, फिर जब तक कुछ मिलता रहता है तब तक आगे बढ़ता रहता है।</string>
+    <string name="ma_close_keep_scanning">बंद करें और स्कैन जारी रखें</string>
+    <string name="ma_generate_detail">इस वॉलेट का अगला अप्रयुक्त पता दिखाता है।</string>
+    <string name="ma_visibility_detail">सूची में जो भी पते चाहिए, सब एक बार में चुनें।</string>
+    <string name="address_visibility_derive_failed">इन पतों को अभी निकाला नहीं जा सका। एक पेज पीछे जाएं या दोबारा कोशिश करने के लिए यह स्क्रीन फिर खोलें।</string>
+    <string name="compound_utxos_spending_description">इस पते के UTXO को मिलाकर आगे भेजने में लगने वाले इनपुट कम करता है। एक लेन-देन में एक बार में सीमित संख्या ही मिल सकती है, इसलिए अगर इस पते पर बहुत ज़्यादा हैं, तो कन्फ़र्म होने के बाद और कम करने के लिए समेकित करें पर फिर टैप करें।</string>
+    <string name="unlock_address_private_key">इस पते की निजी कुंजी देखने के लिए अनलॉक करें</string>
 </resources>

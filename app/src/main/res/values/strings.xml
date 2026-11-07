@@ -1152,6 +1152,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">Store this in a safe place. Anyone with these words can access your account.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">Retry</string>
+    <string name="kaposts_reply_not_on_network">This post isn\'t on the network yet, so it can\'t be replied to. Try again once it has posted.</string>
     <!-- Profile bell sheet (iOS GlobalNotificationListView) -->
     <string name="notification_center_empty_title">No notifications yet</string>
     <string name="notification_center_clear_all">Clear All</string>
@@ -1674,6 +1675,8 @@
     <!-- Why Max isn't the whole balance: one transaction spends at most 80 coins (iOS d816404 maxCappedNote) -->
     <string name="send_max_capped">Max is what one transaction can carry: its largest %1$d coins. Compound UTXOs, under More, combines the rest.</string>
     <string name="send_compound_capped">One transaction can combine %1$d coins, so this combines the largest %1$d. Compound again for the rest.</string>
+    <!-- A send rebuilt at the swipe would pay more than the Review showed: nothing sent (iOS 33095ac SendFeeChangedError) -->
+    <string name="send_fee_changed">The network fee is now %1$s KAS, more than the Review showed. Nothing was sent: check the new fee and swipe again.</string>
     <!-- A room message from a chatting address with no coins (iOS d816404 notEnoughKasMessage) -->
     <string name="room_not_enough_kas">Not enough KAS on your Chatting Address. Add some and try again.</string>
     <string name="send_set_network_fee">Set your network fee</string>
@@ -1695,4 +1698,64 @@
     <string name="wallet_recovery_body">This phone has your account but not its keys. That happens after restoring a phone from a backup, because KaPost\'s keys are locked to the device they were created on. Enter your 12 or 24 words to unlock it here. Your messages on this device are kept.</string>
     <string name="wallet_recovery_enter_words">Enter 12 or 24 Words</string>
     <string name="wallet_recovery_failed_message">The phone\'s secure storage could not be opened. Restart the phone and try again.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">Not confirmed</string>
+    <string name="passphrase_skip_search">Skip the Search: Import on Address #0</string>
+    <string name="passphrase_search_incomplete">The search for funds on this account\'s other addresses didn\'t finish, so Import uses address #0.</string>
+    <string name="passphrase_search_again">Search Again</string>
+    <string name="nfc_card_reenter_pin">Re-enter PIN</string>
+    <string name="nfc_card_pins_dont_match">The PINs don\'t match.</string>
+    <!-- A room message with every coin being mined or held by a send in flight (iOS 33095ac noSpendableFundsYetMessage) -->
+    <string name="room_no_spendable_funds_yet">No spendable funds available yet. Wait for confirmations and try again.</string>
+    <!-- Coin Control: why a coin is greyed out (iOS 33095ac CoinControlView.unavailableReason) -->
+    <string name="coin_unavailable_mining_reward">Mining reward, not spendable here</string>
+    <string name="coin_unavailable_not_confirmed">Not confirmed yet</string>
+    <string name="coin_unavailable_just_spent">Just spent by a post or send</string>
+    <!-- Tips From: only a tip from the chatting address counts on the post; another address tips privately (iOS 071e901) -->
+    <string name="kaposts_tips_from">Tips From</string>
+    <string name="kaposts_tip_from_chatting_note">From your Chatting Address the tip counts on the post, and you\'re listed as a tipper.</string>
+    <string name="kaposts_tip_from_private_note">From another address the tip is private: the author gets it, and sees it in your chat, but it doesn\'t count on the post or name you as a tipper.</string>
+    <string name="kaposts_tips_from_footnote">Tips from your Chatting Address count on the post, and you\'re listed as a tipper. From another address a tip is private: the author gets it, and sees it in your chat, but it doesn\'t count on the post or name you.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">Your Domains</string>
+    <string name="wd_fee">Fee</string>
+    <string name="wd_domain">Domain</string>
+    <string name="wd_confirm_sending_domain">Confirm sending this domain</string>
+    <string name="wd_transfer_two_transactions">A domain transfer is two transactions, so this takes a moment. Keep the app open until it finishes.</string>
+    <string name="wd_transfer_fee_footer">If the network is busy, Fast or Priority pays a higher fee to help your transfer confirm sooner. Tap the fee amount to set a custom fee.</string>
+    <string name="wd_kachat_names_coming_body">KaChat\'s own names will live here: claim one, make it your name, and share it as your profile link.</string>
+    <string name="wd_primary_set_to">Primary domain set to %1$s.</string>
+    <string name="wd_transferred_to">%1$s transferred to %2$s.</string>
+    <string name="wd_transfer_submitted">Transfer submitted for %1$s.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">A fresh address, never used before. Kaspa sent here lands in this account and shows in your spending total. Use it for everything except .kachat names.</string>
+    <string name="pr_where_paid">Where do you want to be paid?</string>
+    <string name="pr_fresh_address_note">A brand-new address of yours that has never been used or handed out.</string>
+    <string name="pr_anyone_note_wallet">Anyone who opens it in KaPay or KaChat gets Send Kaspa with this filled in, and sees it was made by your chatting address (signed with its key).</string>
+    <string name="pr_how_much">How much?</string>
+    <string name="pr_youre_requesting">You\'re requesting</string>
+    <string name="ma_notify_on_receive">Notify on receive</string>
+    <string name="ma_notify_on_receive_detail">When a spending address receives Kaspa from someone else.</string>
+    <string name="ma_no_spending_addresses">No Spending Addresses</string>
+    <string name="ma_generate_one_below">Generate one below to send payments from a separate address than your main one.</string>
+    <string name="ma_address_hidden">Address hidden. Re-enable it in Address Visibility.</string>
+    <string name="ma_cant_hide">This address can\'t be hidden.</string>
+    <string name="ma_none_found">No addresses with a balance or domain found.</string>
+    <string name="ma_rename_detail">Gives this address a label of your own.</string>
+    <string name="ma_copy_detail">Puts the full address on the clipboard.</string>
+    <string name="ma_qr_detail">Full screen, for scanning with another device.</string>
+    <string name="ma_hide_address">Hide Address</string>
+    <string name="ma_hide_detail">Removes it from this list. Re-enable it in Address Visibility.</string>
+    <string name="contains_domain">Contains domain</string>
+    <string name="address_visibility">Address Visibility</string>
+    <string name="ma_rename_message">Give this address a label to help you recognize it.</string>
+    <string name="ma_label">Label</string>
+    <string name="ma_none_yet">No addresses with a balance or domain yet</string>
+    <string name="ma_scan_note">Checks the first thousand addresses whatever the gaps, then keeps going while it keeps finding.</string>
+    <string name="ma_close_keep_scanning">Close and Keep Scanning</string>
+    <string name="ma_generate_detail">Reveals the next unused address in this wallet.</string>
+    <string name="ma_visibility_detail">Check off every address you want on the list, in one sitting.</string>
+    <string name="address_visibility_derive_failed">These addresses couldn\'t be derived right now. Go back a page or reopen this screen to retry.</string>
+    <string name="compound_utxos_spending_description">Combines this address\'s UTXOs to reduce the inputs a future send needs. A single transaction can only merge so many at once, so if this address has a very large number, tap Compound again after it confirms to keep reducing.</string>
+    <string name="unlock_address_private_key">Unlock to view this address\'s private key</string>
 </resources>

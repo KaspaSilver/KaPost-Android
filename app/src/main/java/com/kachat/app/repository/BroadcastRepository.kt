@@ -46,6 +46,17 @@ class BroadcastRepository @Inject constructor(
     // every row it serves is verified (input 0's address == output 0's) before it is stored.
     private val senderVerifier: com.kachat.app.services.BroadcastSenderVerifier,
 ) {
+    /**
+     * Where a room's sends run - messages, edits, reactions, retries and voice notes - so they
+     * finish after the room is closed, as iOS runs them on the shared PublicChatService. A room's
+     * view model dies on Back, and a send cancelled with it would be marked failed even when the
+     * transaction already went out, and a Retry would then post and pay twice.
+     */
+    val sendScope: kotlinx.coroutines.CoroutineScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.Main.immediate +
+            com.kachat.app.util.StartupSafety.logOnlyHandler("BroadcastRepository")
+    )
+
     /** The active account's address - the scanner refreshes the indexer's tracked rooms on a switch. */
     val activeAddressFlow: kotlinx.coroutines.flow.StateFlow<String?> get() = walletManager.activeAddressFlow
 
@@ -381,6 +392,24 @@ class BroadcastRepository @Inject constructor(
          *  messages" adds. iOS's `roomWindowSize`. */
         const val ROOM_WINDOW_SIZE = 400
 
+        /** What a room indexer typed as http:// is refused with (iOS SettingsView's words). */
+        const val HTTPS_REQUIRED = "Use https. Unencrypted connections are not supported."
+
+        /** True for an http:// address, which no room indexer is ever asked over. */
+        fun isCleartextHttp(url: String): Boolean = url.trim().startsWith("http://", ignoreCase = true)
+
+        /**
+         * A room indexer as typed, by the app's rule for every server address
+         * (`ConnectionViewModel.httpsUrlOrNull`): trimmed, without a trailing slash; null for
+         * http://, and a bare host gets https://. Blank stays blank.
+         */
+        fun httpsUrlOrNull(value: String): String? {
+            val trimmed = value.trim().trimEnd('/')
+            if (trimmed.isEmpty()) return trimmed
+            if (isCleartextHttp(trimmed)) return null
+            return if (trimmed.startsWith("https://", ignoreCase = true)) trimmed else "https://$trimmed"
+        }
+
         /** How often the app-wide indexer is asked which rooms it tracks (iOS: hourly). */
         private const val TRACKED_ROOMS_CHECK_INTERVAL_MS = 60L * 60 * 1000
 
@@ -461,17 +490,18 @@ class BroadcastRepository @Inject constructor(
     /**
      * Once the room's full history is in (after the deep backfill, or straight away for a room
      * with no indexer), so a send that did land has its delivered copy to match (iOS e5a9b11
-     * `settlePendingSendsFromBeforeThisRun`). A pending row no send in this run is working on goes
-     * if its delivered copy is here (same sender and content, sent, chain time no more than five
-     * minutes before the row's own), and is otherwise marked failed so Retry shows instead of
-     * Sending forever.
+     * `settlePendingSendsFromBeforeThisRun`). A pending row no send in this run is working on, or
+     * an unconfirmed one whose id never became a transaction's, goes if its delivered copy is here
+     * (same sender and content, sent, chain time no more than five minutes before the row's own).
+     * The rest may have landed while the app was closed, so they show "Not confirmed" rather than
+     * a Retry that could pay twice (iOS 33095ac `settlePendingMessages`).
      */
     suspend fun settlePendingSendsFromBeforeThisRun(channelName: String) {
         synchronized(settledPendingChannels) {
             if (!settledPendingChannels.add(channelName)) return
         }
         val dao = database.broadcastDao()
-        for (row in dao.getPendingMessages(channelName)) {
+        for (row in dao.getUnsettledSends(channelName)) {
             if (row.id in pendingSendsThisRun) continue
             val delivered = dao.countDeliveredCopies(
                 channelName = channelName,
@@ -479,8 +509,33 @@ class BroadcastRepository @Inject constructor(
                 content = row.content,
                 sinceMillis = row.blockTimestamp - SETTLE_DELIVERED_WINDOW_MS,
             )
-            if (delivered > 0) dao.deleteMessage(row.id) else dao.updateMessageStatus(row.id, "failed")
+            if (delivered > 0) {
+                dao.deleteMessage(row.id)
+            } else if (row.deliveryStatus != "unconfirmed") {
+                dao.updateMessageStatus(row.id, "unconfirmed")
+            }
         }
+    }
+
+    /**
+     * A send whose outcome is unknown (iOS 33095ac `markMessageUnconfirmed`): the row takes the
+     * transaction's id, so its delivered copy settles it, and shows "Not confirmed" with no Retry.
+     * A copy already here means it landed: the row just goes.
+     */
+    private suspend fun markMessageUnconfirmed(pendingId: String, txId: String) {
+        pendingSendsThisRun.remove(pendingId)
+        val dao = database.broadcastDao()
+        val row = dao.getMessage(pendingId) ?: return
+        // No id to match a copy by: the row stays as it is, "Not confirmed", for the settle.
+        if (txId.isBlank()) {
+            dao.updateMessageStatus(pendingId, "unconfirmed")
+            return
+        }
+        dao.deleteMessage(pendingId)
+        if (dao.getMessage(txId) != null) return
+        // Signed here, so its sender is known when it comes back from the chain (XP-012).
+        senderVerifier.rememberOwnBroadcast(txId, row.senderAddress)
+        dao.insertMessage(row.copy(id = txId, deliveryStatus = "unconfirmed"))
     }
 
     /** Fetches history for [channelName] and merges it into the local cache. The FIRST call per
@@ -498,7 +553,7 @@ class BroadcastRepository @Inject constructor(
      * arrived (iOS 3c14b46). Reactions never render as rows, so they are left out.
      */
     suspend fun fetchNewestFromIndexer(channelName: String, limit: Int = 40): List<BroadcastMessageEntity> {
-        val override = settings.broadcastIndexerOverrides.first()[channelName.trim().lowercase()]
+        val override = roomIndexerOverride(channelName)
         val api = (override?.let { networkService.broadcastIndexerApiFor(it) }
             ?: networkService.broadcastIndexerApi.value) ?: return emptyList()
         val hidden = hiddenAddressesIn(channelName, getHiddenSenders().first())
@@ -547,6 +602,11 @@ class BroadcastRepository @Inject constructor(
             val existing = database.broadcastDao().getMessage(txId)
             if (existing != null) {
                 val chainTime = row.blockTime
+                // A send whose outcome was unknown: its delivered copy makes it sent (iOS 33095ac).
+                if (existing.deliveryStatus == "unconfirmed") {
+                    database.broadcastDao().settleUnconfirmed(txId, chainTime ?: existing.blockTimestamp)
+                    continue
+                }
                 if (chainTime != null && (chainTime != existing.blockTimestamp || existing.deliveryStatus != "sent")) {
                     database.broadcastDao().insertMessage(existing.copy(blockTimestamp = chainTime, deliveryStatus = "sent"))
                 }
@@ -665,7 +725,7 @@ class BroadcastRepository @Inject constructor(
         channelName: String,
         period: String,
     ): com.kachat.app.services.ChessIndexerLeaderboardResponse? {
-        val override = settings.broadcastIndexerOverrides.first()[channelName.trim().lowercase()]
+        val override = roomIndexerOverride(channelName)
         val api = (override?.let { networkService.broadcastIndexerApiFor(it) }
             ?: networkService.broadcastIndexerApi.value) ?: return null
         return try {
@@ -690,16 +750,27 @@ class BroadcastRepository @Inject constructor(
      */
     suspend fun probeIndexer(baseUrl: String, channelName: String): Int {
         val trimmed = baseUrl.trim()
+        // Never asked over http (the app's https-only rule for every server address).
+        if (isCleartextHttp(trimmed)) throw IllegalArgumentException(HTTPS_REQUIRED)
         val withSlash = if (trimmed.endsWith("/")) trimmed else "$trimmed/"
         if (withSlash.toHttpUrlOrNull() == null) throw IllegalArgumentException("unsupported URL")
         val api = networkService.broadcastIndexerApiFor(trimmed) ?: throw IllegalArgumentException("unsupported URL")
         return api.getBroadcasts(channel = channelName, limit = 1).messages.orEmpty().size
     }
 
+    /**
+     * [channelName]'s own indexer, or null when it follows the app-wide one. An http:// override
+     * an older build saved is ignored - the room reads from the app-wide indexer instead - since
+     * Room Info no longer takes one.
+     */
+    private suspend fun roomIndexerOverride(channelName: String): String? =
+        settings.broadcastIndexerOverrides.first()[channelName.trim().lowercase()]
+            ?.takeUnless { isCleartextHttp(it) }
+
     suspend fun backfillFromIndexer(channelName: String): Int {
         // This room's own indexer where it has one, the app-wide client otherwise. A broadcast is
         // on-chain, so any indexer watching the same network serves the same room.
-        val override = settings.broadcastIndexerOverrides.first()[channelName.trim().lowercase()]
+        val override = roomIndexerOverride(channelName)
         val api = (override?.let { networkService.broadcastIndexerApiFor(it) }
             ?: networkService.broadcastIndexerApi.value) ?: return -1
         var fetched = 0
@@ -801,9 +872,14 @@ class BroadcastRepository @Inject constructor(
             )
             return txId
         } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
-            // It may have landed, so no Retry, which would post and pay twice. It stays pending
-            // until its delivered copy shows up, or the next launch settles it (iOS e5a9b11). A
-            // reaction or an edit is a row here too, so it is left as it is the same way.
+            // It may have landed, so no Retry, which would post and pay twice. "Not confirmed"
+            // until its delivered copy shows up (iOS 33095ac). A reaction or an edit is a row
+            // here too, so it is marked the same way.
+            markMessageUnconfirmed(pendingId, e.txId)
+            throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Never "failed": it may have gone out, and a Retry could post and pay twice. Left
+            // pending for the settle, like an unknown outcome.
             throw e
         } catch (e: Exception) {
             database.broadcastDao().updateMessageStatus(pendingId, "failed")
@@ -834,8 +910,12 @@ class BroadcastRepository @Inject constructor(
                 )
             )
         } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
-            // May have landed: stays pending with no Retry (iOS e5a9b11). Passed on so a room
+            // May have landed: "Not confirmed" with no Retry (iOS 33095ac). Passed on so a room
             // message can say so; a reaction's retry says nothing, as iOS's `try?` does.
+            markMessageUnconfirmed(message.id, e.txId)
+            throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Left pending, never "failed" (see [sendBroadcast]).
             throw e
         } catch (e: Exception) {
             database.broadcastDao().updateMessageStatus(message.id, "failed")

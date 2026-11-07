@@ -161,7 +161,7 @@ data class BroadcastMessageEntity(
     val senderAddress: String,
     val content: String,
     val blockTimestamp: Long,
-    // "sent" | "pending" | "failed" — only ever meaningful for the active account's own outgoing
+    // "sent" | "pending" | "failed" | "unconfirmed" (an unknown send outcome, iOS 33095ac) — only ever meaningful for the active account's own outgoing
     // messages (see BroadcastRepository.sendBroadcast); messages observed via block scanning are
     // always real on-chain confirmed data, so they're inserted as "sent" too, trivially.
     val deliveryStatus: String = "sent"

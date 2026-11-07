@@ -360,6 +360,7 @@ class MainActivity : AppCompatActivity() {
             NotificationHelper.EXTRA_OPEN_KAPOSTS,
             NotificationHelper.EXTRA_KAPOST_TXID,
             NotificationHelper.EXTRA_KAPOST_FOCUS_TXID,
+            com.kachat.app.services.KaPostsScheduledReminder.EXTRA_OPEN_SCHEDULED,
             FCM_KEY_TYPE,
         ).forEach(intent::removeExtra)
     }
@@ -410,8 +411,10 @@ class MainActivity : AppCompatActivity() {
                 KaPostsDeepLink.pendingFocusReplyTxId.value = null
                 // No post id (a follow, or a payload that omitted it): the Notifications list,
                 // never the action's own txid — that is a vote/follow transaction, not a post,
-                // and opening it as one only produced a "post not found" toast.
-                KaPostsDeepLink.pendingOpenNotifications.value = postId == null
+                // and opening it as one only produced a "post not found" toast. A reply or a quote
+                // opens itself even without a post id (iOS KaPostsApp: the action, else postId,
+                // else Notifications).
+                KaPostsDeepLink.pendingOpenNotifications.value = (replyTxId ?: postId) == null
                 KaPostsDeepLink.pendingPostTxId.value = replyTxId ?: postId ?: ""
             }
             // Chats live in KaChat: a 1:1 or group push that reaches KaPosts opens nothing here.
@@ -503,6 +506,13 @@ class MainActivity : AppCompatActivity() {
      * post's thread.
      */
     private fun handleKaPostDeepLink(intent: Intent, internal: Boolean): Boolean {
+        // The scheduled-post reminder (local fallback): into KaPosts, which sends what is due
+        // and shows the Scheduled screen (iOS KaPostsApp `kaposts-scheduled`). Our own intent only.
+        if (internal && intent.getBooleanExtra(com.kachat.app.services.KaPostsScheduledReminder.EXTRA_OPEN_SCHEDULED, false)) {
+            KaPostsDeepLink.pendingOpenScheduled.value = true
+            com.kachat.app.ui.screens.KaPostsDock.tabRequests.tryEmit(com.kachat.app.ui.Screen.KaPosts)
+            return true
+        }
         // A KaPosts notification tap: deep-open the exact post/comment the notification was
         // about (EXTRA_KAPOST_TXID); with no post named (a follow) open the Notifications list
         // instead of dropping the user on the feed with nothing explaining the ping. Only our

@@ -1203,6 +1203,79 @@ class ChatViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
 
     /**
+     * The tip sheet's fee (iOS KaPostsView's fee task -> `estimatePaymentFee(tip:)` ->
+     * `estimatePaymentFeeEstimate`, which runs the send's own selector): priced the way the Send
+     * sheet prices a send - [com.kachat.app.util.SendFeeModel.previewAutomaticSelection] on the
+     * coins the send spends ([fetchCoins], the engine's set), or
+     * [com.kachat.app.util.SendFeeModel.previewManualSelection] on coin control's [manualUtxos] -
+     * with the payment's own payload (a tip's `kchat:1:tip:` one) and the recipient's real script.
+     * The preview's extra is the one to send; the Review shows base + extra + the change it folds.
+     *
+     * [estimatedFeeSompi] counted coins only until amount + 1,000 sompi was covered and left the
+     * folded change out, so the Review could show up to 0.1 KAS less than the tip paid.
+     *
+     * Throws why the fee can't be worked out: no coins, not enough to cover it, more than one
+     * transaction's inputs, or change that can neither stand nor fold.
+     */
+    suspend fun previewPaymentFee(
+        amountSompi: Long,
+        feeMultiplier: Long,
+        customExtraFeeSompi: Long?,
+        manualUtxos: List<com.kachat.app.services.UtxoEntry>?,
+        fetchCoins: suspend (address: String) -> List<com.kachat.app.services.UtxoEntry>,
+    ): com.kachat.app.util.SendFeeModel.Preview {
+        val sourceIndex = _paymentSourceIndex.value
+        // A tip names the post only from the chatting address; from another it's a private
+        // payment with no payload (sendPayment, iOS 071e901 `postTip`).
+        val tip = if (sourceIndex == null) _paymentTip.value else null
+        val sourceAddress = if (sourceIndex != null) walletManager.deriveSpendingAddress(sourceIndex) else walletManager.getAddress()
+        // the rate the send pays: its override floored at the minimum, else the fixed minimum
+        // (KaspaWalletEngine.sendKaspa / fetchQuotedFeeRateSompiPerGram)
+        val feeRate = _feeRateOverride.value?.coerceAtLeast(com.kachat.app.util.KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
+            ?: com.kachat.app.util.KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM
+        fun scriptLen(address: String?): Int = address?.let {
+            runCatching { com.kachat.app.util.KaspaAddress.getScriptPublicKey(it).length / 2 }.getOrNull()
+        } ?: com.kachat.app.util.SendFeeModel.STANDARD_SCRIPT_LEN
+        // the poster's real script, a private tip's too
+        val recipientScriptLen = scriptLen(_paymentTip.value?.recipientAddress)
+        val changeScriptLen = scriptLen(sourceAddress)
+        val signatureScriptSize = com.kachat.app.services.WalletManager.signatureScriptSize(sourceIndex)
+        // From a spending address the payment goes without a payload (sendPayment).
+        val payloadSize = if (sourceIndex == null) estimatedPaymentPayloadSize(_paymentNote.value.trim(), amountSompi, tip) else 0
+        val coins = manualUtxos?.takeIf { it.isNotEmpty() }
+        val preview = if (coins != null) {
+            // Coin control's extra comes from the base of exactly those coins, as on the Send sheet.
+            val base = com.kachat.app.util.SendFeeModel.baseFee(coins.size, feeRate, payloadSize, recipientScriptLen, changeScriptLen, signatureScriptSize)
+            com.kachat.app.util.SendFeeModel.previewManualSelection(
+                utxos = coins,
+                amountSompi = amountSompi,
+                feeRateSompiPerGram = feeRate,
+                extraFeeSompi = com.kachat.app.util.SendFeeModel.extraFee(base, feeMultiplier, customExtraFeeSompi),
+                recipientScriptLen = recipientScriptLen,
+                changeScriptLen = changeScriptLen,
+                signatureScriptSize = signatureScriptSize,
+                payloadSize = payloadSize,
+            )
+        } else {
+            val utxos = fetchCoins(sourceAddress)
+            // iOS estimatePaymentFee's wording
+            if (utxos.isEmpty()) throw IllegalStateException("No spendable UTXOs")
+            com.kachat.app.util.SendFeeModel.previewAutomaticSelection(
+                utxos = utxos,
+                amountSompi = amountSompi,
+                feeRateSompiPerGram = feeRate,
+                feeMultiplier = feeMultiplier,
+                customExtraFeeSompi = customExtraFeeSompi,
+                recipientScriptLen = recipientScriptLen,
+                changeScriptLen = changeScriptLen,
+                signatureScriptSize = signatureScriptSize,
+                payloadSize = payloadSize,
+            )
+        }
+        return preview ?: throw IllegalStateException("Insufficient funds for payment")
+    }
+
+    /**
      * The Send KAS sheet's Max: what the payment's source can send after the base fee and the
      * Fast / Priority / custom extra (iOS 62c2773 estimateMaxPaymentAmount leaves room for the
      * extra). With coin control on, only the picked coins count. Every coin counted is an input,
@@ -1227,7 +1300,8 @@ class ChatViewModel @Inject constructor(
         val manual = _paymentManualUtxos.value
         val (balance, inputs) = paymentMaxCoins(sourceBalanceSompi, spending, manual)
         val note = _paymentNote.value
-        val tip = _paymentTip.value
+        // only the chatting address's tip carries the tip payload (iOS 071e901 `postTip`)
+        val tip = if (_paymentSourceIndex.value == null) _paymentTip.value else null
         return computePaymentMaxSompi(
             balanceSompi = balance,
             inputCount = inputs,
@@ -1242,6 +1316,15 @@ class ChatViewModel @Inject constructor(
                     estimatedPaymentPayloadSize(note.trim(), provisional, tip)
             },
         )
+    }
+
+    /** Whether [paymentMaxSompi] stopped at the coins one transaction can spend: no coin control,
+     *  and the source holds more than [com.kachat.app.util.KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION]
+     *  of the coins it counts (iOS 33095ac `estimateMaxPaymentAmount`'s `cappedAtInputLimit`). */
+    fun paymentMaxCapped(): Boolean {
+        if (!_paymentManualUtxos.value.isNullOrEmpty()) return false
+        val coins = _spendingUtxos.value.filterNot { it.utxoEntry.isCoinbase }
+        return coins.size > com.kachat.app.util.KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION
     }
 
     // -------------------------------------------------------------------------
@@ -3046,8 +3129,8 @@ class ChatViewModel @Inject constructor(
      *  the contact's chatting address.
      *
      *  [tip] makes it a KaPosts tip (iOS a6bd60a, KAPOSTS_INDEXER.md 5.11): the same sealed note,
-     *  inside a signed `kchat:1:tip:` payload that names the post - always from the chatting
-     *  address, whatever [sourceSpendingIndex] says. */
+     *  inside a signed `kchat:1:tip:` payload that names the post. Only from the chatting
+     *  address: with a [sourceSpendingIndex] it goes as a private payment instead (iOS 071e901). */
     fun sendPayment(
         contactId: String,
         amount: String,
@@ -3060,8 +3143,10 @@ class ChatViewModel @Inject constructor(
         tip: com.kachat.app.models.KaPostTip? = null,
         onResult: ((Boolean, String?, String?) -> Unit)? = null,
     ) {
-        // A tip is always paid from the chatting address (iOS sendPaymentInternal).
-        val sourceSpendingIndex = if (tip == null) sourceSpendingIndex else null
+        // Only one from the chatting address is a tip (KAPOSTS_INDEXER.md 5.11): from another
+        // address it's a private payment, which doesn't name the post or count on it - a plain
+        // payment with the chat notice (iOS 071e901 sendPaymentInternal).
+        val tip = if (sourceSpendingIndex == null) tip else null
         // Exact (iOS 16b64bc, AND-013): "2.3" pays 230,000,000 sompi - a Double multiply and
         // toLong() paid 229,999,999. Comma or dot, at most 8 decimals, nothing above the supply.
         val sompi = KaspaUnit.sompiFromUserText(amount)?.takeIf { it > 0 }
@@ -3186,11 +3271,18 @@ class ChatViewModel @Inject constructor(
                 onResult?.invoke(true, null, txId)
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error sending payment", e)
-                // Remove the optimistic row rather than leaving it as a failed one (iOS parity):
-                // a payment that never reached the network did not happen, and a permanent
-                // "failed" entry in the history for a send the user was simply short the balance
-                // for is a record of nothing. The caller surfaces the reason instead.
-                chatRepository.deleteMessage(pendingId)
+                if (e is com.kachat.app.services.SendOutcomeUnknownException) {
+                    // It may have landed: the row stays, marked failed (iOS
+                    // markPendingMessageFailed), so the history still shows what may have been
+                    // paid. A failed payment offers no Retry, which could pay twice.
+                    chatRepository.updateMessageStatus(pendingId, "failed")
+                } else {
+                    // Remove the optimistic row rather than leaving it as a failed one: a payment
+                    // that never reached the network did not happen, and a permanent "failed"
+                    // entry in the history for a send the user was simply short the balance for
+                    // is a record of nothing. The caller surfaces the reason instead.
+                    chatRepository.deleteMessage(pendingId)
+                }
                 onResult?.invoke(false, e.message, null)
             }
         }

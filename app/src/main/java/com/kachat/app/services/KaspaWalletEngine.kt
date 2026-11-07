@@ -43,6 +43,12 @@ class KaspaWalletEngine @Inject constructor(
      *  send, each rejected the same way. iOS expires both after 120s (pendingMessageUtxoTTL). */
     private val pendingRecordedAtMs = mutableMapOf<String, Long>()
 
+    /** Guards [pendingSpentOutpoints], [pendingChangeUtxos] and [pendingRecordedAtMs]: previews,
+     *  Max, the coin count and coin control reconcile them on one thread while a send records its
+     *  spend on another, outside [sendMutex]. Only ever held for plain map work, never across a
+     *  suspend call. */
+    private val pendingLock = Any()
+
     // Rapid-fire sends (e.g. several chat messages tapped in quick succession) each
     // spawn their own coroutine — without this, two could fetch the same UTXO snapshot
     // before either records its spend, both select the same input, and every one after
@@ -58,18 +64,25 @@ class KaspaWalletEngine @Inject constructor(
      * second send doesn't need to wait for the first to confirm.
      */
     private fun reconcileUtxos(address: String, freshUtxos: List<UtxoEntry>): List<UtxoEntry> {
-        val spent = pendingSpentOutpoints.getOrPut(address) { mutableSetOf() }
-        val change = pendingChangeUtxos.getOrPut(address) { mutableListOf() }
-        val cutoff = System.currentTimeMillis() - PENDING_UTXO_TTL_MS
-        spent.removeAll { key -> (pendingRecordedAtMs[key] ?: 0L) < cutoff }
-        change.removeAll { (pendingRecordedAtMs[outpointKey(it.outpoint)] ?: 0L) < cutoff }
-        pendingRecordedAtMs.entries.removeAll { it.value < cutoff }
         // A coin a scheduled post is waiting to spend is not available to anything else, or the
         // signed transaction would be invalid by the time its moment came (iOS's
         // KaPostsScheduledStore.filterReserved, applied at the same choke point).
         val available = KaPostsScheduledStore.filterReserved(freshUtxos)
         val ownScriptHex = try { KaspaAddress.getScriptPublicKey(address) } catch (_: Exception) { null }
-        return reconcilePendingUtxos(available, spent, change, ownScriptHex)
+        // The returned list is a new one, so nothing read under the lock escapes it.
+        val reconciled = synchronized(pendingLock) {
+            val spent = pendingSpentOutpoints.getOrPut(address) { mutableSetOf() }
+            val change = pendingChangeUtxos.getOrPut(address) { mutableListOf() }
+            val cutoff = System.currentTimeMillis() - PENDING_UTXO_TTL_MS
+            spent.removeAll { key -> (pendingRecordedAtMs[key] ?: 0L) < cutoff }
+            change.removeAll { (pendingRecordedAtMs[outpointKey(it.outpoint)] ?: 0L) < cutoff }
+            pendingRecordedAtMs.entries.removeAll { it.value < cutoff }
+            reconcilePendingUtxos(available, spent, change, ownScriptHex)
+        }
+        // One coin ledger: nor a coin any submitted transaction spent - a post, tip, room message,
+        // scheduled post or .kachat transaction, including one whose outcome is unknown, which may
+        // yet land (iOS 33095ac: the node pool reserves every submit's inputs).
+        return nodePoolManager.withoutSubmittedInputs(reconciled)
     }
 
     /** Drops these pending change coins of [address] (iOS consumePendingUtxos): a chained coin
@@ -77,7 +90,9 @@ class KaspaWalletEngine @Inject constructor(
     private fun dropPendingChange(address: String, coins: List<UtxoEntry>) {
         val keys = coins.map { outpointKey(it.outpoint) }.toSet()
         if (keys.isEmpty()) return
-        pendingChangeUtxos[address]?.removeAll { outpointKey(it.outpoint) in keys }
+        synchronized(pendingLock) {
+            pendingChangeUtxos[address]?.removeAll { outpointKey(it.outpoint) in keys }
+        }
     }
 
     /** Every input of a signature-rejected send, so the failure names its coin: amount, whether it
@@ -99,12 +114,14 @@ class KaspaWalletEngine @Inject constructor(
 
     /** Call after a successful broadcast so the very next send (before this one confirms) doesn't reuse or miss these UTXOs. */
     private fun recordSpend(spentAddress: String, changeAddress: String, spentUtxos: List<UtxoEntry>, changeUtxo: UtxoEntry?) {
-        val spent = pendingSpentOutpoints.getOrPut(spentAddress) { mutableSetOf() }
-        val change = pendingChangeUtxos.getOrPut(changeAddress) { mutableListOf() }
-        applySpend(spent, change, spentUtxos, changeUtxo)
-        val now = System.currentTimeMillis()
-        spentUtxos.forEach { pendingRecordedAtMs[outpointKey(it.outpoint)] = now }
-        changeUtxo?.let { pendingRecordedAtMs[outpointKey(it.outpoint)] = now }
+        synchronized(pendingLock) {
+            val spent = pendingSpentOutpoints.getOrPut(spentAddress) { mutableSetOf() }
+            val change = pendingChangeUtxos.getOrPut(changeAddress) { mutableListOf() }
+            applySpend(spent, change, spentUtxos, changeUtxo)
+            val now = System.currentTimeMillis()
+            spentUtxos.forEach { pendingRecordedAtMs[outpointKey(it.outpoint)] = now }
+            changeUtxo?.let { pendingRecordedAtMs[outpointKey(it.outpoint)] = now }
+        }
     }
 
     /** One accepted submit: what it spent and the change it left, for [recordSpend]. */
@@ -178,6 +195,13 @@ class KaspaWalletEngine @Inject constructor(
          * needs allowOrphan. The fee preview and Max price the same coins ([fetchWithdrawalUtxosOrThrow]).
          */
         withdrawalCoinsOnly: Boolean = false,
+        /**
+         * The fee the Review showed (base + extra + folded change). A send built at the swipe that
+         * would pay more than that, plus [SendFeeChangedException.REVIEW_FEE_MARGIN_SOMPI] (its
+         * coins changed since the Review), fails with [SendFeeChangedException] and sends nothing
+         * (iOS 33095ac `checkFeeAgainstReview`). Null checks nothing.
+         */
+        expectedFeeSompi: Long? = null,
     ): Result<String> = sendMutex.withLock {
         // The key this send derived itself, zeroed once signing is done (as PaymentRequestWallet
         // zeroes its copy). A caller's own key is the caller's to clear.
@@ -211,6 +235,12 @@ class KaspaWalletEngine @Inject constructor(
             val reconciled = reconcileUtxos(fromAddress, fetched)
             val utxos = if (withdrawalCoinsOnly) withdrawalCoins(reconciled) else filterSpendableCoinbase(reconciled)
             if (utxos.isEmpty()) {
+                // Coins a send still in flight spent come free once it lands; a coin a scheduled
+                // post holds, or a mining reward, won't be free in seconds (iOS 33095ac).
+                if (!withdrawalCoinsOnly &&
+                    KaPostsScheduledStore.filterReserved(fetched.filter { !it.utxoEntry.isCoinbase }).isNotEmpty()) {
+                    return Result.failure(NoCoinFreeYetException())
+                }
                 val msg = if (withdrawalCoinsOnly) {
                     // iOS sendWithdrawal's wording
                     "No spendable UTXOs available"
@@ -283,9 +313,7 @@ class KaspaWalletEngine @Inject constructor(
             // set up front with an actionable message instead of building a doomed transaction. The
             // compound flow feeds inputs in chunks of MAX_INPUTS_PER_TRANSACTION, so it always passes.
             if (selectionResult.selectedUtxos.size > KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION) {
-                return Result.failure(IllegalStateException(
-                    "This send needs more than ${KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION} inputs. Compound (consolidate) this address's UTXOs first, then try again."
-                ))
+                return Result.failure(IllegalStateException(KaspaUtxoSelector.TOO_MANY_INPUTS_MESSAGE))
             }
 
             // 5. Create transaction outputs (recipient + change).
@@ -317,7 +345,9 @@ class KaspaWalletEngine @Inject constructor(
                 return Result.failure(IllegalStateException(KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE))
             }
             var changeOutputIndex = -1
-            if (changeAmount > 0 && KaspaMass.fitsStorageMass(inputAmounts, recipientAmounts + changeAmount)) {
+            // The no-change shape's fee is priced on the recipient's output alone (iOS
+            // `emitChange: false`): what is left is folded, never given an output the fee didn't pay for.
+            if (!selectionResult.noChangeShape && changeAmount > 0 && KaspaMass.fitsStorageMass(inputAmounts, recipientAmounts + changeAmount)) {
                 changeOutputIndex = outputs.size
                 outputs.add(
                     RawOutputWithVersion(
@@ -335,6 +365,26 @@ class KaspaWalletEngine @Inject constructor(
                 return Result.failure(IllegalStateException(
                     "This amount is too small to send from the coins available (Kaspa storage-mass limit). Try a larger amount, or consolidate this address first."
                 ))
+            }
+
+            // Built again here from the coins of this moment: if they changed since the Review (a
+            // post or room message spent one, a coin arrived), this can pick other coins and pay
+            // more, change too small to keep included. Then nothing is sent and the Review shows
+            // the new fee (iOS 33095ac `checkFeeAgainstReview`). Amounts that aren't real values
+            // check nothing here; the totals above already refuse those.
+            if (expectedFeeSompi != null) {
+                val inTotal = UtxoMath.checkedTotal(inputAmounts)
+                val outTotal = UtxoMath.checkedTotal(outputs.map { it.amount })
+                if (inTotal != null && outTotal != null && inTotal >= outTotal) {
+                    val fee = inTotal - outTotal
+                    if (fee > expectedFeeSompi + SendFeeChangedException.REVIEW_FEE_MARGIN_SOMPI) {
+                        Log.w("KaspaWalletEngine", "send would pay $fee sompi, the Review showed $expectedFeeSompi: not sent")
+                        return Result.failure(SendFeeChangedException(
+                            fee,
+                            com.kachat.app.util.KaspaUnit.label(appContext.getString(com.kachat.app.R.string.send_fee_changed, com.kachat.app.util.KaspaUnit.plain(fee))),
+                        ))
+                    }
+                }
             }
 
             val payloadHex = payloadBytes?.joinToString("") { "%02x".format(it) }
@@ -418,12 +468,14 @@ class KaspaWalletEngine @Inject constructor(
                                     throw IllegalStateException(
                                         "No Kaspa node is reachable on this network. Node connections appear blocked, so the message could not be sent.",
                                         e2
-                                    ).also { if (e2 !is NodeRejectedTransactionException) it.addSuppressed(e) }
+                                    ).also { if (!SubmitConfirmation.hasVerdict(e2)) it.addSuppressed(e) }
                                 }
                                 // The first try's lost answer still counts (iOS e5a9b11), unless
-                                // the node this retry reached rejected the transaction: that is a
-                                // verdict on it, so not "may have gone through" (iOS d816404).
-                                if (e2 !is NodeRejectedTransactionException) e2.addSuppressed(e)
+                                // the node this retry reached said the transaction itself is
+                                // invalid: that is a verdict on it, so not "may have gone through"
+                                // (iOS d816404). "Already in the mempool", orphan or spent-input
+                                // answers aren't: the lost copy may be why (iOS 33095ac).
+                                if (!SubmitConfirmation.hasVerdict(e2)) e2.addSuppressed(e)
                                 throw e2
                             }
                         }
@@ -649,6 +701,29 @@ class KaspaWalletEngine @Inject constructor(
         return withdrawalCoins(reconcileUtxos(address, fetched))
     }
 
+    /** Coin control's list (iOS 33095ac CoinControlView): every coin the node holds at the
+     *  address, plus pending change a send can chain onto, and which of them the send spends. */
+    data class CoinControlCoins(val coins: List<UtxoEntry>, val spendable: Set<Outpoint>)
+
+    /**
+     * Every coin at [address] for coin control, with the ones the send would refuse - spent by a
+     * send in flight, held by a scheduled post, not confirmed or a mining reward where the send
+     * takes neither - left out of [CoinControlCoins.spendable], so they show greyed out (iOS
+     * 33095ac). [withdrawalCoinsOnly] picks the Wallet send's coins ([fetchWithdrawalUtxosOrThrow]),
+     * else [fetchUtxosOrThrow]'s. Throws when the node can't be asked.
+     */
+    suspend fun fetchCoinControlCoinsOrThrow(address: String, withdrawalCoinsOnly: Boolean): CoinControlCoins {
+        val api = networkService.kaspaRestApi.value ?: throw IllegalStateException(COIN_FETCH_NOT_CONNECTED)
+        val fetched = nodePoolManager.getUtxosByAddress(address) ?: api.getUtxos(address)
+        val reconciled = reconcileUtxos(address, fetched)
+        val spendable = if (withdrawalCoinsOnly) withdrawalCoins(reconciled) else filterSpendableCoinbase(reconciled)
+        val listed = fetched.map { it.outpoint }.toSet()
+        return CoinControlCoins(
+            coins = fetched + spendable.filter { it.outpoint !in listed },
+            spendable = spendable.map { it.outpoint }.toSet(),
+        )
+    }
+
     /**
      * Coin control's data source — mirrors [ColdStorageSendEngine.fetchUtxos], but routed
      * through [reconcileUtxos] too so a UTXO this engine already knows is pending-spent (from a
@@ -733,11 +808,19 @@ class KaspaWalletEngine @Inject constructor(
      */
     suspend fun buildSignedPayloadSelfSend(
         payloadBytes: ByteArray,
-        fromAddress: String = walletManager.getAddress(),
-        signingPrivateKey: ByteArray = walletManager.getPrivateKeyBytes(),
+        // Null = the identity address and its key, worked out inside the try below, as in
+        // [sendKaspa]: a default argument's key was never cleared.
+        fromAddress: String? = null,
+        signingPrivateKey: ByteArray? = null,
         feeRateOverride: Long? = null,
     ): Result<SignedPayloadTx> = sendMutex.withLock {
+        // The key this build derived itself, zeroed once signing is done (as [sendKaspa]). A
+        // caller's own key is the caller's to clear.
+        var derivedKey: ByteArray? = null
         try {
+            val fromAddress = fromAddress ?: walletManager.getAddress()
+            val signingPrivateKey = signingPrivateKey
+                ?: walletManager.getPrivateKeyBytes().also { derivedKey = it }
             val api = networkService.kaspaRestApi.value
                 ?: return Result.failure(IllegalStateException("Network service unavailable"))
             val fetched = nodePoolManager.getUtxosByAddress(fromAddress) ?: api.getUtxos(fromAddress)
@@ -796,6 +879,8 @@ class KaspaWalletEngine @Inject constructor(
         } catch (e: Exception) {
             Log.e("KaspaWalletEngine", "Could not build a scheduled transaction", e)
             return Result.failure(e)
+        } finally {
+            derivedKey?.fill(0)
         }
     }
 
@@ -809,57 +894,66 @@ class KaspaWalletEngine @Inject constructor(
      */
     suspend fun quotePayloadSelfSendFee(
         payloadBytes: ByteArray,
-        fromAddress: String = walletManager.getAddress(),
-        signingPrivateKey: ByteArray = walletManager.getPrivateKeyBytes(),
+        // Null = the identity address and its key, worked out inside the try below (see
+        // [buildSignedPayloadSelfSend]).
+        fromAddress: String? = null,
+        signingPrivateKey: ByteArray? = null,
     ): Long = sendMutex.withLock {
-        val api = networkService.kaspaRestApi.value ?: throw IllegalStateException("Network service unavailable")
-        val fetched = nodePoolManager.getUtxosByAddress(fromAddress) ?: api.getUtxos(fromAddress)
-        val utxos = filterSpendableCoinbase(reconcileUtxos(fromAddress, fetched))
-        if (utxos.isEmpty()) throw IllegalStateException("Insufficient funds: No UTXOs found")
-        val feeRate = fetchQuotedFeeRateSompiPerGram()
-        val scriptHex = KaspaAddress.getScriptPublicKey(fromAddress)
-        val selection = selectUtxosAndCalculateFee(
-            utxos = utxos,
-            amountSompi = 0,
-            feeRateSompiPerGram = feeRate,
-            payloadBytes = payloadBytes,
-            recipientScriptLen = scriptHex.length / 2,
-            changeScriptLen = scriptHex.length / 2,
-        )
-        if (selection.totalSelected < selection.requiredAmount) {
-            throw IllegalStateException("Insufficient funds for payment")
-        }
-        if (selection.selectedUtxos.size > KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION) {
-            throw IllegalStateException(
-                "This send needs more than ${KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION} inputs. Compound (consolidate) this address's UTXOs first, then try again."
+        // zeroed once signing is done, when this quote derived it (as [sendKaspa])
+        var derivedKey: ByteArray? = null
+        try {
+            val fromAddress = fromAddress ?: walletManager.getAddress()
+            val signingPrivateKey = signingPrivateKey
+                ?: walletManager.getPrivateKeyBytes().also { derivedKey = it }
+            val api = networkService.kaspaRestApi.value ?: throw IllegalStateException("Network service unavailable")
+            val fetched = nodePoolManager.getUtxosByAddress(fromAddress) ?: api.getUtxos(fromAddress)
+            val utxos = filterSpendableCoinbase(reconcileUtxos(fromAddress, fetched))
+            if (utxos.isEmpty()) throw IllegalStateException("Insufficient funds: No UTXOs found")
+            val feeRate = fetchQuotedFeeRateSompiPerGram()
+            val scriptHex = KaspaAddress.getScriptPublicKey(fromAddress)
+            val selection = selectUtxosAndCalculateFee(
+                utxos = utxos,
+                amountSompi = 0,
+                feeRateSompiPerGram = feeRate,
+                payloadBytes = payloadBytes,
+                recipientScriptLen = scriptHex.length / 2,
+                changeScriptLen = scriptHex.length / 2,
             )
+            if (selection.totalSelected < selection.requiredAmount) {
+                throw IllegalStateException("Insufficient funds for payment")
+            }
+            if (selection.selectedUtxos.size > KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION) {
+                throw IllegalStateException(KaspaUtxoSelector.TOO_MANY_INPUTS_MESSAGE)
+            }
+            // sendKaspa's output rule for a zero amount: no recipient output, the change kept when
+            // storage mass allows it, dust folded into the fee, real change that can't stand refused.
+            val inputAmounts = selection.selectedUtxos.map { it.utxoEntry.amount }
+            val change = selection.changeAmount
+            if (selection.storageMassBlocked ||
+                (change > 0 && !KaspaUtxoSelector.changeIsKeptOrFoldable(inputAmounts, emptyList(), change))
+            ) {
+                throw IllegalStateException(KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE)
+            }
+            val outputs = if (change > 0 && KaspaMass.fitsStorageMass(inputAmounts, listOf(change))) {
+                listOf(RawOutputWithVersion(amount = change, scriptPublicKey = ScriptPublicKeyWithVersion(scriptHex, 0)))
+            } else {
+                emptyList()
+            }
+            if (outputs.isEmpty()) throw IllegalStateException("Insufficient funds to cover network fee")
+            val rawTx = RawTransaction(
+                inputs = selection.selectedUtxos.map { RawInput(previousOutpoint = it.outpoint, signatureScript = "") },
+                outputs = outputs,
+                gas = 0,
+                payload = payloadBytes.joinToString("") { "%02x".format(it) },
+            )
+            // Signed as the save signs it, so what is quoted is a transaction that would be valid.
+            val signed = KaspaTransactionSigner.signTransaction(rawTx = rawTx, utxos = selection.selectedUtxos, privateKey = signingPrivateKey)
+            val spent = UtxoMath.total(selection.selectedUtxos.map { it.utxoEntry.amount })
+            val back = UtxoMath.total(signed.outputs.map { it.amount })
+            maxOf(0L, spent - back)
+        } finally {
+            derivedKey?.fill(0)
         }
-        // sendKaspa's output rule for a zero amount: no recipient output, the change kept when
-        // storage mass allows it, dust folded into the fee, real change that can't stand refused.
-        val inputAmounts = selection.selectedUtxos.map { it.utxoEntry.amount }
-        val change = selection.changeAmount
-        if (selection.storageMassBlocked ||
-            (change > 0 && !KaspaUtxoSelector.changeIsKeptOrFoldable(inputAmounts, emptyList(), change))
-        ) {
-            throw IllegalStateException(KaspaUtxoSelector.SMALL_SEND_MASS_MESSAGE)
-        }
-        val outputs = if (change > 0 && KaspaMass.fitsStorageMass(inputAmounts, listOf(change))) {
-            listOf(RawOutputWithVersion(amount = change, scriptPublicKey = ScriptPublicKeyWithVersion(scriptHex, 0)))
-        } else {
-            emptyList()
-        }
-        if (outputs.isEmpty()) throw IllegalStateException("Insufficient funds to cover network fee")
-        val rawTx = RawTransaction(
-            inputs = selection.selectedUtxos.map { RawInput(previousOutpoint = it.outpoint, signatureScript = "") },
-            outputs = outputs,
-            gas = 0,
-            payload = payloadBytes.joinToString("") { "%02x".format(it) },
-        )
-        // Signed as the save signs it, so what is quoted is a transaction that would be valid.
-        val signed = KaspaTransactionSigner.signTransaction(rawTx = rawTx, utxos = selection.selectedUtxos, privateKey = signingPrivateKey)
-        val spent = UtxoMath.total(selection.selectedUtxos.map { it.utxoEntry.amount })
-        val back = UtxoMath.total(signed.outputs.map { it.amount })
-        maxOf(0L, spent - back)
     }
 
     /**
@@ -878,12 +972,14 @@ class KaspaWalletEngine @Inject constructor(
     /** After a delayed submit: the coins it spent are gone, so nothing may pick them again. */
     private fun refreshAfterSubmit(transaction: RawTransaction) {
         val address = walletManager.getAddress()
-        val spent = pendingSpentOutpoints.getOrPut(address) { mutableSetOf() }
-        val now = System.currentTimeMillis()
-        transaction.inputs.forEach { input ->
-            val key = outpointKey(input.previousOutpoint)
-            spent.add(key)
-            pendingRecordedAtMs[key] = now
+        synchronized(pendingLock) {
+            val spent = pendingSpentOutpoints.getOrPut(address) { mutableSetOf() }
+            val now = System.currentTimeMillis()
+            transaction.inputs.forEach { input ->
+                val key = outpointKey(input.previousOutpoint)
+                spent.add(key)
+                pendingRecordedAtMs[key] = now
+            }
         }
     }
 

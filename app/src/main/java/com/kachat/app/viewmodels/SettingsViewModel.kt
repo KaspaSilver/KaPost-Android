@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.kachat.app.repository.AppSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -19,6 +20,7 @@ class SettingsViewModel @Inject constructor(
     private val settings: AppSettingsRepository,
     pushState: com.kachat.app.services.PushState,
     private val childModeService: com.kachat.app.services.ChildModeService,
+    private val pushRegistrationManager: com.kachat.app.services.PushRegistrationManager,
 ) : ViewModel() {
 
     /** Read-only push diagnostics for Settings > Notifications (see PushState.PushDiagnostics). */
@@ -57,6 +59,13 @@ class SettingsViewModel @Inject constructor(
     fun saveIndexerUrl(value: String) = viewModelScope.launch { settings.setIndexerUrl(value) }
     fun saveKaspaRestUrl(value: String) = viewModelScope.launch { settings.setKaspaRestUrl(value) }
     fun setNotificationsEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationsEnabled(value) }
+
+    /** Settings > Notifications turning push on (iOS enablePushNotifications): the setting goes
+     *  on first, then the registration it starts is awaited and its real outcome returned. */
+    suspend fun enablePushAndRegister(): Result<Unit> {
+        settings.setNotificationsEnabled(true)
+        return pushRegistrationManager.registerNow()
+    }
     fun setNotificationSoundEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationSoundEnabled(value) }
     fun setNotificationVibrationEnabled(value: Boolean) = viewModelScope.launch { settings.setNotificationVibrationEnabled(value) }
     fun setShowFeeEstimate(value: Boolean) = viewModelScope.launch { settings.setShowFeeEstimate(value) }
@@ -99,6 +108,17 @@ class SettingsViewModel @Inject constructor(
     /** The default tip set in a currency: (amount, lowercase currency code); null otherwise. */
     val kaPostsDefaultTipFiat = settings.kaPostsDefaultTipFiat
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** KaPost Settings > Tips From: a spending address's index; null = the chatting address
+     *  (iOS 071e901 `kaPostsDefaultTipSourceIndex`). */
+    val kaPostsDefaultTipSourceIndex = settings.kaPostsDefaultTipSourceIndex
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Read straight from the store: the instant tip and the tip sheet's first choice must not
+     *  go by a flow that hasn't loaded yet (iOS reads `AppSettings.load()`). */
+    suspend fun loadKaPostsDefaultTipSourceIndex(): Int? = settings.kaPostsDefaultTipSourceIndex.first()
+
+    fun setKaPostsDefaultTipSourceIndex(index: Int?) = viewModelScope.launch { settings.setKaPostsDefaultTipSourceIndex(index) }
 
     /** KaPost Settings > Cool down before post. */
     val kaPostsCooldownEnabled = settings.kaPostsCooldownEnabled

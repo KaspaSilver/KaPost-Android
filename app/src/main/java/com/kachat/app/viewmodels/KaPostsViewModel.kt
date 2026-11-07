@@ -139,16 +139,29 @@ class KaPostsViewModel @Inject constructor(
     fun refreshScheduledPosts() {
         viewModelScope.launch {
             scheduledStore.reloadIfNeeded()
-            runCatching { scheduledStore.sendDueLocally() }
-            runCatching { scheduledStore.refreshFromServer() }
+            refreshScheduledPostsNow()
         }
     }
 
     /** Pull to refresh on the Scheduled list: send what is due from this phone, then take the
      *  indexer's word on the rest - awaited, so the spinner ends when both have (iOS `.refreshable`). */
     suspend fun refreshScheduledPostsNow() {
-        runCatching { scheduledStore.sendDueLocally() }
-        runCatching { scheduledStore.refreshFromServer() }
+        // Not runCatching: it swallows the cancel of a list closed mid-refresh, and the next
+        // step would run in a coroutine that is already gone.
+        try {
+            scheduledStore.sendDueLocally()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Sending due scheduled posts failed", e)
+        }
+        try {
+            scheduledStore.refreshFromServer()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Refreshing scheduled posts failed", e)
+        }
     }
 
     /** How many KaPosts notifications have arrived since the bell was last opened. */
@@ -165,6 +178,11 @@ class KaPostsViewModel @Inject constructor(
         private val SENDER_PROBE_BACKOFF_MS = longArrayOf(5_000L, 20_000L, 60_000L)
         private const val TAG = "KaPostsViewModel"
         const val UNDO_DELAY_MS = 5_000L
+
+        /** [actionError] for a reply to a post not on chain yet; the alert shows it translated
+         *  (`R.string.kaposts_reply_not_on_network`, iOS 33095ac). */
+        const val REPLY_NOT_ON_NETWORK =
+            "This post isn't on the network yet, so it can't be replied to. Try again once it has posted."
 
         /** [key] lowercased when it is a K pubkey ("02"/"03" + 64 hex) whose x-only half is
          *  [xOnly] (lowercase) - the address's own key in either parity - else null (iOS
@@ -610,12 +628,18 @@ class KaPostsViewModel @Inject constructor(
         if (pagingState(key).isLoadingMore || _isLoadingFeed.value) return
         val known = feedFlow(tab).value.mapNotNull { it.remoteId }.toSet()
         if (known.isEmpty()) return
+        // The feed the answer is compared against: an account switch or a refresh during the
+        // fetch replaces it, and the whole old page would then read as new (iOS
+        // KaPostsView.swift `source == loadedFeedSource, !feedPage.isLoading`).
+        val generation = generations[key]
 
         checkingForNewPosts = true
         viewModelScope.launch {
             try {
                 val page = fetchFeedPage(tab, null)
                 if (tab != _selectedFeed.value) return@launch
+                if (generations[key] != generation) return@launch
+                if (_isLoadingFeed.value || pagingState(key).isLoadingMore) return@launch
                 val hidden = muted.value + blocked.value
                 val fresh = page.items
                     .filterNot { it.id in known }
@@ -1285,6 +1309,10 @@ class KaPostsViewModel @Inject constructor(
 
     private fun isLoadFresh(at: Long): Boolean = at > 0L && System.currentTimeMillis() - at < loadGateStaleAfterMs
 
+    /** Your profile's pages are recent, and from after your last post, delete or edit (iOS 33095ac). */
+    private fun isMyProfileFresh(): Boolean =
+        isLoadFresh(myProfileLoadedAt) && KaPostsService.ownActivityAt < myProfileLoadedAt
+
     private fun deepenPopularRanking() {
         val key = PAGE_GLOBAL_FEED
         if (popularSweepJob?.isActive == true) return
@@ -1438,6 +1466,9 @@ class KaPostsViewModel @Inject constructor(
                 loadMoreJobs.clear()
                 popularSweepJob?.cancel()
                 generations.clear()
+                // The old account's load no longer clears the spinner (its generation is gone),
+                // so it ends here; the new account's first load turns it back on.
+                _isLoadingFeed.value = false
                 _paging.value = emptyMap()
                 _localPosts.value = emptyList()
                 _globalPosts.value = emptyList()
@@ -1459,7 +1490,8 @@ class KaPostsViewModel @Inject constructor(
     suspend fun loadFeed(tab: FeedTab = _selectedFeed.value) {
         syncFollowingFromChain()
         val key = feedKey(tab)
-        if (pagingState(key).isLoadingMore) return
+        // A refresh starts over even while a page is loading: switching feeds mid-load must load
+        // the new feed, and the old load's answer is dropped by its generation (iOS 33095ac).
         val generation = resetSurface(key)
         updatePaging(key) { it.copy(isLoadingMore = true) }
         val isSelected = tab == _selectedFeed.value
@@ -1500,7 +1532,9 @@ class KaPostsViewModel @Inject constructor(
                 )
             }
         } finally {
-            if (isSelected) _isLoadingFeed.value = false
+            // Only this load's own spinner: an old account's load ending late must not clear
+            // the one the new account's load just started.
+            if (isSelected && generations[key] == generation) _isLoadingFeed.value = false
             if (pagingState(key).isLoadingMore && generations[key] == generation) {
                 updatePaging(key) { it.copy(isLoadingMore = false) }
             }
@@ -2127,6 +2161,9 @@ class KaPostsViewModel @Inject constructor(
     private fun continueThread(localId: String) {
         if (threadRemainders[localId] == null) return
         mutateEverywhere(localId) { it.copy(deliveryStatus = KaPostDraft.Delivery.PENDING) }
+        // The account that wrote the thread: after a switch, the rest would be signed by another
+        // (iOS 33095ac).
+        val owner = myAddress()
         viewModelScope.launch {
             try {
                 var state = threadRemainders[localId] ?: return@launch
@@ -2143,6 +2180,10 @@ class KaPostsViewModel @Inject constructor(
                     val segment = current.segments.firstOrNull() ?: break
                     val parent = current.parentTxId ?: break
                     kotlinx.coroutines.delay(1_500) // let the previous change settle (~1s blocks)
+                    if (myAddress() != owner) {
+                        Log.i(TAG, "Thread stopped: the account changed mid-chain")
+                        return@launch
+                    }
                     val txId = submitWithUtxoRetry { kaPostsService.submitReply(segment, parent, myPubkey, mentionedPubkeys(segment)) }
                     threadRemainders[localId] = current.copy(segments = current.segments.drop(1), parentTxId = txId)
                 }
@@ -2221,6 +2262,9 @@ class KaPostsViewModel @Inject constructor(
                 threadProbeStore.unclaim(remoteId)
                 throw e
             } catch (_: Exception) {
+                // Failed: no answer, so the claim, which persists, mustn't stop the next
+                // appearance from asking (iOS 33095ac).
+                threadProbeStore.unclaim(remoteId)
                 return
             }
             val isThread = page.items.any { KaPostsService.kaspaAddressFromPubkey(it.userPublicKey) == post.posterAddress }
@@ -2455,24 +2499,16 @@ class KaPostsViewModel @Inject constructor(
     val repliedTo: kotlinx.coroutines.flow.SharedFlow<String> = _repliedTo
 
     fun submitReply(parent: KaPostDraft, text: String) {
-        val myAddress = myAddress() ?: return
-        _repliedTo.tryEmit(parent.id)
-        // The parent is still a local session post with no txid: there is nothing on chain to
-        // reply to yet, so the comment is appended as sent - no toast, no submit (iOS).
+        // A post still sending, failed or not confirmed has nothing on chain to reply to: a
+        // comment kept on this phone only, shown as sent, would never reach anyone (iOS 33095ac).
         if (parent.remoteId == null) {
-            val comment = KaPostDraft(
-                text = text,
-                timestamp = System.currentTimeMillis(),
-                posterAddress = myAddress,
-                posterPubkey = try { kaPostsService.requesterPubkey() } catch (_: Exception) { null },
-                deliveryStatus = KaPostDraft.Delivery.SENT,
-            )
-            sessionReplyIds.add(comment.id)
-            // Newest first, the order the indexer returns replies in - so a new comment appears
-            // right under the post instead of at the far end of a long thread.
-            mutateEverywhere(parent.id) { it.copy(comments = listOf(comment) + it.comments) }
+            _actionError.value = REPLY_NOT_ON_NETWORK
             return
         }
+        val myAddress = myAddress() ?: return
+        _repliedTo.tryEmit(parent.id)
+        // Newest first, the order the indexer returns replies in - so a new comment appears
+        // right under the post instead of at the far end of a long thread.
         val comment = KaPostDraft(
             text = text,
             timestamp = System.currentTimeMillis(),
@@ -3209,16 +3245,17 @@ class KaPostsViewModel @Inject constructor(
         notificationPoller.isNotificationsScreenVisible = visible
     }
 
-    /** Coming back to the Notifications tab keeps what was scrolled in for two minutes; pull to
-     *  refresh still reloads ([loadNotifications], iOS e5a9b11). */
+    /** Coming back to the Notifications tab keeps what was scrolled in for two minutes, unless
+     *  something arrived since; pull to refresh still reloads ([loadNotifications], iOS e5a9b11).
+     *  Stamped only once a load worked (iOS 33095ac). */
     suspend fun loadNotificationsOnAppear() {
-        val now = System.currentTimeMillis()
-        if (notificationsAppearedAt > 0L && now - notificationsAppearedAt < 120_000L) return
-        notificationsAppearedAt = now
-        loadNotifications()
+        val at = notificationsAppearedAt
+        if (at > 0L && System.currentTimeMillis() - at < 120_000L && unseenStore.lastArrivalAt < at) return
+        if (loadNotifications()) notificationsAppearedAt = System.currentTimeMillis()
     }
 
-    suspend fun loadNotifications() {
+    /** Page one of the notifications. Returns whether it loaded (iOS 33095ac). */
+    suspend fun loadNotifications(): Boolean {
         refreshNotificationsHidden()
         val key = PAGE_NOTIFICATIONS
         val generation = resetSurface(key)
@@ -3237,7 +3274,7 @@ class KaPostsViewModel @Inject constructor(
                 isVisible = { true },
                 fetch = { before -> kaPostsService.fetchNotificationsPage(PAGE_LIMIT, before) },
             )
-            if (generations[key] != generation) return
+            if (generations[key] != generation) return false
             if (result.error == null || result.items.isNotEmpty()) {
                 _notifications.value = result.items
             }
@@ -3250,6 +3287,7 @@ class KaPostsViewModel @Inject constructor(
             // What was just displayed should not ping later: advance the poller's watermark
             // and take down any KaPosts banners still in the shade (iOS markSeen).
             myAddress()?.let { address -> notificationPoller.markSeen(address, newestSeen) }
+            return result.error == null
         } finally {
             _isLoadingNotifications.value = false
         }
@@ -3686,7 +3724,7 @@ class KaPostsViewModel @Inject constructor(
             return false
         }
         val hasContent = _myProfilePosts.value.isNotEmpty() || _myProfileReplies.value.isNotEmpty()
-        if (hasContent && isLoadFresh(myProfileLoadedAt)) return false
+        if (hasContent && isMyProfileFresh()) return false
         // Replies come from get-replies?user= - the indexer's get-posts never returns them.
         loadProfileTab(pubkey, isMine = true, replies = false)
         loadProfileTab(pubkey, isMine = true, replies = true)

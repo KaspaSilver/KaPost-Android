@@ -314,6 +314,10 @@ object KaPostsDeepLink {
      *  ping was about. Mirrors iOS's `KaPostsDeepLink.pendingOpenNotifications`. */
     val pendingOpenNotifications = MutableStateFlow(false)
 
+    /** The scheduled-post reminder tapped: KaPostsScreen opens its Scheduled list on mount, or
+     *  at once when it is already showing. Mirrors iOS's `KaPostsDeepLink.pendingOpenScheduled`. */
+    val pendingOpenScheduled = MutableStateFlow(false)
+
     /** Someone's KaPosts profile to open over the feed: a kachat://profile or kaposts://profile
      *  link, or View Profile on a public chat member (iOS KaPosts `pendingProfileAddress`). */
     val pendingProfileAddress = MutableStateFlow<String?>(null)
@@ -649,8 +653,6 @@ private fun KaPostsFeedScreen(
     val selectedFeed by viewModel.selectedFeed.collectAsState()
     val visiblePosts by viewModel.visiblePosts.collectAsState()
     val visibleFollowingPosts by viewModel.visibleFollowingPosts.collectAsState()
-    // Popular's ranking, computed off the main thread in the view model (not during composition).
-    val popularPosts by viewModel.popularPosts.collectAsState()
     val isLoading by viewModel.isLoadingFeed.collectAsState()
     val feedError by viewModel.feedError.collectAsState()
     // Toasts and the connection dot deliberately collect inside their own composables
@@ -782,25 +784,48 @@ private fun KaPostsFeedScreen(
             chatViewModel.addContact(address, null)
             val kasText = kasAmountText(amount)
             tipsInFlight = tipsInFlight + post.id
-            chatViewModel.sendPayment(address, kasText, tip = target) { ok, error, txId ->
-                tipsInFlight = tipsInFlight - post.id
-                if (!ok && error == com.kachat.app.services.SendOutcomeUnknownException.MESSAGE) {
-                    // It may have gone through: no amount screen, which would invite a second tip.
-                    viewModel.showTipToast(error, "")
-                } else if (ok) {
-                    viewModel.countTip(target)
-                    val amountText = fiatText?.let { "$kasText ${KaspaUnit.symbol} ($it)" } ?: "$kasText ${KaspaUnit.symbol}"
-                    viewModel.showTipToast("Tipped $amountText to $name", txId.orEmpty())
-                } else {
-                    // The amount screen opens with the reason ("Tip didn't send: " and the
-                    // reason, as UserFacingError words it), so the tip can be sent by hand.
-                    tipTarget = KaPostTipTarget(
-                        address, name, target,
-                        failure = tipFailedContext.getString(
-                            R.string.kaposts_tip_didnt_send,
-                            com.kachat.app.util.UserFacingError.message(error, tipFailedContext.getString(R.string.something_went_wrong)),
-                        ),
-                    )
+            scope.launch {
+                // Tips From (KaPost Settings): another address than the chatting one tips
+                // privately, so the payment names no post and nothing is counted (iOS 071e901).
+                val sourceIndex = try {
+                    kaPostDefaultTipSource(settingsViewModel.loadKaPostsDefaultTipSourceIndex(), walletViewModel).spendingIndex
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    tipsInFlight = tipsInFlight - post.id
+                    throw e
+                } catch (e: Exception) {
+                    // Tips From couldn't be read: the tip screen, rather than guessing the address.
+                    tipsInFlight = tipsInFlight - post.id
+                    tipTarget = KaPostTipTarget(address, name, target)
+                    return@launch
+                }
+                val countsOnPost = sourceIndex == null
+                chatViewModel.sendPayment(
+                    address, kasText,
+                    sourceSpendingIndex = sourceIndex,
+                    tip = if (countsOnPost) target else null,
+                ) { ok, error, txId ->
+                    tipsInFlight = tipsInFlight - post.id
+                    if (!ok && error == com.kachat.app.services.SendOutcomeUnknownException.MESSAGE) {
+                        // It may have gone through: no amount screen, which would invite a second tip.
+                        viewModel.showTipToast(error, "")
+                    } else if (ok) {
+                        if (countsOnPost) viewModel.countTip(target)
+                        val amountText = fiatText?.let { "$kasText ${KaspaUnit.symbol} ($it)" } ?: "$kasText ${KaspaUnit.symbol}"
+                        viewModel.showTipToast(
+                            if (countsOnPost) "Tipped $amountText to $name" else "Tipped $amountText to $name privately",
+                            txId.orEmpty(),
+                        )
+                    } else {
+                        // The amount screen opens with the reason ("Tip didn't send: " and the
+                        // reason, as UserFacingError words it), so the tip can be sent by hand.
+                        tipTarget = KaPostTipTarget(
+                            address, name, target,
+                            failure = tipFailedContext.getString(
+                                R.string.kaposts_tip_didnt_send,
+                                com.kachat.app.util.UserFacingError.message(error, tipFailedContext.getString(R.string.something_went_wrong)),
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -1010,6 +1035,15 @@ private fun KaPostsFeedScreen(
         viewModel.openPosterProfile(address, null)
     }
 
+    // The scheduled-post reminder tapped: the Scheduled list, which sends what is due as it
+    // opens (iOS KaPostsView `pendingOpenScheduled` -> `menuSheet = .scheduled`).
+    val pendingOpenScheduled by KaPostsDeepLink.pendingOpenScheduled.collectAsState()
+    LaunchedEffect(pendingOpenScheduled, handlesDeepLinks) {
+        if (!handlesDeepLinks || !pendingOpenScheduled) return@LaunchedEffect
+        KaPostsDeepLink.pendingOpenScheduled.value = false
+        showScheduled = true
+    }
+
     // A tab tapped on the dock, or on its copy over one of these screens (KaPostsDock): every
     // full-screen KaPosts screen closes at once, so the tab is what shows. A reply typed under a
     // thread is kept, as it is when the thread is closed with Back (iOS closeAllCovers).
@@ -1152,11 +1186,13 @@ private fun KaPostsFeedScreen(
                 ) { page ->
                     val tab = KaPostsFeedTabs[page]
                     // Each tab reads only its own stream; Popular arrives already ranked
-                    // ([KaPostsViewModel.popularPosts], sorted on Dispatchers.Default).
+                    // ([KaPostsViewModel.popularPosts], sorted on Dispatchers.Default). Collected
+                    // only while its page is composed, so the 300-post rank doesn't run on every
+                    // feed change while another tab is on screen.
                     val pageFeed = when (tab) {
                         KaPostsViewModel.FeedTab.FOLLOWING -> visibleFollowingPosts
                         KaPostsViewModel.FeedTab.FEED -> visiblePosts
-                        KaPostsViewModel.FeedTab.POPULAR -> popularPosts
+                        KaPostsViewModel.FeedTab.POPULAR -> viewModel.popularPosts.collectAsState().value
                     }
                     val feedPaging = pagingStateOf(
                         viewModel,
@@ -3057,6 +3093,8 @@ private fun EngagementRow(
                 count = commentCount,
                 onTap = { onHaptic(); onComment() },
                 onCancel = onCancelCountdown,
+                // Not on chain yet (sending, failed, not confirmed): nothing to reply to (iOS 33095ac).
+                enabled = post.remoteId != null,
             )
         }
         Box {
@@ -3392,13 +3430,16 @@ private fun EngagementAction(
     countTint: Color? = null,
     /** Space between the icon and its count: iOS's HStack spacing (4pt; the like button's 5pt). */
     countGap: androidx.compose.ui.unit.Dp = 4.dp,
+    /** Off: dimmed to 0.4 and not tappable (iOS `.disabled` + `.opacity(0.4)`). */
+    enabled: Boolean = true,
 ) {
     val colors = LocalAppColors.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
+            .alpha(if (enabled) 1f else 0.4f)
             .clip(RoundedCornerShape(8.dp))
-            .clickable {
+            .clickable(enabled = enabled) {
                 if (deadline != null && countdownKey != null) onCancel(countdownKey) else onTap()
             }
             .padding(horizontal = 4.dp, vertical = 4.dp),
@@ -4796,7 +4837,9 @@ private data class KaPostTipTarget(
 @Composable
 private fun KaPostsActionErrorAlert(viewModel: KaPostsViewModel) {
     val actionError by viewModel.actionError.collectAsState()
-    val message = actionError ?: return
+    val raw = actionError ?: return
+    // A reply to a post not on chain yet (iOS 33095ac): the view model has no resources.
+    val message = if (raw == KaPostsViewModel.REPLY_NOT_ON_NETWORK) stringResource(R.string.kaposts_reply_not_on_network) else raw
     val colors = LocalAppColors.current
     com.kachat.app.ui.theme.IosAlertDialog(
         onDismissRequest = { viewModel.clearActionError() },
@@ -6084,8 +6127,9 @@ private fun notificationKindTint(kind: KaPostsViewModel.NotificationItem.Kind, s
 
 /**
  * Tipping a poster: the same steps as every send (iOS KaPosts da3e953 `KaPostTipSheet`, the pieces
- * in SendKaspaComponents.kt), without To since the recipient is the poster. From (only when it can
- * change - a tip on a post always comes from your address), the amount on the app's keypad with
+ * in SendKaspaComponents.kt), without To since the recipient is the poster. From first, set to
+ * Tips From (iOS 071e901: from the chatting address the tip counts on the post, from another it
+ * goes privately, as a plain payment with the chat notice), the amount on the app's keypad with
  * the KAS / currency switch and Max, then the review: what you're sending, To / From / Total, an
  * encrypted memo sent with the tip (140 characters), the fee card (speed, coin control, and Edit
  * for the fee editor), and Swipe up to Send, whose screen shows the outcome. The send is ChatViewModel.sendPayment, a chat payment's: the same `kchat:1:pay:`
@@ -6097,8 +6141,8 @@ fun KaPostTipSheet(
     address: String,
     displayName: String,
     onDismiss: () -> Unit,
-    /** The post being tipped: then it is a tip that names the post, paid from the chatting
-     *  address only - no From choice (iOS a6bd60a). */
+    /** The post being tipped (iOS a6bd60a): from the chatting address it is a tip that names the
+     *  post and counts on it; from another address a private payment (iOS 071e901 `postTip`). */
     tip: com.kachat.app.models.KaPostTip? = null,
     /** Why an instant tip just failed, if that is what opened this sheet (iOS fae6686). */
     initialError: String? = null,
@@ -6107,6 +6151,7 @@ fun KaPostTipSheet(
     chatViewModel: ChatViewModel = hiltViewModel(),
     walletViewModel: WalletViewModel = hiltViewModel(),
     portfolioViewModel: com.kachat.app.viewmodels.PortfolioViewModel = hiltViewModel(),
+    settingsViewModel: com.kachat.app.viewmodels.SettingsViewModel = hiltViewModel(),
 ) {
     val colors = LocalAppColors.current
     val amountText by chatViewModel.paymentAmount.collectAsState()
@@ -6122,12 +6167,18 @@ fun KaPostTipSheet(
     // over rather than the sheet just closing on nothing.
     var sentTransaction by remember { mutableStateOf<SentTransaction?>(null) }
     val kaspaExplorer by chatViewModel.kaspaExplorer.collectAsState()
-    val estimatedFee by chatViewModel.estimatedFeeSompi.collectAsState()
     val chattingAddress by walletViewModel.address.collectAsState()
     val priceInCurrency by portfolioViewModel.currentPriceUsd.collectAsState()
     val currencyCode by portfolioViewModel.currency.collectAsState()
-    /** Where the tip comes from (the From section, iOS 6333dd3): the chatting address by default. */
+    /** Where the tip comes from (the From section, iOS 6333dd3): Tips From (KaPost Settings) to
+     *  start with, the chatting address unless set (iOS 071e901). */
     var source by remember { mutableStateOf<SendSource>(SendSource.Chatting) }
+    /** The From was picked on the From step: Tips From, still loading, mustn't overwrite it. */
+    var sourcePicked by remember { mutableStateOf(false) }
+    /** A tip that names the post: only one from the chatting address (KAPOSTS_INDEXER.md 5.11).
+     *  From another address it's a private payment, so nothing about the post goes with it
+     *  (iOS 071e901 `postTip`; ChatViewModel prices and sends it that way). */
+    val postTip = if (source is SendSource.Chatting) tip else null
     /** The From address's balance, loaded below. */
     var availableSompi by remember { mutableStateOf<Long?>(null) }
 
@@ -6156,13 +6207,27 @@ fun KaPostTipSheet(
         resetPaymentState()
         onDismiss()
     }
-    /** Tips leave from the chatting address, like every send in KaPost, so there's no From step
-     *  (iOS e5a9b11). */
-    val initialStep = TipStep.AMOUNT
+    /** From first: the chatting address sends a tip that counts on the post; another address
+     *  sends it privately (iOS 071e901, `ChatViewModel.sendPayment`). */
+    val initialStep = TipStep.FROM
     /** The step on screen. */
     var step by remember { mutableStateOf(initialStep) }
     /** The From step's Choose an Address is on (its list shows), before or after a pick. */
     var choosingFrom by remember { mutableStateOf(false) }
+    // Starts on Tips From (KaPost Settings); the From step can change it (iOS 071e901). After
+    // the reset above, which sets the payment's From back to the chatting address.
+    LaunchedEffect(address) {
+        val picked = runCatching {
+            kaPostDefaultTipSource(settingsViewModel.loadKaPostsDefaultTipSourceIndex(), walletViewModel)
+        }.getOrElse { e ->
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            SendSource.Chatting
+        }
+        if (sourcePicked || step != TipStep.FROM) return@LaunchedEffect
+        source = picked
+        choosingFrom = picked !is SendSource.Chatting
+        chatViewModel.setPaymentSource(picked.spendingIndex)
+    }
     // the From address's balance: the amount's Available and its check
     LaunchedEffect(source, chattingAddress) {
         availableSompi = null
@@ -6182,15 +6247,60 @@ fun KaPostTipSheet(
 
     // Exact: "2.3" is 230,000,000 sompi, never 229,999,999.
     val amountSompi = KaspaUnit.sompiFromUserText(amountText) ?: 0L
-    // The extra over the base fee: a custom fee, else what the speed adds (Fast 2x, Priority 5x).
-    val baseFeeSompi = estimatedFee
-    val extraFeeSompi = baseFeeSompi?.let { base -> customExtraFeeSompi ?: (base * (feeTier.multiplier - 1)) } ?: 0L
-    val totalFeeSompi = baseFeeSompi?.let { it + extraFeeSompi }
+    // The tip's fee, priced as the Send sheet prices a send (iOS KaPostsView's fee task,
+    // `estimatePaymentFee(tip:)`): the send's own selection on the coins it spends, with the tip's
+    // payload - not a count of coins until the amount is covered, which missed inputs the send
+    // adds. Null while there is no amount, while it is worked out, or when it can't be (Total "—").
+    var feePreview by remember { mutableStateOf<com.kachat.app.util.SendFeeModel.Preview?>(null) }
+    /** Why the fee couldn't be worked out: the swipe stays off until it can (iOS 33095ac). */
+    var feeError by remember { mutableStateOf<String?>(null) }
+    /** Bumped by Try Again under a failed fee estimate (iOS 33095ac `feeRetry`). */
+    var feeRetry by remember { mutableStateOf(0) }
+    var isEstimatingFee by remember { mutableStateOf(false) }
+    LaunchedEffect(amountSompi, feeTier, customExtraFeeSompi, manualUtxos, memo, source, feeRetry) {
+        feePreview = null
+        feeError = null
+        if (amountSompi <= 0) {
+            isEstimatingFee = false
+            return@LaunchedEffect
+        }
+        isEstimatingFee = true
+        delay(400)
+        try {
+            feePreview = chatViewModel.previewPaymentFee(amountSompi, feeTier.multiplier, customExtraFeeSompi, manualUtxos) { from ->
+                walletViewModel.fetchUtxosForCoinControl(from)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w("KaPostTipSheet", "Tip fee preview failed: ${e.message}")
+            // shown under the fee, with Try Again (iOS 33095ac `feeError`)
+            feeError = com.kachat.app.util.UserFacingError.message(e, "Could not estimate the fee.")
+        }
+        isEstimatingFee = false
+    }
+    // The base fee and the extra on top (a custom fee, else what the speed adds: Fast 2x,
+    // Priority 5x), settled with the coins they need - the extra sent is the one priced.
+    val baseFeeSompi = feePreview?.baseFeeSompi
+    val extraFeeSompi = feePreview?.extraFeeSompi ?: 0L
+    // Change too small to keep goes to the fee too, and the Total counts it (iOS
+    // `SendFeeEstimate.total`).
+    val totalFeeSompi = feePreview?.let { it.totalFeeSompi + it.foldedChangeSompi }
 
+    /** Max stopped at the coins one transaction can spend (iOS 33095ac `maxCapped`). */
+    var maxCapped by remember { mutableStateOf(false) }
     val applyMax: () -> Unit = {
-        val kas = chatViewModel.paymentMaxSompi(availableSompi ?: 0L, feeTier.multiplier, customExtraFeeSompi).toDouble() / 100_000_000.0
-        maxFilledKasText = com.kachat.app.util.formatKasAmount(kas)
-        fiatAmountState.setMaxKas(kas, priceInCurrency)
+        val maxSompi = chatViewModel.paymentMaxSompi(availableSompi ?: 0L, feeTier.multiplier, customExtraFeeSompi)
+        if (maxSompi <= 0L) {
+            // no Max: why, rather than a 0 in the field (iOS 33095ac, estimateMaxPaymentAmount's errors)
+            maxCapped = false
+            errorText = if ((availableSompi ?: 0L) <= 0L) "No spendable UTXOs" else "Balance too low to cover fee"
+        } else {
+            val kas = maxSompi.toDouble() / 100_000_000.0
+            maxFilledKasText = com.kachat.app.util.formatKasAmount(kas)
+            fiatAmountState.setMaxKas(kas, priceInCurrency)
+            maxCapped = chatViewModel.paymentMaxCapped()
+        }
     }
     // The fee, the From or the coins changed while the amount is still what Max filled in: Max is
     // worked out again, so the tip can't need more than the coins hold (KaPay `usedMax`).
@@ -6199,7 +6309,9 @@ fun KaPostTipSheet(
         if (maxFilledKasText != null && availableSompi != null) applyMax()
     }
     val exceedsBalance = availableSompi?.let { amountSompi > it } ?: false
-    val canSend = amountSompi > 0 && !isSending && !exceedsBalance
+    // Not until the fee shown is the one the tip pays (iOS 33095ac `canSend`).
+    val canSend = amountSompi > 0 && !isSending && !exceedsBalance &&
+        !isEstimatingFee && feeError == null && totalFeeSompi != null
     val send: () -> Unit = {
         if (canSend) {
             isSending = true
@@ -6208,6 +6320,8 @@ fun KaPostTipSheet(
             // opened - so a cancelled tip never leaves an orphan chat. Added with no alias, as iOS
             // does: the name keeps resolving live.
             chatViewModel.addContact(address, null)
+            val sentTip = postTip
+            val countsOnPost = sentTip != null
             chatViewModel.sendPayment(
                 address,
                 amountText.trim(),
@@ -6215,11 +6329,12 @@ fun KaPostTipSheet(
                 sourceSpendingIndex = source.spendingIndex,
                 extraFeeSompi = extraFeeSompi,
                 manualUtxos = manualUtxos,
-                tip = tip,
+                tip = sentTip,
             ) { ok, error, txId ->
                 if (ok) {
-                    // the post's count goes up at once (iOS 0f241ce onTipped)
-                    onTipped()
+                    // the post's count goes up at once (iOS 0f241ce onTipped); a private tip
+                    // (another address) doesn't count on the post (iOS 071e901)
+                    if (countsOnPost) onTipped()
                     if (txId.isNullOrEmpty()) {
                         // Queued rather than sent (no confirmed inputs yet): there is no
                         // transaction to show, so the sheet just closes (iOS).
@@ -6240,10 +6355,11 @@ fun KaPostTipSheet(
     IosFullSheet(onDismissed = closeSheet, swipeToDismiss = false) { close ->
         SendStepTransition(step, Modifier.fillMaxSize()) { shown ->
             when (shown) {
-                TipStep.FROM -> SendFromStep(
+                TipStep.FROM -> KaPostTipFromStep(
                     title = title,
                     source = source,
                     onSourceChange = { picked ->
+                        sourcePicked = true
                         if (picked != source) {
                             source = picked
                             chatViewModel.setPaymentSource(picked.spendingIndex)
@@ -6253,11 +6369,17 @@ fun KaPostTipSheet(
                         }
                     },
                     choosingFrom = choosingFrom,
-                    onChoosingFromChange = { choosingFrom = it },
+                    onChoosingFromChange = {
+                        sourcePicked = true
+                        choosingFrom = it
+                    },
                     availableSompi = availableSompi,
                     walletViewModel = walletViewModel,
                     onCancel = close,
-                    onContinue = { step = TipStep.AMOUNT },
+                    onContinue = {
+                        sourcePicked = true
+                        step = TipStep.AMOUNT
+                    },
                 )
 
                 TipStep.AMOUNT -> SendStepScreen(
@@ -6287,10 +6409,14 @@ fun KaPostTipSheet(
                         footnote = when {
                             errorText != null -> errorText
                             exceedsBalance -> stringResource(R.string.send_exceeds_source)
+                            // why Max isn't the whole balance (iOS 33095ac `maxCappedNote`)
+                            maxCapped && maxFilledKasText != null && maxFilledKasText == amountText ->
+                                stringResource(R.string.send_max_capped, com.kachat.app.util.KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION)
                             available != null -> KaspaUnit.label(stringResource(R.string.send_available_kas, KaspaUnit.plain(available)))
                             else -> null
                         },
                         footnoteIsError = errorText != null || exceedsBalance,
+                        onKeyTyped = { maxCapped = false },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -6386,7 +6512,7 @@ fun KaPostTipSheet(
                             isEditingFee = false,
                             customFeeText = "",
                             onCustomFeeTextChange = {},
-                            isEstimatingFee = false,
+                            isEstimatingFee = isEstimatingFee,
                             feeText = totalFeeSompi?.let { "${ChatRepository.formatKas(it)} ${KaspaUnit.symbol}" },
                             onStartEditing = {},
                             onCommit = {},
@@ -6400,9 +6526,20 @@ fun KaPostTipSheet(
                             },
                         )
 
-                        val reviewError = errorText
+                        // the send's error, else the fee's (iOS 33095ac `errorMessage ?? feeError`)
+                        val reviewError = errorText ?: feeError
                         if (reviewError != null) {
                             Text(reviewError, color = colors.danger, fontSize = 13.sp, textAlign = TextAlign.Center)
+                            // Without a fee the swipe stays off: a dropped connection mustn't strand it.
+                            if (errorText == null && !isEstimatingFee) {
+                                Text(
+                                    stringResource(R.string.try_again),
+                                    color = KaspaTeal,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.clickable { feeRetry += 1 },
+                                )
+                            }
                         } else if (amountSompi in 1 until DUST_LIMIT_SOMPI) {
                             // Said before the swipe, since a swipe can't stop to ask.
                             Text(
@@ -6435,7 +6572,7 @@ fun KaPostTipSheet(
             if (coinControlAddress != null) {
                 CoinControlSheet(
                     fromAddress = coinControlAddress,
-                    fetchUtxos = { addr -> walletViewModel.fetchUtxosForCoinControl(addr) },
+                    fetchCoins = { addr -> walletViewModel.fetchCoinControlCoins(addr, withdrawalCoins = false) },
                     initialSelection = manualUtxos,
                     onDone = { selection ->
                         manualUtxos = selection?.takeIf { it.isNotEmpty() }
@@ -6452,6 +6589,121 @@ fun KaPostTipSheet(
 
 /** The steps of [KaPostTipSheet], in order: no recipient step, the poster is the recipient. */
 private enum class TipStep { FROM, AMOUNT, REVIEW, FEE }
+
+/**
+ * Where tips leave from unless picked otherwise (KaPost Settings > Tips From; iOS 071e901
+ * `SendSource.defaultTip`): the chatting address, or a spending address, whose tips are private.
+ * A spending index this account can't derive right now falls back to the chatting address.
+ */
+internal suspend fun kaPostDefaultTipSource(index: Int?, walletViewModel: WalletViewModel): SendSource {
+    if (index == null) return SendSource.Chatting
+    return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val address = walletViewModel.spendingAddressAt(index) ?: return@withContext SendSource.Chatting
+        val label = walletViewModel.ownAddressLabel(address)
+            ?: com.kachat.app.services.WalletManager.spendingAddressTitle(index)
+        SendSource.Spending(index, address, label)
+    }
+}
+
+/**
+ * The tip sheet's From (iOS 071e901 `KaPostTipSheet.fromStep`): "Where are you sending from?",
+ * Chatting Address or Choose an Address with your addresses listed right here, and under the
+ * pills what the choice means - from the chatting address the tip counts on the post, from
+ * another it's private. Built from the Send screens' own pieces ([SendStepScreen],
+ * [SelectablePill], [OwnAddressList]), laid out as [SendFromStep].
+ */
+@Composable
+private fun KaPostTipFromStep(
+    title: String,
+    source: SendSource,
+    onSourceChange: (SendSource) -> Unit,
+    choosingFrom: Boolean,
+    onChoosingFromChange: (Boolean) -> Unit,
+    availableSompi: Long?,
+    walletViewModel: WalletViewModel,
+    onCancel: () -> Unit,
+    onContinue: () -> Unit,
+) {
+    val colors = LocalAppColors.current
+    val chattingAddress by walletViewModel.address.collectAsState()
+    SendStepScreen(
+        title = title,
+        onCancel = onCancel,
+        canContinue = !(choosingFrom && source is SendSource.Chatting),
+        onContinue = onContinue,
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            SendStepQuestion(stringResource(R.string.send_where_from))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SelectablePill(title = "Chatting Address", selected = !choosingFrom, modifier = Modifier.weight(1f)) {
+                    onChoosingFromChange(false)
+                    onSourceChange(SendSource.Chatting)
+                }
+                SelectablePill(title = stringResource(R.string.pr_choose_an_address), selected = choosingFrom, modifier = Modifier.weight(1f)) {
+                    onChoosingFromChange(true)
+                }
+            }
+            Text(
+                stringResource(if (choosingFrom) R.string.kaposts_tip_from_private_note else R.string.kaposts_tip_from_chatting_note),
+                color = colors.textSecondary,
+                fontSize = 13.sp,
+            )
+            if (choosingFrom) {
+                Text(stringResource(R.string.send_pick_from_footnote), color = colors.textSecondary, fontSize = 13.sp)
+                OwnAddressList(
+                    selected = if (source is SendSource.Chatting) null else source.address(chattingAddress),
+                    walletViewModel = walletViewModel,
+                    onPick = { picked ->
+                        onSourceChange(picked)
+                        // your address picked from the list: back on its own pill
+                        if (picked is SendSource.Chatting) onChoosingFromChange(false)
+                    },
+                )
+            } else {
+                val address = source.address(chattingAddress)
+                if (address != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .sendKaspaGlass(16.dp)
+                            .padding(14.dp),
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("Chatting Address", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${address.take(14)}...${address.takeLast(6)}",
+                                color = colors.textSecondary,
+                                fontSize = 12.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                maxLines = 1,
+                            )
+                        }
+                        if (availableSompi != null) {
+                            Text(
+                                "${KaspaUnit.plain(availableSompi)} ${KaspaUnit.symbol}",
+                                color = colors.textPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                style = TextStyle(fontFeatureSettings = "tnum"),
+                            )
+                        } else {
+                            com.kachat.app.ui.theme.IosActivityIndicator(modifier = Modifier.size(18.dp), color = colors.textSecondary, strokeWidth = 2.dp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /** @mention machinery, hoisted: these were compiled per keystroke inside remember blocks. */
 private val MENTION_QUERY_REGEX = Regex("(^|[\\s(\\[{<\"'])@([a-z0-9-]*)$", RegexOption.IGNORE_CASE)
@@ -7250,12 +7502,18 @@ fun KaPostsSettingsOverlay(
     onClose: () -> Unit,
     settingsViewModel: com.kachat.app.viewmodels.SettingsViewModel = hiltViewModel(),
     portfolioViewModel: com.kachat.app.viewmodels.PortfolioViewModel = hiltViewModel(),
+    walletViewModel: WalletViewModel = hiltViewModel(),
 ) {
     val colors = LocalAppColors.current
     val haptic = com.kachat.app.util.rememberHaptics()
     val defaultTipSompi by settingsViewModel.kaPostsDefaultTipSompi.collectAsState()
     val defaultTipFiat by settingsViewModel.kaPostsDefaultTipFiat.collectAsState()
     val cooldownEnabled by settingsViewModel.kaPostsCooldownEnabled.collectAsState()
+    // Tips From (iOS 071e901 `tipSourceTitle`): the address tips leave from by default.
+    val tipSourceIndex by settingsViewModel.kaPostsDefaultTipSourceIndex.collectAsState()
+    var tipSource by remember { mutableStateOf<SendSource>(SendSource.Chatting) }
+    LaunchedEffect(tipSourceIndex) { tipSource = kaPostDefaultTipSource(tipSourceIndex, walletViewModel) }
+    var showTipSource by remember { mutableStateOf(false) }
     val appCurrency by portfolioViewModel.currency.collectAsState()
     // Read so the footer's KAS figure updates when a price lands.
     val livePrice by portfolioViewModel.currentPriceUsd.collectAsState()
@@ -7426,6 +7684,19 @@ fun KaPostsSettingsOverlay(
                             }
                         }
                     }
+                    // KaPost Settings > Tips From (iOS 071e901): the default tip's address and
+                    // the tip sheet's first choice.
+                    SettingsDivider()
+                    SettingsNavigationItem(
+                        label = stringResource(R.string.kaposts_tips_from),
+                        icon = null,
+                        showIcon = false,
+                        value = when (val source = tipSource) {
+                            SendSource.Chatting -> stringResource(R.string.chatting_address)
+                            is SendSource.Spending -> source.label
+                        },
+                        onClick = { showTipSource = true },
+                    )
                 }
                 if (instantTipEnabled) {
                     // What a tip sends: in KAS, or the currency amount with what it comes to in
@@ -7447,6 +7718,57 @@ fun KaPostsSettingsOverlay(
             // Which pings reach you is Settings > Notifications > KaPost, behind the cog on the
             // Notifications tab (iOS KaPosts 865c9ab).
             Spacer(Modifier.height(24.dp))
+        }
+    }
+    if (showTipSource) {
+        KaPostTipSourcePage(
+            selected = tipSource,
+            walletViewModel = walletViewModel,
+            onPick = { picked ->
+                val index = picked.spendingIndex
+                if (index != tipSourceIndex) {
+                    settingsViewModel.setKaPostsDefaultTipSourceIndex(index)
+                    haptic(com.kachat.app.util.IosHaptic.SELECTION)
+                }
+            },
+            onClose = { showTipSource = false },
+        )
+    }
+}
+
+/**
+ * KaPost Settings > Tips From (iOS 071e901 `TipSourcePage`): the address tips leave from unless
+ * the tip sheet picks another. The chatting address sends a tip that counts on the post; another
+ * address sends it privately (`ChatViewModel.sendPayment`: no post named, nothing counted, nobody
+ * listed as the tipper).
+ */
+@Composable
+private fun KaPostTipSourcePage(
+    selected: SendSource,
+    walletViewModel: WalletViewModel,
+    onPick: (SendSource) -> Unit,
+    onClose: () -> Unit,
+) {
+    val colors = LocalAppColors.current
+    val chattingAddress by walletViewModel.address.collectAsState()
+    KaPostsOverlayScaffold(title = stringResource(R.string.kaposts_tips_from), onClose = onClose, backBar = true) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                stringResource(R.string.kaposts_tips_from_footnote),
+                color = colors.textSecondary,
+                fontSize = 13.sp,
+            )
+            OwnAddressList(
+                selected = selected.address(chattingAddress),
+                walletViewModel = walletViewModel,
+                onPick = onPick,
+            )
         }
     }
 }
@@ -7817,6 +8139,9 @@ private fun KaPostsOverlayScaffold(
     /** iOS presents it as a sheet: [title] inline with Done top right, rather than the pushed
      *  page's back, dot and balance (Search). */
     doneBar: Boolean = false,
+    /** A page pushed inside a settings screen: [title] inline with the back chevron, as iOS's
+     *  pushed page under a NavigationStack (Tips From, iOS 071e901). */
+    backBar: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colors = LocalAppColors.current
@@ -7842,6 +8167,11 @@ private fun KaPostsOverlayScaffold(
                         SheetNavBar(
                             title = title,
                             trailing = { SheetBarButton(stringResource(R.string.done), onClick = slide.back) },
+                        )
+                    } else if (backBar) {
+                        SheetNavBar(
+                            title = title,
+                            leading = { SheetBarBackButton(onClick = slide.back) },
                         )
                     } else {
                         KaPostsOverlayStatusBar()

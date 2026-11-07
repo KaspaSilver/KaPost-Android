@@ -114,9 +114,10 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
                             return@runBlocking
                         }
                         // The Notifications tab on screen shows it already: no banner (iOS
-                        // KaPostsApp willPresent), but the txid is claimed so nothing draws it later.
+                        // KaPostsApp willPresent), but the txid is claimed so nothing draws it later -
+                        // under the key showKaPosts claims ("kaposts_" + txid).
                         if (notificationHelper.isAppInForeground && notificationPoller.isNotificationsScreenVisible) {
-                            txId.takeIf { it.isNotBlank() }?.let { notificationHelper.claimWithoutNotifying(it) }
+                            txId.takeIf { it.isNotBlank() }?.let { notificationHelper.claimWithoutNotifying("kaposts_$it") }
                             return@runBlocking
                         }
                         notificationHelper.showKaPosts(

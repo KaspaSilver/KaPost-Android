@@ -127,23 +127,39 @@ class WalletViewModel @Inject constructor(
     }
 
     /**
-     * The recovery screen's two ways on (iOS WalletRecoveryView): a working account store first
-     * ([WalletManager.resetUnreadableSecureStore] - the same one if the Keystore opens it now,
-     * else a new, empty one), then Import ([openImport]) or the opening screen. False when no
-     * store could be made; the screen stays.
+     * Set by the recovery screen's "Enter 12 or 24 Words" when the store still can't be opened:
+     * the import's commit sets the unreadable store aside and makes a new one, just before the
+     * words are saved ([commitImport]). Nothing changes before that (iOS WalletRecoveryView).
      */
-    fun leaveKeyRecovery(openImport: Boolean): Boolean {
-        if (!walletManager.resetUnreadableSecureStore()) return false
-        _hasWallet.value = walletManager.hasWallet()
-        _accounts.value = walletManager.getAllAccounts()
-        // with the old store back, its accounts are on the opening screen to sign in to
-        if (openImport && !walletManager.hasWallet()) {
-            resetImportWalletState()
-            abandonImport()
-            _openImportAfterRecovery.value = true
+    @Volatile private var recoveryImportPending = false
+
+    /**
+     * The recovery screen's "Enter 12 or 24 Words" (iOS WalletRecoveryView): the account store
+     * is tried again as it is ([WalletManager.reopenSecureStore]) - if the Keystore opens it now,
+     * its accounts are on the opening screen to sign in to. Otherwise Import opens, and nothing
+     * changes until an import completes ([recoveryImportPending]).
+     */
+    fun enterKeyRecoveryWords() {
+        if (walletManager.reopenSecureStore()) {
+            _hasWallet.value = walletManager.hasWallet()
+            _accounts.value = walletManager.getAllAccounts()
+            recoveryImportPending = false
+            _needsKeyRecovery.value = false
+            return
         }
+        recoveryImportPending = true
+        resetImportWalletState()
+        abandonImport()
+        _openImportAfterRecovery.value = true
         _needsKeyRecovery.value = false
-        return true
+    }
+
+    /** Import was left without importing: back to the recovery screen, as iOS's Back from its
+     *  pushed import (WalletRecoveryView). Only while the store is still unreadable. */
+    fun leaveRecoveryImport() {
+        if (!recoveryImportPending) return
+        recoveryImportPending = false
+        if (walletManager.secureStoreFailure != null) _needsKeyRecovery.value = true
     }
 
 
@@ -423,6 +439,19 @@ class WalletViewModel @Inject constructor(
                 .map { it.utxoEntry.amount }
         )
     }.getOrNull()
+
+    /** What the Wallet's Send from [address] can spend (iOS 33095ac `withdrawalSpendable`): its
+     *  confirmed, non-coinbase coins, less those a post, tip or send just spent and those
+     *  scheduled posts hold ([KaspaWalletEngine.fetchWithdrawalUtxosOrThrow], the coins that send
+     *  spends). Null when the read failed - unknown, never shown as 0. */
+    suspend fun withdrawalSpendableSompi(address: String): Long? = runCatching {
+        com.kachat.app.util.UtxoMath.checkedTotal(walletEngine.fetchWithdrawalUtxosOrThrow(address).map { it.utxoEntry.amount })
+    }.getOrNull()
+
+    /** How many coins the Wallet's Compound can combine at [address]: the ones a send may spend
+     *  (iOS 33095ac `withdrawalSpendable(utxos).count`). Null when the read failed. */
+    suspend fun withdrawalSpendableCount(address: String): Int? =
+        runCatching { walletEngine.fetchWithdrawalUtxosOrThrow(address).size }.getOrNull()
 
     /** Sets or clears (blank/null) a nickname for one spending-chain address, shown in place of "Address #N". */
     fun setManageAddressLabel(index: Int, label: String?) {
@@ -705,6 +734,12 @@ class WalletViewModel @Inject constructor(
     fun spendingAddressAt(index: Int): String? =
         try { walletManager.deriveSpendingAddress(index) } catch (e: Exception) { null }
 
+    /** See [WalletManager.ownAddressLabel]: the name one of this wallet's addresses goes by, null
+     *  for anyone else's. Derives on a miss, so call it off the main thread (KaPost Settings >
+     *  Tips From, iOS 071e901 `SendSource.defaultTip`). */
+    fun ownAddressLabel(address: String): String? =
+        try { walletManager.ownAddressLabel(address) } catch (e: Exception) { null }
+
     /** Addresses for a whole range, paying the BIP-39 seed derivation once rather than once per
      *  index - see [WalletManager.deriveSpendingAddresses]. Call it off the main thread. */
     fun spendingAddressesAt(indices: Iterable<Int>): Map<Int, String> =
@@ -757,6 +792,9 @@ class WalletViewModel @Inject constructor(
         /** Fast / Priority / custom fee as a flat extra over the base fee, paid exactly - see
          *  [com.kachat.app.util.SendFeeModel]. */
         extraFeeSompi: Long = 0L,
+        /** The fee the Review showed, as in [onSendClicked] (iOS 33095ac `sendFromSpendingAddress
+         *  (expectedFeeSompi:)`). */
+        expectedFeeSompi: Long? = null,
     ) {
         sends.start(sendId)
         viewModelScope.launch {
@@ -819,7 +857,8 @@ class WalletViewModel @Inject constructor(
                     feeRateOverride = feeRateOverride,
                     manualUtxos = manualUtxos,
                     extraFeeSompi = extraFeeSompi,
-                    senderRedeemScript = redeemScript
+                    senderRedeemScript = redeemScript,
+                    expectedFeeSompi = expectedFeeSompi,
                 )
             } catch (e: Throwable) {
                 // outcome unknown: revealing a slot is always safe, handing it out again is not
@@ -858,6 +897,16 @@ class WalletViewModel @Inject constructor(
      *  with no scriptPublicKey, which signing needs. */
     /** Throws when the coins could not be fetched, so coin control can say so. */
     suspend fun fetchUtxosForCoinControl(address: String): List<UtxoEntry> = walletEngine.fetchUtxosOrThrow(address)
+
+    /** Coin control's coins for the Wallet's Send from the chatting address: the ones that send
+     *  spends ([KaspaWalletEngine.fetchWithdrawalUtxosOrThrow], iOS `sendWithdrawal`) - confirmed,
+     *  non-coinbase, no pending change it would drop. Throws when they could not be fetched. */
+    suspend fun fetchWithdrawalUtxosForCoinControl(address: String): List<UtxoEntry> = walletEngine.fetchWithdrawalUtxosOrThrow(address)
+
+    /** Coin control's list: every coin at [address], the ones the send can't spend greyed out
+     *  (iOS 33095ac). [withdrawalCoins] picks the Wallet send's coins, as the two above do. */
+    suspend fun fetchCoinControlCoins(address: String, withdrawalCoins: Boolean): com.kachat.app.services.KaspaWalletEngine.CoinControlCoins =
+        walletEngine.fetchCoinControlCoinsOrThrow(address, withdrawalCoins)
 
     /** The fee rate a send with no override pays: the fixed 100 sompi/gram (iOS
      *  `KaspaFeePolicy`), so the base the Send screen shows is the base paid. */
@@ -912,10 +961,13 @@ class WalletViewModel @Inject constructor(
         manualUtxos: List<UtxoEntry>? = null,
         feeMultiplier: Long = 1L,
         customExtraFeeSompi: Long? = null,
+        /** See [estimateMaxSendableAmount]. */
+        recipientScriptLen: Int = SendFeeModel.STANDARD_SCRIPT_LEN,
     ): SendFeeModel.MaxAmount =
         estimateMaxSendableAmount(
             walletManager.deriveSpendingAddress(index), feeRateOverride, manualUtxos, feeMultiplier, customExtraFeeSompi,
             signatureScriptSize = WalletManager.signatureScriptSize(index),
+            recipientScriptLen = recipientScriptLen,
         )
 
     /**
@@ -947,6 +999,9 @@ class WalletViewModel @Inject constructor(
         signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
         /** The Wallet send's coins (iOS `sendWithdrawal`), the ones [onSendClicked] spends. */
         withdrawalCoins: Boolean = false,
+        /** The recipient's real script length (a P2SH or ECDSA address's is a byte longer): the
+         *  send prices it, so Max does too (iOS `estimateSendAllFee(recipientScriptPubKey:)`). */
+        recipientScriptLen: Int = SendFeeModel.STANDARD_SCRIPT_LEN,
     ): SendFeeModel.MaxAmount {
         val fetched = if (withdrawalCoins) walletEngine.fetchWithdrawalUtxosOrThrow(address) else walletEngine.fetchUtxosOrThrow(address)
         if (fetched.isEmpty()) throw IllegalStateException("No spendable UTXOs")
@@ -982,8 +1037,18 @@ class WalletViewModel @Inject constructor(
         val feeRateSompiPerGram = feeRateOverride?.coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
             ?: walletEngine.fetchQuotedFeeRateSompiPerGram()
 
+        // Priced on the real recipient and change scripts, plus iOS `estimateSendAllFee`'s 3-sompi
+        // buffer: a 34-byte guess left a P2SH or ECDSA recipient's send 1,100 sompi short.
+        val changeScriptLen = runCatching { KaspaAddress.getScriptPublicKey(address).length / 2 }
+            .getOrDefault(SendFeeModel.STANDARD_SCRIPT_LEN)
         // maxAfterFees is 0 exactly when the balance does not exceed the fee (iOS `totalBalance > fee`).
-        val max = SendFeeModel.maxAfterFees(totalBalance, capped.size, feeRateSompiPerGram, feeMultiplier, customExtraFeeSompi, signatureScriptSize = signatureScriptSize)
+        val max = SendFeeModel.maxAfterFees(
+            totalBalance, capped.size, feeRateSompiPerGram, feeMultiplier, customExtraFeeSompi,
+            signatureScriptSize = signatureScriptSize,
+            recipientScriptLen = recipientScriptLen,
+            changeScriptLen = changeScriptLen,
+            bufferSompi = KaspaUtxoSelector.FEE_BUFFER_SOMPI,
+        )
         if (max <= 0L) throw IllegalStateException("Balance too low to cover fee")
         // more coins than one transaction can spend: Max is what its largest coins can send (iOS
         // d816404 `oneTransactionChunk`; coin control's own pick is never "capped")
@@ -1000,6 +1065,10 @@ class WalletViewModel @Inject constructor(
      * ChatService.maxConsolidatableChunk. [address]'s UTXOs come back already maturity-filtered
      * (matured coinbase + non-coinbase) via [KaspaWalletEngine.fetchUtxos]. The Fast / Priority /
      * custom extra comes off flat, as in [estimateMaxSendableAmount].
+     *
+     * Already what iOS 071e901 fixed: at Fast / Priority the extra is priced on the chunk's own
+     * coins ([feeMultiplier] times their base), and coins a send in flight spent are left out
+     * (the engine's reconcileUtxos, iOS `unreservedUtxos`).
      */
     suspend fun maxConsolidatableChunk(
         address: String,
@@ -1020,7 +1089,17 @@ class WalletViewModel @Inject constructor(
         val totalBalance = UtxoMath.checkedTotal(chunk.map { it.utxoEntry.amount }) ?: return null // IOS-020
         val feeRateSompiPerGram = feeRateOverride?.coerceAtLeast(KaspaMass.MINIMUM_FEE_RATE_SOMPI_PER_GRAM)
             ?: walletEngine.fetchQuotedFeeRateSompiPerGram()
-        val maxAmount = SendFeeModel.maxAfterFees(totalBalance, chunk.size, feeRateSompiPerGram, feeMultiplier, customExtraFeeSompi, signatureScriptSize = signatureScriptSize)
+        // A self-send: the recipient and the change are both [address], priced on its real script,
+        // with iOS's 3-sompi buffer (iOS compounds through `estimateMaxWithdrawalAmount`).
+        val ownScriptLen = runCatching { KaspaAddress.getScriptPublicKey(address).length / 2 }
+            .getOrDefault(SendFeeModel.STANDARD_SCRIPT_LEN)
+        val maxAmount = SendFeeModel.maxAfterFees(
+            totalBalance, chunk.size, feeRateSompiPerGram, feeMultiplier, customExtraFeeSompi,
+            signatureScriptSize = signatureScriptSize,
+            recipientScriptLen = ownScriptLen,
+            changeScriptLen = ownScriptLen,
+            bufferSompi = KaspaUtxoSelector.FEE_BUFFER_SOMPI,
+        )
         // the address holds more coins than this one transaction combines (iOS d816404)
         return SendFeeModel.ConsolidationChunk(maxAmount, chunk, cappedAtInputLimit = chunk.size < fetched.size)
     }
@@ -1321,6 +1400,9 @@ class WalletViewModel @Inject constructor(
 
     fun logout() {
         walletManager.isLoggedOut = true
+        // signed in means the keys were here: Log Out goes to the sign-in screen, never to a
+        // recovery screen left from before (iOS 33095ac)
+        _needsKeyRecovery.value = false
         // Mirrors iOS's WalletManager.logout(): a logged-out device must stop receiving pushes
         // for the account, even though the wallet data stays on the device. Signing material is
         // captured synchronously, and the wallet isn't being destroyed here anyway.
@@ -1507,6 +1589,8 @@ class WalletViewModel @Inject constructor(
             com.kachat.app.ui.screens.KaPostDraftStore.deleteAll(appContext, variant)
             kaPostsUnseenStore.removeAllData(variant)
         }
+        // Its scheduled posts and their reminders (every network's form of the address).
+        com.kachat.app.services.KaPostsScheduledStore.deleteAccount(appContext, address)
         accountBackupStatus.forget(address)
         // Everything this account held locally goes with it. wipeAllLocalDataForAddress has been
         // here the whole time and nothing called it on deletion, so a deleted account's messages,
@@ -1685,7 +1769,12 @@ class WalletViewModel @Inject constructor(
     fun restoreFromNfcCard(payload: com.kachat.app.services.NfcCardBackupPayload, passphrase: String) {
         val family = payload.walletFamily ?: throw com.kachat.app.services.NfcCardError.UnreadableBackup()
         pendingSourceFamily = family
-        pendingAccountName = payload.alias
+        // An account already saved here keeps the name it has, not the one on the card
+        // (iOS 33095ac).
+        val savedName = walletManager.getAllAccounts()
+            .firstOrNull { com.kachat.app.util.KaspaNetwork.isSameAccount(it.address, payload.chattingAddress) }
+            ?.name?.trim()
+        pendingAccountName = savedName?.takeIf { it.isNotEmpty() } ?: payload.alias
         pendingMnemonicWords = payload.words
         pendingChattingAddressIndex = payload.chattingAddressIndex
         // Not on the passphrase step: a failure leaves no words behind for a later typed import.
@@ -1706,14 +1795,31 @@ class WalletViewModel @Inject constructor(
         viewModelScope.launch {
             _importWalletState.value = ImportWalletUiState(status = ImportWalletStatus.IMPORTING)
             try {
-                walletManager.importWallet(
-                    pendingMnemonicWords,
-                    pendingAccountName,
-                    passphrase,
-                    family = pendingSourceFamily,
-                    // With no passphrase it opens address #0 (iOS 9653c04).
-                    chattingAddressIndex = if (passphrase.isEmpty()) 0 else pendingChattingAddressIndex
-                )
+                val words = pendingMnemonicWords
+                val name = pendingAccountName
+                val family = pendingSourceFamily
+                // With no passphrase it opens address #0 (iOS 9653c04).
+                val chattingIndex = if (passphrase.isEmpty()) 0 else pendingChattingAddressIndex
+                // Key derivation and the encrypted save are slow: off the main thread.
+                withContext(Dispatchers.Default) {
+                    // From the recovery screen: the unreadable store is set aside and a new one
+                    // made only now, as the words are saved (iOS WalletRecoveryView).
+                    if (recoveryImportPending) {
+                        if (!walletManager.resetUnreadableSecureStore()) throw walletManager.secureStoreUnavailableError()
+                        recoveryImportPending = false
+                    }
+                    walletManager.importWallet(
+                        words,
+                        name,
+                        passphrase,
+                        family = family,
+                        chattingAddressIndex = chattingIndex
+                    )
+                }
+                // The keys are on this phone now: a recovery screen left from before must not
+                // come back (iOS 33095ac).
+                recoveryImportPending = false
+                _needsKeyRecovery.value = false
                 // whoever imported it has its seed: the six months start now (iOS 9653c04)
                 accountBackupStatus.markConfirmed(walletManager.getAddress())
                 _justImportedWallet.value = true
@@ -1777,14 +1883,22 @@ class WalletViewModel @Inject constructor(
                     // there even if another account is active by then (iOS e571f45, IOS-107).
                     discoverSpendingAddresses(owner = importedAddress) { }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 android.util.Log.e("WalletViewModel", "importWallet failed", e)
                 if (forgetWordsOnFailure) abandonImport()
                 _importWalletState.value = ImportWalletUiState(
                     status = ImportWalletStatus.FAILED,
-                    // The saved accounts couldn't be kept (IOS-016): say so, nothing was changed.
-                    errorMessage = (e as? WalletManager.AccountsNotKeptException)?.message
-                        ?: "These words are invalid. Double-check the words - the last word encodes a checksum, so one wrong word fails validation."
+                    errorMessage = when (e) {
+                        // The saved accounts couldn't be kept (IOS-016): say so, nothing was changed.
+                        is WalletManager.AccountsNotKeptException -> e.message
+                        // A checksum or wordlist failure is the words.
+                        is org.bitcoinj.crypto.MnemonicException ->
+                            "These words are invalid. Double-check the words - the last word encodes a checksum, so one wrong word fails validation."
+                        // Anything else (the phone's secure storage among them) says what it was.
+                        else -> UserFacingError.message(e, "The account could not be imported. Please try again.")
+                    }
                 )
             }
         }
@@ -1897,6 +2011,10 @@ class WalletViewModel @Inject constructor(
         manualUtxos: List<UtxoEntry>? = null,
         /** Flat extra over the base fee, as in [withdrawFromSpendingAddress]. */
         extraFeeSompi: Long = 0L,
+        /** The fee the Review showed: a send rebuilt at the swipe that would pay more stops with
+         *  [com.kachat.app.services.SendFeeChangedException] (iOS 33095ac `sendWithdrawal
+         *  (expectedFeeSompi:)`). */
+        expectedFeeSompi: Long? = null,
     ) {
         sends.start(sendId)
         viewModelScope.launch {
@@ -1908,6 +2026,7 @@ class WalletViewModel @Inject constructor(
                     walletEngine.sendKaspa(
                         address, amountSompi, feeRateOverride = feeRateOverride, manualUtxos = manualUtxos,
                         extraFeeSompi = extraFeeSompi, withdrawalCoinsOnly = true,
+                        expectedFeeSompi = expectedFeeSompi,
                     )
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {

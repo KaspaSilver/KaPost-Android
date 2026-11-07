@@ -224,7 +224,9 @@ fun BroadcastRoomInfoScreen(
                         autoCorrect = false,
                     ),
                     keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                        onDone = { broadcastViewModel.saveIndexerOverride(normalized, indexerText, storedOverride) },
+                        // Saved even while the last Save is being checked (that check gives way);
+                        // the field then shows the address as saved (https:// on a bare host).
+                        onDone = { broadcastViewModel.saveIndexerOverride(normalized, indexerText, storedOverride)?.let { indexerText = it } },
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = colors.textPrimary,
@@ -293,7 +295,7 @@ fun BroadcastRoomInfoScreen(
                         }
                     }
                     Button(
-                        onClick = { broadcastViewModel.saveIndexerOverride(normalized, indexerText, storedOverride) },
+                        onClick = { broadcastViewModel.saveIndexerOverride(normalized, indexerText, storedOverride)?.let { indexerText = it } },
                         // Not while the last Save is still being checked (iOS).
                         enabled = indexerCheck != BroadcastViewModel.IndexerCheck.Checking &&
                             indexerText.trim() != storedOverride.trim(),

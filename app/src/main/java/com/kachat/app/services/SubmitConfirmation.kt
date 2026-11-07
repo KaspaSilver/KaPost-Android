@@ -18,11 +18,36 @@ class SendOutcomeUnknownException(val txId: String, cause: Exception) : IllegalS
 }
 
 /**
- * A node answered a submit by rejecting the transaction itself (bad fee, spent input, orphan...),
- * iOS `NodeRejectedTransactionError`. That is a verdict on it: a lost answer to another try of the
- * same submit no longer makes it read as "may have gone through" (iOS d816404).
+ * No coin to spend now, but one that waiting frees up: every coin is being mined or was spent by
+ * a send still in flight (iOS 33095ac `sendPublicChatInternal`). A room message says
+ * "No spendable funds available yet" for it instead of "Not enough KAS"; every other send keeps
+ * the engine's old words, which this carries as its message.
  */
-class NodeRejectedTransactionException(message: String) : IllegalStateException(message)
+class NoCoinFreeYetException : IllegalStateException("Insufficient funds: No UTXOs found")
+
+/**
+ * A node answered a submit with a rejection (iOS `NodeRejectedTransactionError`). Only one about the
+ * transaction itself ([isVerdict]: bad signature, fee, mass...) is a verdict on it: then a lost
+ * answer to another try of the same submit no longer makes it read as "may have gone through" (iOS
+ * d816404). "Already in the mempool", orphan and spent-input answers may come from the copy whose
+ * answer was lost, so they leave it as it was (iOS 33095ac `isVerdictOnTransaction`).
+ */
+class NodeRejectedTransactionException(message: String) : IllegalStateException(message) {
+    val isVerdict: Boolean get() = SubmitConfirmation.isVerdictOnTransaction(message.orEmpty())
+}
+
+/**
+ * A send built at the swipe would pay more than its Review showed: its coins changed in between (a
+ * post or room message spent one, a coin arrived), so it picked others or folded more change.
+ * Nothing was sent; the Review works its fee out again (iOS 33095ac `SendFeeChangedError`).
+ * [message] is the localized "The network fee is now ... KAS" text.
+ */
+class SendFeeChangedException(val feeSompi: Long, message: String) : IllegalStateException(message) {
+    companion object {
+        /** Within this of the Review's fee a rebuilt send still goes out (iOS `reviewFeeMarginSompi`). */
+        const val REVIEW_FEE_MARGIN_SOMPI = 1_000L
+    }
+}
 
 /**
  * A failed submit is not always a failed send (iOS ad29da9, audit IOS-014).
@@ -57,6 +82,29 @@ object SubmitConfirmation {
     /** Whether a submit error is the node's "orphan where orphan is disallowed" (iOS
      *  `NodePoolService.isOrphanRejection`). */
     fun isOrphanRejection(e: Throwable): Boolean = (e.message ?: e.toString()).lowercase().contains("orphan")
+
+    /**
+     * Whether a node's rejection says the transaction itself can't land (bad signature, fee,
+     * mass...). "Already in the mempool", "already accepted", orphan and spent-input answers don't:
+     * the copy sent to another node, whose answer was lost, may be exactly why this node says so
+     * (iOS 33095ac `NodePoolService.isVerdictOnTransaction`).
+     */
+    fun isVerdictOnTransaction(message: String): Boolean {
+        val text = message.lowercase()
+        val ambiguous = listOf("already", "orphan", "double spend", "double-spend", "spent", "missing outpoint", "mempool", "memory pool")
+        return ambiguous.none { text.contains(it) }
+    }
+
+    /** Whether [e], or any earlier try kept on it (suppressed, or as its cause), is a node's verdict
+     *  on the transaction itself ([NodeRejectedTransactionException.isVerdict]). */
+    fun hasVerdict(e: Throwable): Boolean = hasVerdict(e, 0)
+
+    private fun hasVerdict(e: Throwable, depth: Int): Boolean {
+        if (depth > 8) return false
+        if (e is NodeRejectedTransactionException && e.isVerdict) return true
+        if (e.suppressedExceptions.any { hasVerdict(it, depth + 1) }) return true
+        return e.cause?.takeIf { it !== e }?.let { hasVerdict(it, depth + 1) } == true
+    }
 
     /**
      * Runs [submit] with [allowOrphan] (iOS 4eb492f, NodePoolService.submitTransaction). A
@@ -116,6 +164,11 @@ object SubmitConfirmation {
      * any other answer is treated as no answer ([onForeignAnswer] is told it). [onAnswered] runs
      * once a node's answer did carry [txId] (iOS 953b255 `checkedSubmit`). Without a local id
      * ([txId] empty) the submit runs exactly as before, unchecked.
+     *
+     * After a rejection rather than a lost answer, [isKnownAfterRejection] asks instead: a node
+     * turned the transaction down, so a REST server typed into Settings isn't enough to call it
+     * sent - only a mempool, or the built-in REST server (iOS 33095ac `isTransactionKnown
+     * (afterRejection:)`).
      */
     suspend fun submitOrConfirmKnown(
         txId: String,
@@ -125,6 +178,7 @@ object SubmitConfirmation {
         onAnswered: () -> Unit = {},
         lookup: suspend (String) -> Boolean = isKnown,
         checkDelayMs: Long = LOST_ANSWER_CHECK_DELAY_MS,
+        isKnownAfterRejection: suspend (String) -> Boolean = isKnown,
         submit: suspend () -> String,
     ): String {
         val answer = try {
@@ -132,7 +186,8 @@ object SubmitConfirmation {
         } catch (e: Exception) {
             if (e is CancellationException && e !is TimeoutCancellationException) throw e
             currentCoroutineContext().ensureActive()
-            if (txId.isNotEmpty() && asked(isKnown, txId)) {
+            val known = if (isLostAnswer(e)) isKnown else isKnownAfterRejection
+            if (txId.isNotEmpty() && asked(known, txId)) {
                 onRecovered(e)
                 return txId
             }
@@ -185,7 +240,14 @@ object SubmitConfirmation {
      * its answer counts: they are kept as suppressed errors, or as the cause of a reworded one.
      */
     fun isLostAnswer(e: Throwable): Boolean {
-        if (e.suppressedExceptions.any { isLostAnswer(it) }) return true
+        // A node said the transaction itself is invalid: that verdict stands over any lost answer
+        // (iOS 33095ac: `markRejected` only for `isVerdictOnTransaction`).
+        if (hasVerdict(e)) return false
+        return answerMayBeLost(e)
+    }
+
+    private fun answerMayBeLost(e: Throwable): Boolean {
+        if (e.suppressedExceptions.any { answerMayBeLost(it) }) return true
         return when (e) {
             is java.net.UnknownHostException, is java.net.ConnectException, is java.net.NoRouteToHostException,
             is javax.net.ssl.SSLHandshakeException -> false
@@ -193,7 +255,7 @@ object SubmitConfirmation {
             is io.grpc.StatusException, is io.grpc.StatusRuntimeException -> e.cause?.let { neverConnected(it) } != true
             is TimeoutCancellationException, is java.io.IOException -> true
             is retrofit2.HttpException -> e.code() >= 500
-            else -> e.cause?.let { isLostAnswer(it) } == true
+            else -> e.cause?.let { answerMayBeLost(it) } == true
         }
     }
 

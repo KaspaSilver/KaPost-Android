@@ -67,6 +67,10 @@ class KaPostsScheduledReminder @Inject constructor(
         private const val TAG = "KaPostsScheduled"
         internal const val KEY_TX_ID = "tx_id"
 
+        /** On the reminder's tap intent: open KaPosts' Scheduled list (iOS
+         *  `KaPostsDeepLink.pendingOpenScheduled`). Honoured only with the internal token. */
+        const val EXTRA_OPEN_SCHEDULED = "kapost_open_scheduled"
+
         /** iOS `reminderId`: one reminder per post. */
         internal fun reminderId(txId: String) = "kaposts-scheduled-$txId"
     }
@@ -95,14 +99,18 @@ class KaPostsScheduledReminderWorker @AssistedInject constructor(
             store.reloadIfNeeded()
             // Offline, a submission could only fail - and a failed post stays failed - so the
             // reminder alone goes out and opening the app sends it. Signed out is skipped inside.
-            if (hasNetwork()) store.sendDueLocally()
+            // This job's own reminder is left alone: cancelling its unique work mid-run would
+            // cancel this run, and the next due post in it would be cut off. It ends by itself.
+            if (hasNetwork()) store.sendDueLocally(runningReminderTxId = txId)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "Background send of scheduled posts failed", e)
         }
+        // Only a post still waiting on this phone: one that went out, failed, was handed to the
+        // indexer, or is gone (cancelled, or its account deleted) needs no reminder.
         val entry = store.entries.value.firstOrNull { it.txId == txId }
-        if (entry != null && (entry.status != KaPostScheduledEntry.STATUS_SCHEDULED || entry.onServer)) {
+        if (entry == null || entry.status != KaPostScheduledEntry.STATUS_SCHEDULED || entry.onServer) {
             return Result.success()
         }
         showReminder(txId)
@@ -125,9 +133,13 @@ class KaPostsScheduledReminderWorker @AssistedInject constructor(
             PackageManager.PERMISSION_GRANTED
         ) return
         val notificationId = KaPostsScheduledReminder.reminderId(txId).hashCode()
-        // The tap opens the app, which sends what is due as it comes to the front.
+        // The tap opens the app on KaPosts' Scheduled list, which sends what is due as it comes
+        // to the front (iOS KaPostsApp `kaposts-scheduled`). The token marks the intent as our
+        // own: MainActivity is exported, and ignores the extra without it.
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(NotificationHelper.EXTRA_INTERNAL_TOKEN, NotificationHelper.internalToken(context))
+            putExtra(KaPostsScheduledReminder.EXTRA_OPEN_SCHEDULED, true)
         }
         val pendingIntent = PendingIntent.getActivity(
             context, notificationId, intent,

@@ -57,8 +57,10 @@ class AccountBackupStatus @Inject constructor(
         return nowMs >= due.timeInMillis
     }
 
-    fun markPending(address: String) {
-        saveAddresses(_pendingAddresses.value + KaspaNetwork.accountAddressVariants(address))
+    /** [commit]: written to disk before this returns - the create path, which saves the new
+     *  account's keys right after, so an app killed in between still owes the backup. */
+    fun markPending(address: String, commit: Boolean = false) {
+        saveAddresses(_pendingAddresses.value + KaspaNetwork.accountAddressVariants(address), commit)
     }
 
     fun markDone(address: String) {
@@ -88,9 +90,10 @@ class AccountBackupStatus @Inject constructor(
         saveConfirmedAt(_confirmedAt.value - KaspaNetwork.accountAddressVariants(address).toSet())
     }
 
-    private fun saveAddresses(next: Set<String>) {
+    private fun saveAddresses(next: Set<String>, commit: Boolean = false) {
         _pendingAddresses.value = next
-        prefs.edit().putStringSet(KEY_PENDING, next).apply()
+        val editor = prefs.edit().putStringSet(KEY_PENDING, next)
+        if (commit) editor.commit() else editor.apply()
     }
 
     private fun saveConfirmedAt(next: Map<String, Long>) {

@@ -226,12 +226,17 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
     var step by remember { mutableStateOf(NfcBackupStep.INTRO) }
     var card by remember { mutableStateOf<NfcCardStatus?>(null) }
     var pin by remember { mutableStateOf("") }
+    // A new PIN, typed again: a typo here would lock the backup behind a PIN nobody knows
+    // (iOS 33095ac).
+    var confirmPin by remember { mutableStateOf("") }
     var pinCleared by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showEraseConfirmation by remember { mutableStateOf(false) }
     var showReplaceConfirmation by remember { mutableStateOf(false) }
     val pinValid = NfcCard.isValidPin(pin)
+    // The PIN can go to the card: a valid one, typed twice when it's a new one (iOS 33095ac).
+    val canSave = card?.let { pinValid && (it.pinSet || pin == confirmPin) } ?: false
     // The PIN shows as typed: no screenshots or Recents thumbnail while it can be on screen.
     SecureWindowWhileShown()
 
@@ -242,6 +247,7 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
 
     fun backToStart() {
         pin = ""
+        confirmPin = ""
         card = null
         step = NfcBackupStep.INTRO
     }
@@ -270,7 +276,7 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
 
     fun save() {
         val scanned = card ?: return
-        if (!pinValid) return
+        if (!canSave) return
         val enteredPin = pin
         working {
             try {
@@ -282,10 +288,21 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
                     if (current.pinBlocked) throw NfcCardError.PinBlocked()
                     // The confirmations were for the card scanned first. An interrupted save can
                     // legitimately leave that card with its new PIN and no backup yet.
-                    if ((current.hasBackup && !scanned.hasBackup) || (scanned.pinSet && !current.pinSet)) {
+                    // A PIN where the scanned card had none is another card too (this save sets the
+                    // PIN it then finds, and records that below): stopped before verifyPin, which
+                    // would cost that card a try with a PIN that was never its own (iOS 33095ac).
+                    if ((current.hasBackup && !scanned.hasBackup) || (scanned.pinSet && !current.pinSet) ||
+                        (!scanned.pinSet && current.pinSet)
+                    ) {
                         throw NfcCardError.CardChanged()
                     }
-                    if (!current.pinSet) connection.setPin(enteredPin)
+                    if (!current.pinSet) {
+                        connection.setPin(enteredPin)
+                        // The card has this PIN now, whatever happens next: a retry after an
+                        // interrupted save finds it set and asks for it as the card's PIN.
+                        card = scanned.copy(pinSet = true, pinBlocked = false, triesRemaining = current.triesRemaining)
+                        confirmPin = ""
+                    }
                     connection.verifyPin(enteredPin)
                     connection.writeBackup(backup)
                     if (!connection.readBackup().contentEquals(backup)) throw NfcCardError.SaveNotConfirmed()
@@ -293,10 +310,13 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
                 // What's on the card has to open with this PIN, not just match what was sent.
                 withContext(Dispatchers.Default) { NfcCardBackupFormat.open(backup, enteredPin) }
                 pin = ""
+                confirmPin = ""
                 step = NfcBackupStep.SAVED
             } catch (e: NfcCardError.WrongPin) {
                 pin = ""
-                card = scanned.copy(pinBlocked = false, triesRemaining = e.triesRemaining)
+                confirmPin = ""
+                // the PIN this save may have just set counts (iOS 33095ac)
+                card = scanned.copy(pinSet = card?.pinSet ?: scanned.pinSet, pinBlocked = false, triesRemaining = e.triesRemaining)
                 show(e)
             } catch (e: Exception) {
                 if (e is NfcCardError.PinBlocked || e is NfcCardError.CardChanged) backToStart()
@@ -365,6 +385,11 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
                         }
                     } else {
                         NfcCardSecretField("New 6-digit PIN", pin, { pin = it }, isNumeric = true)
+                        // typed twice (iOS 33095ac)
+                        NfcCardSecretField(stringResource(R.string.nfc_card_reenter_pin), confirmPin, { confirmPin = it }, isNumeric = true)
+                        if (NfcCard.isValidPin(confirmPin) && pin != confirmPin) {
+                            Text(stringResource(R.string.nfc_card_pins_dont_match), color = colors.danger, fontSize = 13.sp)
+                        }
                         Text(
                             "Pick one you'll remember. After 5 wrong tries the PIN is blocked, and the only fix is reloading the card in Kaspa Quick Start, which erases it.",
                             color = colors.textSecondary,
@@ -373,7 +398,7 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
                     }
                     CreateWalletNextButton(
                         if (scanned.hasBackup) "Replace Backup" else "Save to Card",
-                        enabled = pinValid && !busy,
+                        enabled = canSave && !busy,
                         busy = busy,
                     ) {
                         if (scanned.hasBackup) showReplaceConfirmation = true else save()

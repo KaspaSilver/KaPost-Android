@@ -34,6 +34,7 @@ class SyncWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
     private val groupRepository: GroupRepository,
     private val kaPostsScheduledStore: KaPostsScheduledStore,
+    private val walletManager: WalletManager,
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -45,6 +46,9 @@ class SyncWorker @AssistedInject constructor(
         } catch (e: Exception) {
             Log.w("SyncWorker", "Scheduled posts: background send failed", e)
         }
+        // Signed out (Log Out, or Delete with other accounts left): no group sync for whichever
+        // saved account is left over, as the KaPosts poller and push do nothing then.
+        if (walletManager.isLoggedOut) return Result.success()
         return try {
             groupRepository.syncGroups()
             Result.success()

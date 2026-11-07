@@ -171,17 +171,15 @@ object PaymentRequestPaste {
  * `kachat://pay/`). Two stay here: your own (nothing to pay - [OwnPaymentRequestSheet]), and one
  * asking for a chat payment ([PaymentRequest.toChattingAddress], made in a KaChat 1:1 chat), paid
  * as an encrypted chat payment so it lands in the chat with them - KaPay can't. Without KaPay
- * installed, the Play Store opens to get it. KaChat follows the same rule (iOS KaPosts 0b9fd28,
+ * installed, the KaChat apps' install page opens to get it. KaChat follows the same rule (iOS KaPosts 0b9fd28,
  * 871bf34, 6238276 `KaPayHandoff`).
  */
 object KaPayHandoff {
     const val SCHEME = "kapay"
 
-    /** Where a request goes when KaPay isn't installed. KaPay isn't listed yet, so this is a Play
-     *  Store search for it; swap in its page (`details?id=kapay.kachat.app`) once it is (iOS
-     *  `appStoreURL`). */
-    const val STORE_URL = "market://search?q=KaPay&c=apps"
-    private const val STORE_WEB_URL = "https://play.google.com/store/search?q=KaPay&c=apps"
+    /** Where a request goes when KaPay isn't installed: the KaChat apps' install page, which links
+     *  each app (iOS 33095ac `appStoreURL`). */
+    const val STORE_URL = "https://home.kachat.app/install/"
 
     /** True when [request] is paid in KaPay rather than here. [isOwn] is [PaymentRequest.isOwn],
      *  worked out off the main thread by the caller. */
@@ -199,7 +197,7 @@ object KaPayHandoff {
         // must not reach one pretending to be it. Both of its packages are in <queries>.
         val tail = "$SCHEME://pay/${request.linkTail}"
         if (KAPAY_PACKAGES.any { view(tail, it) }) return
-        if (!view(STORE_URL)) view(STORE_WEB_URL)
+        view(STORE_URL)
     }
 
     private val KAPAY_PACKAGES = listOf("kapay.kachat.app", "kapay.kachat.app.debug")
@@ -345,14 +343,15 @@ val RequestPaymentIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy 
 }
 
 /**
- * Makes a payment request link to the chatting address (iOS `CreatePaymentRequestView`): an exact
- * amount (KAS or your currency) and what it's for - an optional memo up to
- * [PaymentRequest.MEMO_LIMIT] characters. Signed by your chatting address when it goes out, so
- * whoever pays sees it is from you.
+ * Request Payment, from the Wallet's More (iOS 071e901 `CreatePaymentRequestView`, as in KaPay): an
+ * exact amount (KAS or your currency), an optional memo up to [PaymentRequest.MEMO_LIMIT]
+ * characters, and where it's paid - a brand-new address, or one you pick. Signed by your chatting
+ * address when it goes out, so whoever pays sees it is from you.
  *
- * Like a send, in steps: "How much?" on the app's keypad ([KaspaKeypadAmountEntry], no Max), then
- * the review with the memo, Copy Payment Request (the bottom button) and Share. KaPost is paid to
- * the chatting address only, so a request starts at the amount (iOS e5a9b11).
+ * Like a send, in steps: "Where do you want to be paid?" (Fresh Address or Choose an Address, the
+ * list right there), "How much?" on the app's keypad ([KaspaKeypadAmountEntry], no Max), then the
+ * review with the memo, Copy Payment Request (the bottom button) and Share. The fresh address is
+ * only reserved once the link is copied or shared, so opening and cancelling uses none up.
  *
  * It gives the link: Copy Payment Request or Share. Sending it into a chat went with the chats
  * (iOS wallet 301ebfb).
@@ -374,7 +373,14 @@ fun CreatePaymentRequestSheet(
         val fiatCurrencyCode by portfolioViewModel.currency.collectAsState()
         val chattingAddress by walletViewModel.address.collectAsState()
 
-        var step by remember { mutableStateOf(PaymentRequestStep.AMOUNT) }
+        var step by remember { mutableStateOf(PaymentRequestStep.DESTINATION) }
+        var destination by remember { mutableStateOf(PaymentRequestDestination.FRESH) }
+        /** The brand-new address reserved for this request - only once it's copied or shared, and
+         *  once per screen: Copy and Share both reuse it, so no two requests share an address. */
+        var freshAddress by remember { mutableStateOf<String?>(null) }
+        /** The next brand-new address, shown before it's reserved. */
+        var nextFreshAddress by remember { mutableStateOf<String?>(null) }
+        var chosenAddress by remember { mutableStateOf<String?>(null) }
         var amountInput by remember { mutableStateOf("") }
         val fiatAmountState = com.kachat.app.util.rememberKaspaFiatAmountState(onKasTextChange = { amountInput = it })
         var memo by remember { mutableStateOf("") }
@@ -382,12 +388,19 @@ fun CreatePaymentRequestSheet(
         var isWorking by remember { mutableStateOf(false) }
         var sendError by remember { mutableStateOf<String?>(null) }
 
+        // Derived, not reserved: opening the screen and cancelling uses no address up. Checked on
+        // chain, so the preview never shows a slot already used (iOS `verifiedFreshQuantumSlot`).
+        LaunchedEffect(Unit) { nextFreshAddress = walletViewModel.nextFreshSpendingAddress() }
+
         val amountSompi = KaspaUnit.sompiFromUserText(amountInput)?.takeIf { it > 0 }
-        /** Ready to hand out: an amount, and the chatting address to be paid. */
-        val canMake = amountSompi != null && chattingAddress != null
-        /** The address the request pays. */
-        val payeeAddress = chattingAddress
-        LaunchedEffect(amountInput, memo) { copied = false }
+        /** Ready to hand out: an amount, and an address (or a fresh one to be made). */
+        val canMake = amountSompi != null && (destination == PaymentRequestDestination.FRESH || chosenAddress != null)
+        /** The address the request pays: the fresh one (reserved, else the one it will be), or the pick. */
+        val payeeAddress = when (destination) {
+            PaymentRequestDestination.FRESH -> freshAddress ?: nextFreshAddress
+            PaymentRequestDestination.CHOSEN -> chosenAddress
+        }
+        LaunchedEffect(amountInput, memo, destination, chosenAddress) { copied = false }
 
         /** To another step; the slide's direction follows the steps' order (iOS `go(to:)`). */
         fun go(next: PaymentRequestStep) {
@@ -396,11 +409,22 @@ fun CreatePaymentRequestSheet(
         }
 
         /** The request to hand out, unsigned (signed by the chatting address as it goes out - the
-         *  key is only derived then). */
+         *  key is only derived then). A fresh address is reserved here, the first time it's needed. */
         suspend fun makeRequest(): PaymentRequest? {
             val sompi = amountSompi ?: return null
-            val address = chattingAddress ?: return null
-            return PaymentRequest.create(address, sompi, memo, true)
+            val address = when (destination) {
+                PaymentRequestDestination.FRESH -> freshAddress ?: run {
+                    val reserved = walletViewModel.reserveFreshSpendingAddress()
+                    if (reserved == null) {
+                        sendError = context.getString(R.string.pr_couldnt_make_address)
+                        return null
+                    }
+                    freshAddress = reserved
+                    reserved
+                }
+                PaymentRequestDestination.CHOSEN -> chosenAddress ?: return null
+            }
+            return PaymentRequest.create(address, sompi, memo, address == chattingAddress)
         }
 
         /** The request's link, signed by the chatting address (or unsigned when its key can't be had). */
@@ -452,13 +476,72 @@ fun CreatePaymentRequestSheet(
             modifier = Modifier.fillMaxSize(),
         ) { shown ->
             when (shown) {
+                // MARK: Where (iOS 071e901 `destinationStep`)
+                PaymentRequestStep.DESTINATION -> SendStepScreen(
+                    title = title,
+                    onCancel = close,
+                    canContinue = payeeAddress != null,
+                    onContinue = { go(PaymentRequestStep.AMOUNT) },
+                    insets = noInsets,
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 20.dp)
+                            .padding(top = 12.dp, bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        SendStepQuestion(stringResource(R.string.pr_where_paid))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            SelectablePill(
+                                title = stringResource(R.string.pr_fresh_address),
+                                selected = destination == PaymentRequestDestination.FRESH,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                destination = PaymentRequestDestination.FRESH
+                            }
+                            SelectablePill(
+                                title = stringResource(R.string.pr_choose_an_address),
+                                selected = destination == PaymentRequestDestination.CHOSEN,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                destination = PaymentRequestDestination.CHOSEN
+                            }
+                        }
+                        when (destination) {
+                            PaymentRequestDestination.FRESH -> {
+                                val fresh = freshAddress ?: nextFreshAddress
+                                if (fresh != null) {
+                                    AddressResolutionCard(address = fresh)
+                                    Text(stringResource(R.string.pr_fresh_address_note), color = colors.textSecondary, fontSize = 13.sp)
+                                } else {
+                                    Box(Modifier.fillMaxWidth().padding(vertical = 18.dp), contentAlignment = Alignment.Center) {
+                                        com.kachat.app.ui.theme.IosActivityIndicator(color = colors.textSecondary)
+                                    }
+                                }
+                            }
+                            PaymentRequestDestination.CHOSEN -> {
+                                // the list right here, no sheet: tap the address that gets paid
+                                Text(stringResource(R.string.pr_pick_address), color = colors.textSecondary, fontSize = 13.sp)
+                                OwnAddressList(
+                                    selected = chosenAddress,
+                                    walletViewModel = walletViewModel,
+                                    onPick = { picked -> chosenAddress = picked.address(chattingAddress) },
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // MARK: How much
                 PaymentRequestStep.AMOUNT -> SendStepScreen(
                     title = title,
                     onCancel = close,
                     canContinue = amountSompi != null,
                     onContinue = { go(PaymentRequestStep.REVIEW) },
-                    continueTitle = "Review",
+                    onBack = { go(PaymentRequestStep.DESTINATION) },
+                    continueTitle = stringResource(R.string.send_review),
                     insets = noInsets,
                 ) {
                     Column(
@@ -468,7 +551,7 @@ fun CreatePaymentRequestSheet(
                             .padding(top = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        SendStepQuestion("How much?")
+                        SendStepQuestion(stringResource(R.string.pr_how_much))
                         payeeAddress?.let { address ->
                             SendInfoPill {
                                 Text("Paid to")
@@ -510,7 +593,7 @@ fun CreatePaymentRequestSheet(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Text("You're requesting", color = colors.textSecondary, fontSize = 15.sp)
+                            Text(stringResource(R.string.pr_youre_requesting), color = colors.textSecondary, fontSize = 15.sp)
                             amountSompi?.let { sompi ->
                                 PaymentRequestFitText(
                                     "${KaspaUnit.plain(sompi)} ${KaspaUnit.symbol}",
@@ -589,7 +672,7 @@ fun CreatePaymentRequestSheet(
                         PaymentRequestSharePill(enabled = canMake && !isWorking) { share() }
 
                         Text(
-                            stringResource(R.string.pr_anyone_note),
+                            stringResource(R.string.pr_anyone_note_wallet),
                             color = colors.textSecondary,
                             fontSize = 13.sp,
                             textAlign = TextAlign.Center,
@@ -601,8 +684,16 @@ fun CreatePaymentRequestSheet(
     }
 }
 
-/** Request Payment's steps, in order (iOS 05db583 `CreatePaymentRequestView.Step`). */
-private enum class PaymentRequestStep { AMOUNT, REVIEW }
+/** Request Payment's steps, in order (iOS 071e901 `CreatePaymentRequestView.Step`). */
+private enum class PaymentRequestStep { DESTINATION, AMOUNT, REVIEW }
+
+/** Where a request is paid (iOS 071e901 `CreatePaymentRequestView.Destination`). */
+private enum class PaymentRequestDestination {
+    /** A brand-new address, never revealed, used or handed out. */
+    FRESH,
+    /** One of your addresses, picked from the list: the chatting address or a spending one. */
+    CHOSEN,
+}
 
 /** iOS `.spring(response: 0.4, dampingFraction: 0.9)`: stiffness (2*pi/0.4)^2. */
 private val PaymentRequestStepSpring = spring(dampingRatio = 0.9f, stiffness = 247f, visibilityThreshold = IntOffset.VisibilityThreshold)

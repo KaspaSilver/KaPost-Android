@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">安全な場所に保管してください。これらの単語を知っている人は誰でもアカウントにアクセスできます。</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">再試行</string>
+    <string name="kaposts_reply_not_on_network">この投稿はまだネットワーク上にないため、返信できません。投稿が完了してからもう一度お試しください。</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">手数料: -------- KAS</string>
     <string name="composer_fee_unknown">手数料: -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">半分を超えてから指を離すと送信します。</string>
     <string name="swipe_failed">失敗</string>
     <string name="swipe_send_failed_fallback">送信できませんでした。</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">未確認</string>
+    <string name="passphrase_skip_search">検索をスキップ：アドレス#0にインポート</string>
+    <string name="passphrase_search_incomplete">このアカウントの他のアドレスにある資金の検索が完了しなかったため、インポートはアドレス#0を使います。</string>
+    <string name="passphrase_search_again">もう一度検索</string>
+    <string name="nfc_card_reenter_pin">PINをもう一度入力</string>
+    <string name="nfc_card_pins_dont_match">PINが一致しません。</string>
+    <string name="send_fee_changed">ネットワーク手数料が %1$s KAS になり、確認画面の表示より高くなりました。何も送信されていません。新しい手数料を確認して、もう一度スワイプしてください。</string>
+    <string name="room_no_spendable_funds_yet">まだ利用可能な資金がありません。承認を待ってからもう一度お試しください。</string>
+    <string name="coin_unavailable_mining_reward">マイニング報酬のため、ここでは使えません</string>
+    <string name="coin_unavailable_not_confirmed">未承認</string>
+    <string name="coin_unavailable_just_spent">投稿または送金で使われたばかり</string>
+    <string name="room_not_enough_kas">チャットアドレスのKASが足りません。追加してからもう一度お試しください。</string>
+    <string name="kaposts_tips_from">チップの送信元</string>
+    <string name="kaposts_tip_from_chatting_note">Chatting Addressからのチップは投稿にカウントされ、チップを送った人として表示されます。</string>
+    <string name="kaposts_tip_from_private_note">別のアドレスからのチップは非公開です。投稿者は受け取り、チャットで確認できますが、投稿にはカウントされず、あなたの名前も出ません。</string>
+    <string name="kaposts_tips_from_footnote">Chatting Addressからのチップは投稿にカウントされ、チップを送った人として表示されます。別のアドレスからのチップは非公開です。投稿者は受け取り、チャットで確認できますが、投稿にはカウントされず、あなたの名前も出ません。</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">あなたのドメイン</string>
+    <string name="primary_domain">プライマリドメイン</string>
+    <string name="send_domain">ドメインを送信</string>
+    <string name="set_as_primary">メインに設定</string>
+    <string name="asset_id">アセットID</string>
+    <string name="wd_fee">手数料</string>
+    <string name="wd_domain">ドメイン</string>
+    <string name="wd_confirm_sending_domain">このドメインの送信を確認</string>
+    <string name="wd_transfer_two_transactions">ドメインの移管は2回のトランザクションで行うため、少し時間がかかります。完了するまでアプリを開いたままにしてください。</string>
+    <string name="wd_transfer_fee_footer">ネットワークが混雑しているときは、高速または優先を選ぶと手数料が高くなり、送金がより早く承認されやすくなります。手数料の金額をタップするとカスタム手数料を設定できます。</string>
+    <string name="wd_kachat_names_coming_body">KaChat独自の名前はここに表示されます。名前を取得し、自分の名前にして、プロフィールリンクとして共有できます。</string>
+    <string name="wd_primary_set_to">プライマリ ドメインは %1$s に設定されます。</string>
+    <string name="wd_transferred_to">%1$s は %2$s に転送されました。</string>
+    <string name="wd_transfer_submitted">%1$s に対して転送が送信されました。</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">未使用の新しいアドレスです。ここに送られたKaspaはこのアカウントに入り、支出残高に含まれます。.kachatの名前以外のすべてに使えます。</string>
+    <string name="pr_where_paid">どこで受け取りますか？</string>
+    <string name="pr_fresh_address_note">まだ一度も使われたり共有されたりしていない、あなたの新しいアドレスです。</string>
+    <string name="pr_anyone_note_wallet">KaPay か KaChat で開くと、この内容が入力された Kaspa 送金画面が開き、あなたのチャットアドレスが作成したもの（その鍵で署名済み）であることがわかります。</string>
+    <string name="pr_how_much">いくら？</string>
+    <string name="pr_youre_requesting">請求額</string>
+    <string name="ma_notify_on_receive">受信時に通知</string>
+    <string name="ma_notify_on_receive_detail">支出アドレスが他の人からKaspaを受け取ったとき。</string>
+    <string name="ma_no_spending_addresses">使用アドレスがありません</string>
+    <string name="ma_generate_one_below">メインとは別のアドレスから送金するには、下で作成してください。</string>
+    <string name="ma_address_hidden">アドレスを非表示にしました。「アドレスの表示」で再表示できます。</string>
+    <string name="ma_cant_hide">このアドレスは非表示にできません。</string>
+    <string name="ma_none_found">残高やドメインのあるアドレスは見つかりませんでした。</string>
+    <string name="ma_rename_detail">このアドレスに自分用のラベルを付けます。</string>
+    <string name="ma_copy_detail">アドレス全体をクリップボードにコピーします。</string>
+    <string name="ma_qr_detail">全画面表示。別の端末で読み取るときに。</string>
+    <string name="ma_hide_address">アドレスを非表示</string>
+    <string name="ma_hide_detail">このリストから外します。「アドレスの表示」で再表示できます。</string>
+    <string name="contains_domain">ドメインを含む</string>
+    <string name="address_visibility">アドレスの表示設定</string>
+    <string name="ma_rename_message">識別しやすいようにこのアドレスにラベルを付けてください。</string>
+    <string name="ma_label">ラベル</string>
+    <string name="ma_none_yet">残高またはドメインのあるアドレスはまだありません</string>
+    <string name="ma_scan_note">途中に空きがあっても最初の1,000個のアドレスを確認し、その後も見つかる限り続けます。</string>
+    <string name="ma_close_keep_scanning">閉じてスキャンを続ける</string>
+    <string name="ma_generate_detail">このウォレットの次の未使用アドレスを表示します。</string>
+    <string name="ma_visibility_detail">リストに載せたいアドレスを一度にすべてチェックしてください。</string>
+    <string name="address_visibility_derive_failed">現在、これらのアドレスを導出できません。前のページに戻るか、この画面を開き直して再試行してください。</string>
+    <string name="compound_utxos_spending_description">このアドレスのUTXOをまとめて、今後の送信で必要な入力を減らします。1回のトランザクションでまとめられる数には上限があるため、非常に多い場合は、承認後にもう一度「統合」をタップして減らし続けてください。</string>
+    <string name="unlock_address_private_key">このアドレスの秘密鍵を表示するにはロックを解除してください</string>
 </resources>

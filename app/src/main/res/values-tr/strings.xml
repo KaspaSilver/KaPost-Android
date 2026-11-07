@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">Bunu güvenli bir yerde saklayın. Bu kelimelere sahip herkes hesabınıza erişebilir.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">Tekrar dene</string>
+    <string name="kaposts_reply_not_on_network">Bu gönderi henüz ağda değil, bu yüzden yanıtlanamaz. Yayınlandıktan sonra tekrar deneyin.</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">ucret: -------- KAS</string>
     <string name="composer_fee_unknown">ucret: -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">Göndermek için yarıyı geçince bırak.</string>
     <string name="swipe_failed">Başarısız</string>
     <string name="swipe_send_failed_fallback">Gönderim yapılamadı.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">Onaylanmadı</string>
+    <string name="passphrase_skip_search">Aramayı atla: #0 adresine içe aktar</string>
+    <string name="passphrase_search_incomplete">Bu hesabın diğer adreslerinde bakiye araması tamamlanmadı, bu yüzden İçe Aktar #0 adresini kullanır.</string>
+    <string name="passphrase_search_again">Tekrar ara</string>
+    <string name="nfc_card_reenter_pin">PIN\'i yeniden girin</string>
+    <string name="nfc_card_pins_dont_match">PIN\'ler eşleşmiyor.</string>
+    <string name="send_fee_changed">Ağ ücreti artık %1$s KAS, özette gösterilenden fazla. Hiçbir şey gönderilmedi: yeni ücreti kontrol edip tekrar kaydırın.</string>
+    <string name="room_no_spendable_funds_yet">Henüz harcanabilir bakiye yok. Onayları bekleyip tekrar deneyin.</string>
+    <string name="coin_unavailable_mining_reward">Madencilik ödülü, burada harcanamaz</string>
+    <string name="coin_unavailable_not_confirmed">Henüz onaylanmadı</string>
+    <string name="coin_unavailable_just_spent">Az önce bir gönderi veya transferle harcandı</string>
+    <string name="room_not_enough_kas">Sohbet adresinizde yeterli KAS yok. Biraz ekleyip tekrar deneyin.</string>
+    <string name="kaposts_tips_from">Bahşiş Kaynağı</string>
+    <string name="kaposts_tip_from_chatting_note">Chatting Address\'inizden gönderilen bahşiş gönderide sayılır ve bahşiş verenler arasında görünürsünüz.</string>
+    <string name="kaposts_tip_from_private_note">Başka bir adresten bahşiş gizlidir: yazar alır ve sohbetinizde görür, ama gönderide sayılmaz ve adınızı vermez.</string>
+    <string name="kaposts_tips_from_footnote">Chatting Address\'inizden bahşişler gönderide sayılır ve bahşiş verenler arasında görünürsünüz. Başka bir adresten bahşiş gizlidir: yazar alır ve sohbetinizde görür, ama gönderide sayılmaz ve adınızı vermez.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">Alan Adların</string>
+    <string name="primary_domain">Ana Alan Adı</string>
+    <string name="send_domain">Alan Adı Gönder</string>
+    <string name="set_as_primary">Ana Ad Yap</string>
+    <string name="asset_id">Öğe Kimliği</string>
+    <string name="wd_fee">Ücret</string>
+    <string name="wd_domain">İhtisas</string>
+    <string name="wd_confirm_sending_domain">Bu alan adının gönderilmesini onayla</string>
+    <string name="wd_transfer_two_transactions">Alan adı transferi iki işlemden oluşur, bu yüzden biraz sürer. Bitene kadar uygulamayı açık tut.</string>
+    <string name="wd_transfer_fee_footer">Ağ yoğunsa, Hızlı veya Öncelikli, transferinin daha çabuk onaylanması için daha yüksek ücret öder. Özel ücret ayarlamak için ücret tutarına dokun.</string>
+    <string name="wd_kachat_names_coming_body">KaChat\'in kendi adları burada olacak: birini alın, adınız yapın ve profil bağlantısı olarak paylaşın.</string>
+    <string name="wd_primary_set_to">Birincil alan adı %1$s olarak ayarlandı.</string>
+    <string name="wd_transferred_to">%1$s, %2$s\'ye transfer edildi.</string>
+    <string name="wd_transfer_submitted">%1$s için transfer gönderildi.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">Yeni, hiç kullanılmamış bir adres. Buraya gönderilen Kaspa bu hesaba gelir ve harcama bakiyenize eklenir. .kachat adları dışında her şey için kullanın.</string>
+    <string name="pr_where_paid">Ödemeyi nereye almak istiyorsun?</string>
+    <string name="pr_fresh_address_note">Hiç kullanılmamış ve kimseye verilmemiş yepyeni bir adresin.</string>
+    <string name="pr_anyone_note_wallet">KaPay veya KaChat\'te açan herkes bu bilgilerle doldurulmuş Kaspa Gönder ekranını görür ve isteğin sohbet adresin tarafından yapıldığını (onun anahtarıyla imzalı) görür.</string>
+    <string name="pr_how_much">Ne kadar?</string>
+    <string name="pr_youre_requesting">İstediğin tutar</string>
+    <string name="ma_notify_on_receive">Alınca bildir</string>
+    <string name="ma_notify_on_receive_detail">Bir harcama adresi başkasından Kaspa aldığında.</string>
+    <string name="ma_no_spending_addresses">Harcama Adresi Yok</string>
+    <string name="ma_generate_one_below">Ana adresinizden farklı bir adresten ödeme göndermek için aşağıdan bir tane oluşturun.</string>
+    <string name="ma_address_hidden">Adres gizlendi. Adres Görünürlüğü\'nden yeniden açabilirsiniz.</string>
+    <string name="ma_cant_hide">Bu adres gizlenemez.</string>
+    <string name="ma_none_found">Bakiyesi veya alan adı olan adres bulunamadı.</string>
+    <string name="ma_rename_detail">Bu adrese kendi etiketinizi verir.</string>
+    <string name="ma_copy_detail">Adresin tamamını panoya kopyalar.</string>
+    <string name="ma_qr_detail">Tam ekran, başka bir cihazla taramak için.</string>
+    <string name="ma_hide_address">Adresi Gizle</string>
+    <string name="ma_hide_detail">Bu listeden kaldırır. Adres Görünürlüğü\'nden yeniden açabilirsiniz.</string>
+    <string name="contains_domain">Alan adı içerir</string>
+    <string name="address_visibility">Adres Görünürlüğü</string>
+    <string name="ma_rename_message">Tanimaniza yardimci olmasi icin bu adrese bir etiket verin.</string>
+    <string name="ma_label">Etiket</string>
+    <string name="ma_none_yet">Henüz bakiyesi veya alan adı olan adres yok</string>
+    <string name="ma_scan_note">İlk bin adresi aradaki boşluklara bakmadan kontrol eder, sonra bulmaya devam ettiği sürece devam eder.</string>
+    <string name="ma_close_keep_scanning">Kapat ve Taramaya Devam Et</string>
+    <string name="ma_generate_detail">Bu cüzdandaki bir sonraki kullanılmamış adresi gösterir.</string>
+    <string name="ma_visibility_detail">Listede olmasını istediğiniz her adresi tek seferde işaretleyin.</string>
+    <string name="address_visibility_derive_failed">Bu adresler şu anda türetilemedi. Bir sayfa geri git veya tekrar denemek için bu ekranı yeniden aç.</string>
+    <string name="compound_utxos_spending_description">Bu adresin UTXO\'larını birleştirerek sonraki bir gönderimin ihtiyaç duyduğu girdileri azaltır. Tek bir işlem aynı anda ancak belirli sayıda UTXO\'yu birleştirebilir; bu yüzden adreste çok fazla varsa, azaltmaya devam etmek için onaylandıktan sonra Birleştir\'e tekrar dokun.</string>
+    <string name="unlock_address_private_key">Bu adresin özel anahtarını görmek için kilidi açın</string>
 </resources>

@@ -126,6 +126,8 @@ class KaPostsNotificationPoller @Inject constructor(
         if (settingsRepository.childModeEnabled.first()) return
         // No KaPost indexer on this network (testnet) - none of the feed work runs (iOS 0bda85e).
         if (settingsRepository.kapostIndexerUrl.first().isBlank()) return
+        // Notifications off: nothing here would be shown, so the indexer isn't asked (iOS 33095ac).
+        if (!settingsRepository.notificationsEnabled.first()) return
         val notifications = kaPostsService.fetchNotifications(limit = 50)
         val newest = notifications.maxOfOrNull { it.timestamp } ?: return
         val key = lastSeenKey(address)
@@ -158,7 +160,8 @@ class KaPostsNotificationPoller @Inject constructor(
             if (!settingsRepository.shouldNotifyKaPostsAction(n.contentType, n.voteType)) continue
             arrivals++
         }
-        unseenStore.recordArrivals(arrivals)
+        // Nothing is unseen while the notifications screen is open (iOS 33095ac).
+        if (isNotificationsScreenVisible) unseenStore.markAllSeen() else unseenStore.recordArrivals(arrivals)
         // Per-kind toggle filter (Likes/Reposts/Follows/Dislikes/Comments) applied at the
         // source, BEFORE the burst cap, so a disabled kind neither notifies nor consumes a
         // slot. The watermark above already advanced over filtered items.

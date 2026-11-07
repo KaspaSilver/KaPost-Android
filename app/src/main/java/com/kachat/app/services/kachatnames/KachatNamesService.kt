@@ -367,8 +367,11 @@ class KachatNamesService @Inject constructor(
         val expected = tx.idHex
         // A node can accept it while its answer is lost and a raced node rejects it: looked up by
         // id before failing, so a retry never pays a price twice (iOS 9139e88, IOS-014).
+        // Its inputs, in the RPC's own form, so the node pool holds them back from the next send
+        // (iOS 33095ac `submitRpcTransaction(_:expectedTxId:)` reserves them).
+        val inputs = tx.inputs.map { com.kachat.app.services.Outpoint(transactionId = hex(it.outpoint.txid), index = it.outpoint.index) }
         val txId = withContext(Dispatchers.IO) {
-            nodePoolManager.submitConfirmingKnown(expected, networkService.kaspaRestApi.value) {
+            nodePoolManager.submitConfirmingKnown(expected, networkService.kaspaRestApi.value, inputs) {
                 nodePoolManager.getBroadcastConnection().submitRpcTransaction(rpcTransaction(tx))
             }
         }

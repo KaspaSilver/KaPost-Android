@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">请妥善保管。任何拥有这些词的人都可以访问你的账户。</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">重试</string>
+    <string name="kaposts_reply_not_on_network">此帖子尚未上链，因此无法回复。请在发布完成后重试。</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">手续费: -------- KAS</string>
     <string name="composer_fee_unknown">手续费: -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">滑过一半后松开即可发送。</string>
     <string name="swipe_failed">失败</string>
     <string name="swipe_send_failed_fallback">发送未成功。</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">未确认</string>
+    <string name="passphrase_skip_search">跳过搜索：导入到地址 #0</string>
+    <string name="passphrase_search_incomplete">此账户其他地址上的余额搜索未完成，因此导入使用地址 #0。</string>
+    <string name="passphrase_search_again">重新搜索</string>
+    <string name="nfc_card_reenter_pin">再次输入 PIN</string>
+    <string name="nfc_card_pins_dont_match">两次 PIN 不一致。</string>
+    <string name="send_fee_changed">网络费用现在为 %1$s KAS，高于确认页显示的金额。未发送任何内容：请查看新费用后再次滑动。</string>
+    <string name="room_no_spendable_funds_yet">当前还没有可用可花费资金。请等待确认后再试。</string>
+    <string name="coin_unavailable_mining_reward">挖矿奖励，此处无法使用</string>
+    <string name="coin_unavailable_not_confirmed">尚未确认</string>
+    <string name="coin_unavailable_just_spent">刚被一条帖子或一笔发送使用</string>
+    <string name="room_not_enough_kas">你的聊天地址上 KAS 不足。请添加一些后重试。</string>
+    <string name="kaposts_tips_from">打赏来源</string>
+    <string name="kaposts_tip_from_chatting_note">从你的 Chatting Address 打赏会计入帖子，你也会出现在打赏者名单中。</string>
+    <string name="kaposts_tip_from_private_note">从其他地址打赏是私密的：作者会收到，并在你们的聊天中看到，但不会计入帖子，也不会显示你的名字。</string>
+    <string name="kaposts_tips_from_footnote">从你的 Chatting Address 打赏会计入帖子，你也会出现在打赏者名单中。从其他地址打赏是私密的：作者会收到，并在你们的聊天中看到，但不会计入帖子，也不会显示你的名字。</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">你的域名</string>
+    <string name="primary_domain">主要域名</string>
+    <string name="send_domain">发送域名</string>
+    <string name="set_as_primary">设为主名称</string>
+    <string name="asset_id">资产ID</string>
+    <string name="wd_fee">费用</string>
+    <string name="wd_domain">领域</string>
+    <string name="wd_confirm_sending_domain">确认发送此域名</string>
+    <string name="wd_transfer_two_transactions">域名转移需要两笔交易，所以要花一点时间。完成前请保持 App 打开。</string>
+    <string name="wd_transfer_fee_footer">网络繁忙时，选择“快速”或“优先”会支付更高的手续费，帮助转账更快确认。轻点手续费金额可设置自定义手续费。</string>
+    <string name="wd_kachat_names_coming_body">KaChat 自己的名称将显示在这里：认领一个，设为你的名字，并作为个人资料链接分享。</string>
+    <string name="wd_primary_set_to">主域设置为 %1$s。</string>
+    <string name="wd_transferred_to">%1$s 转移到 %2$s。</string>
+    <string name="wd_transfer_submitted">为 %1$s 提交转账。</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">一个全新、从未用过的地址。发送到这里的 Kaspa 会进入此账户，并计入你的支出余额。除 .kachat 名称外均可使用。</string>
+    <string name="pr_where_paid">你想收款到哪里？</string>
+    <string name="pr_fresh_address_note">一个从未使用或分享过的全新地址。</string>
+    <string name="pr_anyone_note_wallet">任何人在 KaPay 或 KaChat 中打开它，都会看到已填好的“发送 Kaspa”，并看到它由你的聊天地址创建（用其密钥签名）。</string>
+    <string name="pr_how_much">多少？</string>
+    <string name="pr_youre_requesting">你要请求</string>
+    <string name="ma_notify_on_receive">收到时通知</string>
+    <string name="ma_notify_on_receive_detail">当支出地址收到别人发来的 Kaspa 时。</string>
+    <string name="ma_no_spending_addresses">没有消费地址</string>
+    <string name="ma_generate_one_below">在下方生成一个地址，以便从主地址以外的地址付款。</string>
+    <string name="ma_address_hidden">地址已隐藏。可在“地址可见性”中重新显示。</string>
+    <string name="ma_cant_hide">此地址无法隐藏。</string>
+    <string name="ma_none_found">未找到有余额或域名的地址。</string>
+    <string name="ma_rename_detail">为此地址设置你自己的标签。</string>
+    <string name="ma_copy_detail">将完整地址复制到剪贴板。</string>
+    <string name="ma_qr_detail">全屏显示，便于用另一台设备扫描。</string>
+    <string name="ma_hide_address">隐藏地址</string>
+    <string name="ma_hide_detail">从此列表中移除。可在“地址可见性”中重新显示。</string>
+    <string name="contains_domain">包含域名</string>
+    <string name="address_visibility">地址可见性</string>
+    <string name="ma_rename_message">给这个地址加个标签,方便您识别。</string>
+    <string name="ma_label">标签</string>
+    <string name="ma_none_yet">还没有有余额或域名的地址</string>
+    <string name="ma_scan_note">无论中间有无空档，都会检查前一千个地址，之后只要还能找到就继续检查。</string>
+    <string name="ma_close_keep_scanning">关闭并继续扫描</string>
+    <string name="ma_generate_detail">显示此钱包下一个未使用的地址。</string>
+    <string name="ma_visibility_detail">一次勾选你希望出现在列表中的所有地址。</string>
+    <string name="address_visibility_derive_failed">暂时无法推导出这些地址。请返回上一页，或重新打开此页面再试。</string>
+    <string name="compound_utxos_spending_description">合并此地址的 UTXO，以减少以后发送所需的输入数量。单笔交易一次能合并的数量有限，所以如果数量非常多，请在确认后再次轻点“合并”，继续减少。</string>
+    <string name="unlock_address_private_key">解锁以查看此地址的私钥</string>
 </resources>

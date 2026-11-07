@@ -1046,21 +1046,38 @@ class KachatNamesRegistry @Inject constructor(
                     queued
                 }
                 val batch = identitiesBatch(keys)
+                // No batch answer (an older registry, a blip): one lookup each, four at a time
+                // rather than one after another down a whole screen of authors (iOS 33095ac).
+                val single = HashMap<String, Identity>()
+                if (batch == null) {
+                    for (slice in keys.chunked(4)) {
+                        kotlinx.coroutines.coroutineScope {
+                            slice.map { key ->
+                                async {
+                                    key to try {
+                                        identity(key)
+                                    } catch (e: kotlinx.coroutines.CancellationException) {
+                                        throw e
+                                    } catch (_: Exception) {
+                                        // the registry or profiles are not there (being upgraded,
+                                        // offline, a 503): this address is asked again in a minute
+                                        null
+                                    }
+                                }
+                            }.forEach { deferred ->
+                                val (key, identity) = deferred.await()
+                                if (identity != null) single[key] = identity
+                            }
+                        }
+                    }
+                }
                 val answered = HashMap<String, Identity>()
                 for (key in keys) {
                     val found: Identity? = if (batch != null) {
                         // left out of the answer: no names and no profile
                         batch[key] ?: Identity(key, null, emptyList(), null)
                     } else {
-                        try {
-                            identity(key)
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            // the registry or profiles are not there (being upgraded, offline, a
-                            // 503): this address is asked again in a minute
-                            null
-                        }
+                        single[key]
                     }
                     identityLookups.remove(key)
                     if (found == null) {

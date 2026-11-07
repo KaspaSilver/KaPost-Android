@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">안전한 곳에 보관하세요. 이 단어를 아는 사람은 누구나 계정에 접근할 수 있습니다.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">다시 시도</string>
+    <string name="kaposts_reply_not_on_network">이 게시물은 아직 네트워크에 없어 답글을 달 수 없습니다. 게시된 후 다시 시도하세요.</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">수수료: -------- KAS</string>
     <string name="composer_fee_unknown">수수료: -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">절반을 넘긴 뒤 손을 떼면 보냅니다.</string>
     <string name="swipe_failed">실패</string>
     <string name="swipe_send_failed_fallback">전송되지 않았습니다.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">확인되지 않음</string>
+    <string name="passphrase_skip_search">검색 건너뛰기: 주소 #0으로 가져오기</string>
+    <string name="passphrase_search_incomplete">이 계정의 다른 주소에서 잔액 검색이 끝나지 않아 가져오기는 주소 #0을 사용합니다.</string>
+    <string name="passphrase_search_again">다시 검색</string>
+    <string name="nfc_card_reenter_pin">PIN 다시 입력</string>
+    <string name="nfc_card_pins_dont_match">PIN이 일치하지 않습니다.</string>
+    <string name="send_fee_changed">네트워크 수수료가 이제 %1$s KAS로, 검토 화면보다 높습니다. 아무것도 전송되지 않았습니다. 새 수수료를 확인하고 다시 스와이프하세요.</string>
+    <string name="room_no_spendable_funds_yet">아직 사용 가능한 자금이 없습니다. 컨펌을 기다린 후 다시 시도하세요.</string>
+    <string name="coin_unavailable_mining_reward">채굴 보상이라 여기서 사용할 수 없음</string>
+    <string name="coin_unavailable_not_confirmed">아직 확인되지 않음</string>
+    <string name="coin_unavailable_just_spent">방금 게시물이나 전송에 사용됨</string>
+    <string name="room_not_enough_kas">채팅 주소에 KAS가 부족합니다. 추가한 후 다시 시도하세요.</string>
+    <string name="kaposts_tips_from">팁 보낼 주소</string>
+    <string name="kaposts_tip_from_chatting_note">Chatting Address에서 보낸 팁은 게시물에 집계되고 팁을 보낸 사람으로 표시됩니다.</string>
+    <string name="kaposts_tip_from_private_note">다른 주소에서 보낸 팁은 비공개입니다. 작성자는 받고 채팅에서 볼 수 있지만, 게시물에 집계되지 않고 이름도 나오지 않습니다.</string>
+    <string name="kaposts_tips_from_footnote">Chatting Address에서 보낸 팁은 게시물에 집계되고 팁을 보낸 사람으로 표시됩니다. 다른 주소에서 보낸 팁은 비공개입니다. 작성자는 받고 채팅에서 볼 수 있지만, 게시물에 집계되지 않고 이름도 나오지 않습니다.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">내 도메인</string>
+    <string name="primary_domain">기본 도메인</string>
+    <string name="send_domain">도메인 보내기</string>
+    <string name="set_as_primary">대표 이름으로 설정</string>
+    <string name="asset_id">자산 ID</string>
+    <string name="wd_fee">요금</string>
+    <string name="wd_domain">도메인</string>
+    <string name="wd_confirm_sending_domain">이 도메인 보내기 확인</string>
+    <string name="wd_transfer_two_transactions">도메인 이전은 거래 두 건으로 이루어지므로 잠시 걸립니다. 끝날 때까지 앱을 열어 두세요.</string>
+    <string name="wd_transfer_fee_footer">네트워크가 혼잡하면 빠름 또는 우선을 선택해 더 높은 수수료를 내고 송금이 더 빨리 확인되게 할 수 있습니다. 수수료 금액을 탭하면 직접 수수료를 정할 수 있습니다.</string>
+    <string name="wd_kachat_names_coming_body">KaChat 고유 이름이 여기에 표시됩니다. 이름을 받아 내 이름으로 만들고 프로필 링크로 공유하세요.</string>
+    <string name="wd_primary_set_to">기본 도메인이 %1$s로 설정되었습니다.</string>
+    <string name="wd_transferred_to">%1$s이(가) %2$s(으)로 전송되었습니다.</string>
+    <string name="wd_transfer_submitted">%1$s에 대한 이체가 제출되었습니다.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">한 번도 쓰지 않은 새 주소입니다. 여기로 보낸 Kaspa는 이 계정에 들어오고 지출 잔액에 포함됩니다. .kachat 이름을 제외한 모든 용도에 쓰세요.</string>
+    <string name="pr_where_paid">어디로 받을까요?</string>
+    <string name="pr_fresh_address_note">한 번도 사용하거나 공유한 적 없는 새 주소입니다.</string>
+    <string name="pr_anyone_note_wallet">KaPay나 KaChat에서 열면 이 내용이 채워진 Kaspa 보내기 화면이 열리고, 내 채팅 주소가 만든 요청(그 키로 서명됨)임을 확인할 수 있습니다.</string>
+    <string name="pr_how_much">얼마인가요?</string>
+    <string name="pr_youre_requesting">요청 금액</string>
+    <string name="ma_notify_on_receive">수신 시 알림</string>
+    <string name="ma_notify_on_receive_detail">지출 주소가 다른 사람에게서 Kaspa를 받을 때.</string>
+    <string name="ma_no_spending_addresses">지출 주소 없음</string>
+    <string name="ma_generate_one_below">기본 주소가 아닌 다른 주소에서 송금하려면 아래에서 하나 만드세요.</string>
+    <string name="ma_address_hidden">주소를 숨겼습니다. 주소 표시에서 다시 켤 수 있습니다.</string>
+    <string name="ma_cant_hide">이 주소는 숨길 수 없습니다.</string>
+    <string name="ma_none_found">잔액이나 도메인이 있는 주소를 찾지 못했습니다.</string>
+    <string name="ma_rename_detail">이 주소에 나만의 라벨을 붙입니다.</string>
+    <string name="ma_copy_detail">전체 주소를 클립보드에 복사합니다.</string>
+    <string name="ma_qr_detail">전체 화면. 다른 기기로 스캔할 때 쓰세요.</string>
+    <string name="ma_hide_address">주소 숨기기</string>
+    <string name="ma_hide_detail">이 목록에서 뺍니다. 주소 표시에서 다시 켤 수 있습니다.</string>
+    <string name="contains_domain">도메인 포함</string>
+    <string name="address_visibility">주소 공개 설정</string>
+    <string name="ma_rename_message">알아볼 수 있도록 이 주소에 라벨을 지정하세요.</string>
+    <string name="ma_label">라벨</string>
+    <string name="ma_none_yet">잔액이나 도메인이 있는 주소가 아직 없습니다</string>
+    <string name="ma_scan_note">중간에 빈 곳이 있어도 처음 1,000개 주소를 확인하고, 계속 발견되는 동안 이어서 확인합니다.</string>
+    <string name="ma_close_keep_scanning">닫고 계속 스캔</string>
+    <string name="ma_generate_detail">이 지갑의 다음 미사용 주소를 보여줍니다.</string>
+    <string name="ma_visibility_detail">목록에 넣을 주소를 한 번에 모두 체크하세요.</string>
+    <string name="address_visibility_derive_failed">지금은 이 주소들을 생성할 수 없습니다. 이전 페이지로 가거나 이 화면을 다시 열어 재시도하세요.</string>
+    <string name="compound_utxos_spending_description">이 주소의 UTXO를 합쳐서 이후 보내기에 필요한 입력 수를 줄입니다. 한 번의 거래로 합칠 수 있는 개수에는 한계가 있으므로, UTXO가 매우 많다면 확인된 후 통합을 다시 탭해 계속 줄이세요.</string>
+    <string name="unlock_address_private_key">이 주소의 개인 키를 보려면 잠금을 해제하세요</string>
 </resources>

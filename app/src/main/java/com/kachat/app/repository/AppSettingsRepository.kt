@@ -201,6 +201,11 @@ class AppSettingsRepository @Inject constructor(
         /** The lowercase currency code [KEY_KAPOSTS_DEFAULT_TIP_FIAT] is in (the app's currency
          *  when it was set). */
         val KEY_KAPOSTS_DEFAULT_TIP_FIAT_CURRENCY = stringPreferencesKey("kaposts_default_tip_fiat_currency")
+        /** KaPost Settings > Tips From: the spending address (its index) tips leave from by
+         *  default, the instant tip and the tip sheet's first choice. Unset = the chatting
+         *  address, the only one whose tips count on the post (KAPOSTS_INDEXER.md 5.11); another
+         *  address tips privately (iOS 071e901 `kaPostsDefaultTipSourceIndex`). */
+        val KEY_KAPOSTS_DEFAULT_TIP_SOURCE_INDEX = androidx.datastore.preferences.core.intPreferencesKey("kaposts_default_tip_source_index")
         /** KaPost Settings > Cool down before post: every KaPosts action (post, comment, like,
          *  repost, vote, edit, delete) waits 5 seconds with an Undo before it goes on chain. Off,
          *  they go at once. On by default (iOS `kaPostsCooldownEnabled`). */
@@ -731,6 +736,9 @@ class AppSettingsRepository @Inject constructor(
         amount to (prefs[KEY_KAPOSTS_DEFAULT_TIP_FIAT_CURRENCY] ?: prefs[KEY_CURRENCY] ?: "usd")
     }
 
+    /** See [KEY_KAPOSTS_DEFAULT_TIP_SOURCE_INDEX]: null = the chatting address. */
+    val kaPostsDefaultTipSourceIndex: Flow<Int?> = dataStore.data.map { it[KEY_KAPOSTS_DEFAULT_TIP_SOURCE_INDEX] }
+
     /** See [KEY_KAPOSTS_COOLDOWN_ENABLED]. */
     val kaPostsCooldownEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_COOLDOWN_ENABLED] ?: true }
 
@@ -1198,6 +1206,12 @@ class AppSettingsRepository @Inject constructor(
         it[KEY_KAPOSTS_DEFAULT_TIP_FIAT] = amount
         it[KEY_KAPOSTS_DEFAULT_TIP_FIAT_CURRENCY] = currency
         it.remove(KEY_KAPOSTS_DEFAULT_TIP_SOMPI)
+    }
+
+    /** Tips From: a spending address's index, or null for the chatting address (iOS 071e901). */
+    suspend fun setKaPostsDefaultTipSourceIndex(index: Int?) = dataStore.edit {
+        if (index != null) it[KEY_KAPOSTS_DEFAULT_TIP_SOURCE_INDEX] = index
+        else it.remove(KEY_KAPOSTS_DEFAULT_TIP_SOURCE_INDEX)
     }
 
     suspend fun setKaPostsCooldownEnabled(value: Boolean) = dataStore.edit { it[KEY_KAPOSTS_COOLDOWN_ENABLED] = value }

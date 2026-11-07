@@ -908,7 +908,9 @@ fun SendFromSection(
     LaunchedEffect(source, chattingAddress) {
         currentOnAvailable(null)
         val address = sourceAddress ?: return@LaunchedEffect
-        currentOnAvailable(walletViewModel.addressBalanceSompi(address))
+        // what a send can spend: not coins just spent, held or not yet usable; a failed read
+        // leaves it unknown rather than 0 (iOS 33095ac `withdrawalSpendable`)
+        currentOnAvailable(walletViewModel.withdrawalSpendableSompi(address))
     }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1720,7 +1722,9 @@ fun SendFromCompactRow(
     LaunchedEffect(source, chattingAddress) {
         currentOnAvailable(null)
         val address = sourceAddress ?: return@LaunchedEffect
-        currentOnAvailable(walletViewModel.addressBalanceSompi(address))
+        // what a send can spend: not coins just spent, held or not yet usable; a failed read
+        // leaves it unknown rather than 0 (iOS 33095ac `withdrawalSpendable`)
+        currentOnAvailable(walletViewModel.withdrawalSpendableSompi(address))
     }
     val sourceTitle = when (source) {
         SendSource.Chatting -> "Chatting Address"

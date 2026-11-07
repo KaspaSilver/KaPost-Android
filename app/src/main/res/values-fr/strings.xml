@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">Conservez ceci en lieu sûr. Toute personne disposant de ces mots peut accéder à votre compte.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">Réessayer</string>
+    <string name="kaposts_reply_not_on_network">Cette publication n\'est pas encore sur le réseau, vous ne pouvez donc pas y répondre. Réessayez une fois qu\'elle sera publiée.</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">frais : -------- KAS</string>
     <string name="composer_fee_unknown">frais : -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">Relâchez au-delà de la moitié pour envoyer.</string>
     <string name="swipe_failed">Échec</string>
     <string name="swipe_send_failed_fallback">L\'envoi n\'est pas parti.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">Non confirmé</string>
+    <string name="passphrase_skip_search">Passer la recherche : importer sur l\'adresse #0</string>
+    <string name="passphrase_search_incomplete">La recherche de fonds sur les autres adresses de ce compte n\'a pas abouti, donc Importer utilise l\'adresse #0.</string>
+    <string name="passphrase_search_again">Rechercher à nouveau</string>
+    <string name="nfc_card_reenter_pin">Saisissez à nouveau le PIN</string>
+    <string name="nfc_card_pins_dont_match">Les PIN ne correspondent pas.</string>
+    <string name="send_fee_changed">Les frais de réseau sont maintenant de %1$s KAS, plus que ce qu\'affichait le récapitulatif. Rien n\'a été envoyé : vérifiez les nouveaux frais et balayez à nouveau.</string>
+    <string name="room_no_spendable_funds_yet">Aucun fonds dépensable disponible pour le moment. Attendez les confirmations et réessayez.</string>
+    <string name="coin_unavailable_mining_reward">Récompense de minage, non dépensable ici</string>
+    <string name="coin_unavailable_not_confirmed">Pas encore confirmé</string>
+    <string name="coin_unavailable_just_spent">Tout juste dépensé par une publication ou un envoi</string>
+    <string name="room_not_enough_kas">Pas assez de KAS sur votre adresse de discussion. Ajoutez-en et réessayez.</string>
+    <string name="kaposts_tips_from">Pourboires depuis</string>
+    <string name="kaposts_tip_from_chatting_note">Depuis votre Chatting Address, le pourboire compte sur la publication et vous apparaissez parmi les donateurs.</string>
+    <string name="kaposts_tip_from_private_note">Depuis une autre adresse, le pourboire est privé : l\'auteur le reçoit et le voit dans votre chat, mais il ne compte pas sur la publication et ne vous nomme pas.</string>
+    <string name="kaposts_tips_from_footnote">Les pourboires depuis votre Chatting Address comptent sur la publication et vous apparaissez parmi les donateurs. Depuis une autre adresse, un pourboire est privé : l\'auteur le reçoit et le voit dans votre chat, mais il ne compte pas sur la publication et ne vous nomme pas.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">Vos domaines</string>
+    <string name="primary_domain">Domaine principal</string>
+    <string name="send_domain">Envoyer un domaine</string>
+    <string name="set_as_primary">Définir comme principal</string>
+    <string name="asset_id">ID d\'actif</string>
+    <string name="wd_fee">Frais</string>
+    <string name="wd_domain">Domaine</string>
+    <string name="wd_confirm_sending_domain">Confirmer l\'envoi de ce domaine</string>
+    <string name="wd_transfer_two_transactions">Un transfert de domaine comporte deux transactions, cela prend donc un moment. Gardez l\'app ouverte jusqu\'à la fin.</string>
+    <string name="wd_transfer_fee_footer">Si le réseau est chargé, Rapide ou Prioritaire paie des frais plus élevés pour que votre transfert soit confirmé plus vite. Touchez le montant des frais pour définir des frais personnalisés.</string>
+    <string name="wd_kachat_names_coming_body">Les noms propres à KaChat seront ici : réservez-en un, faites-en votre nom et partagez-le comme lien de profil.</string>
+    <string name="wd_primary_set_to">Domaine principal défini sur %1$s.</string>
+    <string name="wd_transferred_to">%1$s transféré à %2$s.</string>
+    <string name="wd_transfer_submitted">Transfert soumis pour %1$s.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">Une adresse neuve, jamais utilisée. Les Kaspa envoyés ici arrivent sur ce compte et comptent dans votre solde de dépense. Utilisez-la pour tout sauf les noms .kachat.</string>
+    <string name="pr_where_paid">Où voulez-vous être payé ?</string>
+    <string name="pr_fresh_address_note">Une toute nouvelle adresse à vous, jamais utilisée ni communiquée.</string>
+    <string name="pr_anyone_note_wallet">Quiconque l\'ouvre dans KaPay ou KaChat obtient Envoyer des Kaspa pré-rempli, et voit qu\'elle a été créée par votre adresse de chat (signée avec sa clé).</string>
+    <string name="pr_how_much">Combien ?</string>
+    <string name="pr_youre_requesting">Vous demandez</string>
+    <string name="ma_notify_on_receive">Notifier à la réception</string>
+    <string name="ma_notify_on_receive_detail">Quand une adresse de dépense reçoit du Kaspa de la part de quelqu\'un d\'autre.</string>
+    <string name="ma_no_spending_addresses">Aucune adresse de depense</string>
+    <string name="ma_generate_one_below">Générez-en une ci-dessous pour envoyer des paiements depuis une autre adresse que la principale.</string>
+    <string name="ma_address_hidden">Adresse masquée. Réaffichez-la dans Visibilité des adresses.</string>
+    <string name="ma_cant_hide">Cette adresse ne peut pas être masquée.</string>
+    <string name="ma_none_found">Aucune adresse avec un solde ou un domaine trouvée.</string>
+    <string name="ma_rename_detail">Donne à cette adresse une étiquette à vous.</string>
+    <string name="ma_copy_detail">Copie l\'adresse complète dans le presse-papiers.</string>
+    <string name="ma_qr_detail">Plein écran, pour scanner avec un autre appareil.</string>
+    <string name="ma_hide_address">Masquer l\'adresse</string>
+    <string name="ma_hide_detail">La retire de cette liste. Réaffichez-la dans Visibilité des adresses.</string>
+    <string name="contains_domain">Contient un domaine</string>
+    <string name="address_visibility">Visibilité de l\'adresse</string>
+    <string name="ma_rename_message">Donnez une etiquette a cette adresse pour vous aider a la reconnaitre.</string>
+    <string name="ma_label">Libellé</string>
+    <string name="ma_none_yet">Aucune adresse avec un solde ou un domaine pour l\'instant</string>
+    <string name="ma_scan_note">Vérifie les mille premières adresses, même s\'il y a des trous, puis continue tant qu\'il trouve quelque chose.</string>
+    <string name="ma_close_keep_scanning">Fermer et continuer à scanner</string>
+    <string name="ma_generate_detail">Affiche la prochaine adresse inutilisée de ce portefeuille.</string>
+    <string name="ma_visibility_detail">Cochez chaque adresse que vous voulez dans la liste, en une seule fois.</string>
+    <string name="address_visibility_derive_failed">Ces adresses n\'ont pas pu être dérivées pour le moment. Revenez d\'une page en arrière ou rouvrez cet écran pour réessayer.</string>
+    <string name="compound_utxos_spending_description">Regroupe les UTXO de cette adresse pour réduire les entrées dont un futur envoi a besoin. Une seule transaction ne peut en fusionner qu\'un certain nombre à la fois : si cette adresse en a beaucoup, touchez de nouveau Consolider après la confirmation pour continuer à réduire.</string>
+    <string name="unlock_address_private_key">Déverrouillez pour voir la clé privée de cette adresse</string>
 </resources>

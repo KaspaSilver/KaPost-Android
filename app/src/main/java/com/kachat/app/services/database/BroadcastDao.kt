@@ -142,6 +142,16 @@ interface BroadcastDao {
     @Query("SELECT * FROM broadcast_messages WHERE channelName = :channelName AND deliveryStatus = 'pending'")
     suspend fun getPendingMessages(channelName: String): List<BroadcastMessageEntity>
 
+    /** A room's pending rows, and its unconfirmed rows whose id never became a transaction's -
+     *  what the settle looks at (iOS 33095ac `settlePendingMessages`). */
+    @Query("SELECT * FROM broadcast_messages WHERE channelName = :channelName AND (deliveryStatus = 'pending' OR (deliveryStatus = 'unconfirmed' AND substr(id, 1, 8) = 'pending_'))")
+    suspend fun getUnsettledSends(channelName: String): List<BroadcastMessageEntity>
+
+    /** An unconfirmed row's delivered copy arrived: it is sent, at the chain's time (iOS 33095ac
+     *  `insertMessages`). Returns 0 when the row isn't unconfirmed. */
+    @Query("UPDATE broadcast_messages SET deliveryStatus = 'sent', blockTimestamp = :blockTimestamp WHERE id = :id AND deliveryStatus = 'unconfirmed'")
+    suspend fun settleUnconfirmed(id: String, blockTimestamp: Long): Int
+
     /** How many delivered rows match a pending one: same sender and content, sent, and no older
      *  than [sinceMillis] (iOS e5a9b11 `settlePendingMessages`). */
     @Query("SELECT COUNT(*) FROM broadcast_messages WHERE channelName = :channelName AND senderAddress = :senderAddress AND content = :content AND deliveryStatus = 'sent' AND blockTimestamp >= :sinceMillis")

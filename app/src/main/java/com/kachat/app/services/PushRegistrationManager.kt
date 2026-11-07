@@ -51,7 +51,8 @@ import javax.inject.Singleton
  *
  * Beyond the explicit [registerAsync]/[onTokenRefreshed] entry points, the init block observes
  * everything the registration payload is built from — active account, active-contact set,
- * bell-enabled broadcast channels, hidden broadcast senders, and the notifications setting — and
+ * bell-enabled broadcast channels, hidden broadcast senders, the Push Indexer URL, and the
+ * notifications setting — and
  * re-registers (debounced 2s, so an edit burst is one round-trip) whenever any of it changes,
  * mirroring iOS's updateWatchedAddresses triggers (PUSH_NOTIFICATIONS.md) and the "bell toggles
  * re-send registration immediately" contract (the iOS repo's PUSH_EXTENSIONS.md §1). The same observer
@@ -115,6 +116,9 @@ class PushRegistrationManager @Inject constructor(
         /** The bell beside Follow on KaPosts (PUSH_EXTENSIONS.md 3a): a change re-registers,
          *  like iOS's KaPostsWatchStore.toggle. */
         val kaPostsWatchAuthors: Set<String>,
+        /** The Push Indexer URL: a new one (Settings > Connection, or the network switch)
+         *  registers with that service, and a blank one leaves the old service. */
+        val pushIndexerUrl: String,
     )
 
     /** The five per-kind KaPosts switches as one flow, so a flip of any of them is one input. */
@@ -146,6 +150,7 @@ class PushRegistrationManager @Inject constructor(
                 kaPostsKindsFlow,
                 settings.groupSilent,
                 kaPostsWatchStore.watching,
+                settings.pushIndexerUrl,
             ) { values ->
                 @Suppress("UNCHECKED_CAST")
                 Snapshot(
@@ -158,6 +163,7 @@ class PushRegistrationManager @Inject constructor(
                     kaPostsKinds = values[6] as KaPostsNotifyKinds,
                     silentGroups = values[7] as Set<String>,
                     kaPostsWatchAuthors = values[8] as Set<String>,
+                    pushIndexerUrl = values[9] as String,
                 )
             }
                 .distinctUntilChanged()
@@ -194,6 +200,48 @@ class PushRegistrationManager @Inject constructor(
         scope.launch {
             runCatching { register(null) }
                 .onFailure { Log.w(TAG, "push registration failed: ${it.message}") }
+        }
+    }
+
+    /**
+     * Outcome of [register]. [Unchanged] means the push service already holds exactly this
+     * snapshot (fingerprint skip), which counts as registered; [NotRun] is a guard that stopped
+     * the attempt before any request was sent.
+     */
+    private sealed interface RegisterOutcome {
+        data object Registered : RegisterOutcome
+        data object Unchanged : RegisterOutcome
+        data class NotRun(val reason: String) : RegisterOutcome
+    }
+
+    /**
+     * A registration the caller waits on: Settings turning push on (iOS
+     * requestPermissionAndRegisterAndWaitForIndexer, which waits on the registration it starts
+     * itself). The fingerprint is forgotten first so the request really goes out, and the real
+     * outcome comes back: a failure when no request could be sent (signed out, no push service
+     * on this network, no FCM token) or the push service refused it. [PushState.setActive] is
+     * worked out again either way.
+     */
+    suspend fun registerNow(): Result<Unit> = withContext(Dispatchers.IO) {
+        lastRegisteredFingerprint = null
+        val outcome = try {
+            register(null)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            pushState.setActive(false)
+            return@withContext Result.failure(e)
+        }
+        when (outcome) {
+            RegisterOutcome.Registered, RegisterOutcome.Unchanged -> {
+                pushState.setActive(NotificationManagerCompat.from(context).areNotificationsEnabled())
+                Result.success(Unit)
+            }
+            is RegisterOutcome.NotRun -> {
+                pushState.setActive(false)
+                Log.w(TAG, "push registration not sent: ${outcome.reason}")
+                Result.failure(IllegalStateException(outcome.reason))
+            }
         }
     }
 
@@ -384,18 +432,19 @@ class PushRegistrationManager @Inject constructor(
         okhttp3.OkHttpClient.Builder().callTimeout(20, java.util.concurrent.TimeUnit.SECONDS).build()
     }
 
-    private suspend fun register(tokenOverride: String?) = mutex.withLock {
-        if (!walletManager.hasWallet()) return@withLock
+    private suspend fun register(tokenOverride: String?): RegisterOutcome = mutex.withLock {
+        if (!walletManager.hasWallet()) return@withLock RegisterOutcome.NotRun("no wallet")
         // Signed out: nothing registers until someone signs in (iOS sets every service to nil
         // while logged out). Without this a relaunch after Log Out registered push again.
-        if (walletManager.isLoggedOut) return@withLock
-        if (!settings.notificationsEnabled.first()) return@withLock
-        if (settings.pushIndexerUrl.first().isBlank()) {
+        if (walletManager.isLoggedOut) return@withLock RegisterOutcome.NotRun("signed out")
+        if (!settings.notificationsEnabled.first()) return@withLock RegisterOutcome.NotRun("notifications are off")
+        val pushBase = settings.pushIndexerUrl.first()
+        if (pushBase.isBlank()) {
             withContext(Dispatchers.IO) { leavePushServiceOfOtherNetworkIfNeeded() }
-            return@withLock
+            return@withLock RegisterOutcome.NotRun("no push service on this network")
         }
 
-        val api = pushApiOrNull() ?: return@withLock
+        val api = pushApiOrNull() ?: return@withLock RegisterOutcome.NotRun("no push service on this network")
         val token = try {
             (tokenOverride ?: FirebaseMessaging.getInstance().token.await()).trim()
         } catch (e: Exception) {
@@ -405,9 +454,9 @@ class PushRegistrationManager @Inject constructor(
         }
         if (token.isEmpty()) {
             pushState.recordAttempt("register", succeeded = false, error = "FCM returned an empty token", fcmTokenPresent = false)
-            return@withLock
+            return@withLock RegisterOutcome.NotRun("FCM returned an empty token")
         }
-        withContext(Dispatchers.IO) { unregisterFromSupersededServiceIfNeeded(token, settings.pushIndexerUrl.first()) }
+        withContext(Dispatchers.IO) { unregisterFromSupersededServiceIfNeeded(token, pushBase) }
 
         val privateKey = walletManager.getPrivateKeyBytes()
         // Kaspa addresses are canonical lowercase bech32, so this already matches the server's
@@ -443,9 +492,9 @@ class PushRegistrationManager @Inject constructor(
         // one actual registration.
         val fingerprint = registrationFingerprint(
             token, walletAddress, watchedAddresses, aliases, broadcastChannels, hiddenSenders, kaPostsPubkey,
-            watchedGroupIds, kaPostsKinds, kaPostsWatchAuthors,
+            watchedGroupIds, kaPostsKinds, kaPostsWatchAuthors, pushBase,
         )
-        if (fingerprint == lastRegisteredFingerprint) return@withLock
+        if (fingerprint == lastRegisteredFingerprint) return@withLock RegisterOutcome.Unchanged
 
         try {
             submitRegistration(
@@ -475,12 +524,13 @@ class PushRegistrationManager @Inject constructor(
         pushState.setActive(NotificationManagerCompat.from(context).areNotificationsEnabled())
         pushState.recordAttempt("register", succeeded = true, error = null, fcmTokenPresent = true)
         // The service this device is registered with - withdrawn from on a network without one.
-        pushPrefs.edit().putString(KEY_REGISTERED_BASE_URL, settings.pushIndexerUrl.first()).putBoolean(KEY_LEFT, false).apply()
+        pushPrefs.edit().putString(KEY_REGISTERED_BASE_URL, pushBase).putBoolean(KEY_LEFT, false).apply()
         Log.i(
             TAG,
             "push registered (watched=${watchedAddresses.size}, aliases=${aliases.size}, groups=${watchedGroupIds.size}, " +
                 "channels=${broadcastChannels.size}, hiddenRooms=${hiddenSenders.size}, active=${pushState.isActive})"
         )
+        RegisterOutcome.Registered
     }
 
     private suspend fun submitRegistration(
@@ -619,6 +669,8 @@ class PushRegistrationManager @Inject constructor(
         watchedGroupIds: List<String>,
         kaPostsKinds: KaPostsNotifyKinds,
         kaPostsWatchAuthors: List<String>,
+        /** The service it went to: the same payload at a new Push Indexer URL is a new registration. */
+        pushBase: String,
     ): String = sha256Hex(
         listOf(
             token,
@@ -631,6 +683,7 @@ class PushRegistrationManager @Inject constructor(
             canonicalizeAddresses(watchedGroupIds).joinToString(","),
             kaPostsKinds.fingerprint(),
             kaPostsWatchAuthors.sorted().joinToString("+"),
+            pushBase.trim().trimEnd('/').lowercase(),
         ).joinToString("\n")
     )
 

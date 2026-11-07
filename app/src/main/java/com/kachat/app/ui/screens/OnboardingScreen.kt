@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.kachat.app.R
 import com.kachat.app.models.SourceWalletOption
@@ -79,10 +80,22 @@ fun OnboardingScreen(viewModel: WalletViewModel) {
     // The recovery screen's "Enter 12 or 24 Words" opens Import over Welcome (iOS
     // WalletRecoveryView: the same flow onboarding uses, from the source wallet on).
     val openImport by viewModel.openImportAfterRecovery.collectAsState()
+    // Set once that Import is on screen: leaving it for Welcome without importing goes back to
+    // the recovery screen (iOS: Back from its pushed import returns to WalletRecoveryView).
+    var recoveryImportOpen by remember { mutableStateOf(false) }
     LaunchedEffect(openImport) {
         if (openImport) {
             viewModel.consumeOpenImportAfterRecovery()
             navController.navigate("import_source")
+            recoveryImportOpen = true
+        }
+    }
+    val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+    LaunchedEffect(currentRoute) {
+        // Read from the controller, not the (possibly lagging) state, before leaving.
+        if (recoveryImportOpen && navController.currentDestination?.route == "welcome") {
+            recoveryImportOpen = false
+            viewModel.leaveRecoveryImport()
         }
     }
     NavHost(navController = navController, startDestination = "welcome") {
@@ -397,7 +410,9 @@ fun WelcomeScreen(
                                 notBackedUp = account.address in backupPending,
                                 enabled = !isCreatingAccount,
                                 onLogin = { if (!viewModel.isCreatingAccount.value) viewModel.login(account.address) },
-                                onRename = { newName -> viewModel.renameAccount(account.address, newName) },
+                                onRename = { newName ->
+                                    if (!viewModel.isCreatingAccount.value) viewModel.renameAccount(account.address, newName)
+                                },
                                 onDelete = { alsoRemoveBackup ->
                                     if (!viewModel.isCreatingAccount.value) viewModel.deleteWallet(account.address, alsoRemoveBackup)
                                 },
@@ -1105,7 +1120,9 @@ fun ImportWalletScreen(
                         // iOS's pasteSeedPhrase: a refusal goes up in the "Error" alert, a
                         // success is a haptic and the filled slots.
                         val raw = pasteClipboard?.primaryClip?.getItemAt(0)?.coerceToText(pasteContext)?.toString()
-                        if (raw == null) {
+                        // A clip with no text (an image, a blank copy) is nothing to paste either,
+                        // and the clipboard is left alone (iOS: no string on the pasteboard).
+                        if (raw.isNullOrBlank()) {
                             pasteError = "Nothing to paste."
                             return@OutlinedButton
                         }
@@ -1305,6 +1322,11 @@ fun PassphraseSetupScreen(
                 findAddresses = findAddresses,
                 onSelectAddressIndex = onSelectAddressIndex,
                 onSubmit = { submitFromEntry() },
+                // Import on address #0 without waiting for the funds search (iOS 33095ac).
+                onSkipSearch = {
+                    onSelectAddressIndex(0)
+                    submitFromEntry()
+                },
                 onExplain = {
                     explainerReturnStep = PassphraseStep.ENTRY
                     step = PassphraseStep.EXPLAINER
@@ -1453,6 +1475,7 @@ private fun PassphraseEntryStep(
     findAddresses: (suspend (String) -> List<com.kachat.app.models.FoundChattingAddress>?)?,
     onSelectAddressIndex: (Int) -> Unit,
     onSubmit: () -> Unit,
+    onSkipSearch: () -> Unit,
     onExplain: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -1564,6 +1587,24 @@ private fun PassphraseEntryStep(
                 }
             }
 
+            // The search is a network round trip: never the only way forward (iOS 33095ac).
+            if (mode == PassphraseMode.IMPORT && isScanningAddresses && passphrase.isNotEmpty() && !isBusy) {
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    stringResource(R.string.passphrase_skip_search),
+                    // iOS: subheadline semibold in the accent.
+                    color = KaspaTeal,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(onClick = onSkipSearch)
+                        .padding(vertical = 4.dp),
+                )
+            }
+
             // Creating opens on this screen, so the explainer is linked here too (iOS d816404).
             Spacer(Modifier.height(20.dp))
             Text(
@@ -1593,6 +1634,10 @@ private fun PassphraseEntryStep(
  * it checks the first addresses on the identity chain, picks the first with funds, and lets the
  * user pick another (iOS 9653c04 `PassphraseAddressPreview`).
  */
+/** How long Import waits for the funds search before letting go and importing onto #0 (iOS
+ *  33095ac `searchTimeoutNanoseconds`). */
+private const val PASSPHRASE_SEARCH_TIMEOUT_MS = 12_000L
+
 @Composable
 internal fun PassphraseAddressPreview(
     passphrase: String,
@@ -1613,15 +1658,20 @@ internal fun PassphraseAddressPreview(
     var balanceFailed by remember { mutableStateOf(false) }
     var foundAddresses by remember { mutableStateOf(emptyList<com.kachat.app.models.FoundChattingAddress>()) }
     var selectedIndex by remember { mutableStateOf(0) }
+    // The funds search failed or ran out of time: Import goes to #0, and the screen says so
+    // (iOS 33095ac). Search Again bumps [searchRun], which runs the lookup once more.
+    var searchIncomplete by remember { mutableStateOf(false) }
+    var searchRun by remember { mutableStateOf(0) }
     fun select(found: com.kachat.app.models.FoundChattingAddress) {
         selectedIndex = found.index
         onSelectIndex(found.index)
         shownAddress = found.address
         balanceSompi = found.balanceSompi
     }
-    LaunchedEffect(passphrase) {
+    LaunchedEffect(passphrase, searchRun) {
         if (findAddresses != null) onScanningChange(true)
         try {
+            searchIncomplete = false
             balanceSompi = null
             balanceFailed = false
             foundAddresses = emptyList()
@@ -1637,10 +1687,13 @@ internal fun PassphraseAddressPreview(
             // a further pause, so only the passphrase someone stopped typing is looked up
             kotlinx.coroutines.delay(450)
             if (findAddresses != null) {
-                val found = findAddresses(passphrase)
+                // A slow or unreachable node lets Import go after the timeout, onto #0, and says
+                // so; an answer that comes later is dropped (iOS 33095ac).
+                val found = kotlinx.coroutines.withTimeoutOrNull(PASSPHRASE_SEARCH_TIMEOUT_MS) { findAddresses(passphrase) }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val first = found?.firstOrNull { it.balanceSompi > 0 } ?: found?.firstOrNull()
                 if (found == null || first == null) {
+                    searchIncomplete = true
                     balanceFailed = true
                 } else {
                     foundAddresses = found
@@ -1746,6 +1799,24 @@ internal fun PassphraseAddressPreview(
                     )
                 }
             }
+        }
+        if (searchIncomplete) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                stringResource(R.string.passphrase_search_incomplete),
+                color = colors.warning,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(R.string.passphrase_search_again),
+                color = KaspaTeal,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { searchRun++ },
+            )
         }
         Spacer(Modifier.height(6.dp))
         Text(

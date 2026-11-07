@@ -985,6 +985,7 @@
     <string name="store_this_in_a_safe_place_anyone_with_these_words">احفظ هذا في مكان آمن. أي شخص يمتلك هذه الكلمات يمكنه الوصول إلى حسابك.</string>
     <!-- KaPosts: Retry and the Profile title in iOS's own words (shared retry/profile differ in some languages) -->
     <string name="kaposts_retry">إعادة المحاولة</string>
+    <string name="kaposts_reply_not_on_network">هذا المنشور ليس على الشبكة بعد، لذا لا يمكن الرد عليه. حاول مرة أخرى بعد نشره.</string>
     <!-- Composer fee pill (iOS feeBubble) -->
     <string name="composer_fee_estimating">الرسوم: -------- KAS</string>
     <string name="composer_fee_unknown">الرسوم: -- KAS</string>
@@ -1400,4 +1401,67 @@
     <string name="swipe_hint_send">أفلت بعد المنتصف للإرسال.</string>
     <string name="swipe_failed">فشل</string>
     <string name="swipe_send_failed_fallback">لم يتم الإرسال.</string>
+    <!-- iOS 33095ac: accounts and security -->
+    <string name="delivery_not_confirmed">لم يتم التأكيد</string>
+    <string name="passphrase_skip_search">تخطي البحث: الاستيراد على العنوان #0</string>
+    <string name="passphrase_search_incomplete">لم يكتمل البحث عن رصيد في عناوين هذا الحساب الأخرى، لذا يستخدم الاستيراد العنوان #0.</string>
+    <string name="passphrase_search_again">ابحث مرة أخرى</string>
+    <string name="nfc_card_reenter_pin">أعد إدخال رمز PIN</string>
+    <string name="nfc_card_pins_dont_match">رمزا PIN غير متطابقين.</string>
+    <string name="send_fee_changed">أصبحت رسوم الشبكة %1$s KAS، أكثر مما عرضته المراجعة. لم يُرسل شيء: تحقق من الرسوم الجديدة واسحب مرة أخرى.</string>
+    <string name="room_no_spendable_funds_yet">لا توجد أموال قابلة للإنفاق حتى الآن. انتظر التأكيدات وحاول مرة أخرى.</string>
+    <string name="coin_unavailable_mining_reward">مكافأة تعدين، لا يمكن إنفاقها هنا</string>
+    <string name="coin_unavailable_not_confirmed">لم يتأكد بعد</string>
+    <string name="coin_unavailable_just_spent">أُنفق للتو في منشور أو إرسال</string>
+    <string name="room_not_enough_kas">لا يوجد KAS كافٍ في عنوان الدردشة. أضف بعضه وحاول مرة أخرى.</string>
+    <string name="kaposts_tips_from">الإكرامية من</string>
+    <string name="kaposts_tip_from_chatting_note">الإكرامية من Chatting Address تُحسب على المنشور، وتظهر بين من قدّموا إكراميات.</string>
+    <string name="kaposts_tip_from_private_note">الإكرامية من عنوان آخر خاصة: يستلمها الكاتب ويراها في محادثتكما، لكنها لا تُحسب على المنشور ولا تذكر اسمك.</string>
+    <string name="kaposts_tips_from_footnote">الإكراميات من Chatting Address تُحسب على المنشور، وتظهر بين من قدّموا إكراميات. الإكرامية من عنوان آخر خاصة: يستلمها الكاتب ويراها في محادثتكما، لكنها لا تُحسب على المنشور ولا تذكر اسمك.</string>
+    <!-- Wallet > Your Domains (iOS 071e901 WalletDomainViews) -->
+    <string name="your_domains">نطاقاتك</string>
+    <string name="primary_domain">النطاق الأساسي</string>
+    <string name="send_domain">إرسال نطاق</string>
+    <string name="set_as_primary">تعيين كاسم أساسي</string>
+    <string name="asset_id">معرف الأصول</string>
+    <string name="wd_fee">مصاريف</string>
+    <string name="wd_domain">اِختِصاص</string>
+    <string name="wd_confirm_sending_domain">تأكيد إرسال هذا النطاق</string>
+    <string name="wd_transfer_two_transactions">نقل النطاق يتم عبر معاملتين، لذا سيستغرق لحظة. أبقِ التطبيق مفتوحًا حتى ينتهي.</string>
+    <string name="wd_transfer_fee_footer">إذا كانت الشبكة مزدحمة، فإن «سريع» أو «أولوية» يدفع رسومًا أعلى لتتأكد معاملتك أسرع. اضغط على مبلغ الرسوم لتحديد رسوم مخصصة.</string>
+    <string name="wd_kachat_names_coming_body">ستكون أسماء KaChat الخاصة هنا: احجز اسمًا، واجعله اسمك، وشاركه كرابط لملفك.</string>
+    <string name="wd_primary_set_to">تم ضبط النطاق الأساسي على %1$s.</string>
+    <string name="wd_transferred_to">تم نقل %1$s إلى %2$s.</string>
+    <string name="wd_transfer_submitted">تم إرسال النقل لـ %1$s.</string>
+    <!-- Wallet: KaPay's full wallet (iOS 071e901) -->
+    <string name="receive_fresh_subtitle">عنوان جديد لم يُستخدم من قبل. ما يُرسل إليه من Kaspa يصل إلى هذا الحساب ويُحسب في رصيد الإنفاق. استخدمه لكل شيء عدا أسماء ‎.kachat.</string>
+    <string name="pr_where_paid">أين تريد أن تستلم الدفعة؟</string>
+    <string name="pr_fresh_address_note">عنوان جديد تمامًا لك لم يُستخدم أو يُشارك من قبل.</string>
+    <string name="pr_anyone_note_wallet">من يفتحه في KaPay أو KaChat يحصل على إرسال كاسبا معبأً بهذه البيانات، ويرى أنه صادر عن عنوان الدردشة الخاص بك (موقّع بمفتاحه).</string>
+    <string name="pr_how_much">كم؟</string>
+    <string name="pr_youre_requesting">أنت تطلب</string>
+    <string name="ma_notify_on_receive">إشعار عند الاستلام</string>
+    <string name="ma_notify_on_receive_detail">عندما يستلم عنوان إنفاق Kaspa من شخص آخر.</string>
+    <string name="ma_no_spending_addresses">لا توجد عناوين إنفاق</string>
+    <string name="ma_generate_one_below">أنشئ عنوانًا أدناه لإرسال المدفوعات من عنوان غير عنوانك الرئيسي.</string>
+    <string name="ma_address_hidden">تم إخفاء العنوان. أعد إظهاره من ظهور العناوين.</string>
+    <string name="ma_cant_hide">لا يمكن إخفاء هذا العنوان.</string>
+    <string name="ma_none_found">لم يُعثر على عناوين برصيد أو نطاق.</string>
+    <string name="ma_rename_detail">يعطي هذا العنوان تسمية خاصة بك.</string>
+    <string name="ma_copy_detail">ينسخ العنوان كاملًا إلى الحافظة.</string>
+    <string name="ma_qr_detail">ملء الشاشة، للمسح بجهاز آخر.</string>
+    <string name="ma_hide_address">إخفاء العنوان</string>
+    <string name="ma_hide_detail">يزيله من هذه القائمة. أعد إظهاره من ظهور العناوين.</string>
+    <string name="contains_domain">يحتوي على نطاق</string>
+    <string name="address_visibility">ظهور العنوان</string>
+    <string name="ma_rename_message">أعطِ هذا العنوان تسمية لمساعدتك على التعرف عليه.</string>
+    <string name="ma_label">تسمية</string>
+    <string name="ma_none_yet">لا توجد عناوين بها رصيد أو نطاق بعد</string>
+    <string name="ma_scan_note">يفحص أول ألف عنوان مهما كانت الفجوات، ثم يواصل ما دام يجد المزيد.</string>
+    <string name="ma_close_keep_scanning">إغلاق ومواصلة الفحص</string>
+    <string name="ma_generate_detail">يعرض العنوان التالي غير المستخدم في هذه المحفظة.</string>
+    <string name="ma_visibility_detail">حدّد كل عنوان تريده في القائمة دفعة واحدة.</string>
+    <string name="address_visibility_derive_failed">تعذّر استخراج هذه العناوين الآن. ارجع صفحة أو أعد فتح هذه الشاشة للمحاولة مرة أخرى.</string>
+    <string name="compound_utxos_spending_description">يدمج UTXOs في هذا العنوان لتقليل المدخلات التي يحتاجها أي إرسال لاحق. لا تستطيع معاملة واحدة دمج سوى عدد محدود في المرة، فإذا كان لدى هذا العنوان عدد كبير جدًا، فاضغط على دمج مرة أخرى بعد التأكيد لمواصلة التقليل.</string>
+    <string name="unlock_address_private_key">افتح القفل لعرض المفتاح الخاص لهذا العنوان</string>
 </resources>
