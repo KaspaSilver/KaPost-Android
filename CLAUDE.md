@@ -165,6 +165,16 @@ which is never written to the card. A new PIN is typed twice (iOS 33095ac). Impo
 from NFC Card; an account already saved here keeps its name. Android has no system
 scan sheet, so the app draws `NfcScanSheet` while reader mode runs.
 
+## KaPost links in rooms (as iOS 23920c8)
+
+A post link (`kachat://kapost/<id>`, `kaposts://kapost/<id>` or `https://kachat.app/post/<id>`) in a
+room shows as a card (`KaChatInternalLinkCard` in `LinkPreviewCard.kt`) with the poster and the
+post's text; a tap opens the post. The same card as KaChat's (owner's call, 2026-11-07): the KNS
+domain or `.kachat` name first, then a contact name; the text on one line with control and
+direction marks gone, 300 characters, three lines; "A post on KaPost" until it loads; "Shared a
+KaPost" in the room list (`NextcloudShareSniff.linkSafePreview`). `KaPostLinkPreviewService` reads
+the post from the chain and asks again for one it couldn't find after 5 minutes.
+
 ## Moderation (as iOS 9e22075)
 
 - Terms: `KaChatApp` shows `TermsAcceptanceScreen` until `KaPostTerms.CURRENT_VERSION` is agreed to

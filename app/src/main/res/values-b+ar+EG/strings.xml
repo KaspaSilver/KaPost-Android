@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">مقدرناش نستخرج العناوين دي دلوقتي. ارجع صفحة أو افتح الشاشة دي تاني علشان تحاول.</string>
     <string name="compound_utxos_spending_description">بيدمج الـ UTXOs اللي في العنوان ده علشان يقلل المدخلات اللي أي إرسال جاي محتاجها. المعاملة الواحدة تقدر تدمج عدد محدود بس مرة واحدة، فلو العنوان ده فيه عدد كبير جدًا، اضغط على دمج تاني بعد ما تتأكد علشان تكمّل التقليل.</string>
     <string name="unlock_address_private_key">افتح القفل علشان تشوف المفتاح الخاص للعنوان ده</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">بوست على KaPost</string>
+    <string name="kapost_link_card_tap_to_open">دوس عشان تفتحه في KaPost.</string>
+    <string name="kapost_link_shared">شارك بوست من KaPost</string>
 </resources>

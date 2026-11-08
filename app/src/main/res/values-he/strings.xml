@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">לא ניתן היה לגזור את הכתובות האלה כרגע. חזרו עמוד אחד אחורה או פתחו את המסך מחדש כדי לנסות שוב.</string>
     <string name="compound_utxos_spending_description">מאחד את ה-UTXO של הכתובת הזו כדי להפחית את הקלטים שיידרשו בשליחה עתידית. עסקה אחת יכולה לאחד רק כמות מוגבלת בכל פעם, ולכן אם בכתובת הזו יש מספר גדול מאוד, הקישו שוב על איחוד לאחר האישור כדי להמשיך להפחית.</string>
     <string name="unlock_address_private_key">בטל נעילה כדי לראות את המפתח הפרטי של הכתובת הזו</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">פוסט ב-KaPost</string>
+    <string name="kapost_link_card_tap_to_open">הקישו כדי לפתוח אותו ב-KaPost.</string>
+    <string name="kapost_link_shared">שיתף פוסט מ-KaPost</string>
 </resources>

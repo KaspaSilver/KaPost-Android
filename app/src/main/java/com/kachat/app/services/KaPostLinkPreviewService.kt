@@ -38,9 +38,10 @@ class KaPostLinkPreviewService @Inject constructor(
         if (settings.childModeEnabled.first()) return
         val record = chainReader.fetch(txId)
         if (record == null) {
-            unresolvable.add(txId)
+            synchronized(inFlight) { unresolvable[txId] = System.currentTimeMillis() }
             return
         }
+        synchronized(inFlight) { unresolvable.remove(txId) }
         val address = KaPostsService.kaspaAddressFromPubkey(record.authorPubkey)
         // Paint the post immediately with whatever name is already known, then upgrade it if the
         // author has a KNS domain nobody has looked up yet. The text is the point of the card;
@@ -67,14 +68,18 @@ class KaPostLinkPreviewService @Inject constructor(
             .firstNotNullOfOrNull { asset -> asset.assetId?.let { knsService.getProfile(it)?.avatarUrl } }
 
         val current = previews.value[txId] ?: return
-        // A contact alias the user set themselves still wins over the domain.
-        val name = if (aliasFor(address) != null) current.authorName
-            else activeName?.let { displayKasName(it) } ?: current.authorName
+        // The KNS domain comes first, as on KaChat's card (iOS 23920c8).
+        val name = activeName?.let { displayKasName(it) } ?: current.authorName
         publish(txId, current.copy(authorName = name, authorAvatarUrl = avatar))
     }
 
+    /** The poster as KaChat's card names them (iOS 23920c8 `knownName`): their `.kachat` name,
+     *  else their contact name, else the tail of the address. A KNS domain, looked up after,
+     *  comes before all of them. */
     private suspend fun localName(address: String?): String? {
         if (address.isNullOrEmpty()) return null
+        com.kachat.app.services.kachatnames.KachatNamesRegistry.cachedIdentityOf(address)?.label
+            ?.takeIf { it.isNotBlank() }?.let { return it }
         aliasFor(address)?.let { return displayKasName(it) }
         return address.takeLast(10)
     }
@@ -91,9 +96,25 @@ class KaPostLinkPreviewService @Inject constructor(
     /** A name as it is shown: a KNS domain keeps its ".kas", which is part of the name. */
     private fun displayKasName(name: String): String = name.trim()
 
+    /** The post's text on one card: line breaks as spaces, control and direction marks (the
+     *  KaChat marker U+2060 among them) gone, at most 300 characters. The same as KaChat's card
+     *  (iOS 23920c8). */
     private fun snippet(text: String): String {
-        val trimmed = text.trim()
-        return if (trimmed.length > SNIPPET_MAX_LENGTH) trimmed.take(SNIPPET_MAX_LENGTH) + "…" else trimmed
+        val flat = text.replace("\r\n", " ").replace('\n', ' ').replace('\r', ' ')
+        val kept = StringBuilder(flat.length)
+        var i = 0
+        while (i < flat.length) {
+            val cp = flat.codePointAt(i)
+            val type = Character.getType(cp)
+            if (type != Character.CONTROL.toInt() && type != Character.FORMAT.toInt()) kept.appendCodePoint(cp)
+            i += Character.charCount(cp)
+        }
+        val trimmed = kept.toString().trim()
+        return if (trimmed.codePointCount(0, trimmed.length) > SNIPPET_MAX_LENGTH) {
+            trimmed.substring(0, trimmed.offsetByCodePoints(0, SNIPPET_MAX_LENGTH)) + "…"
+        } else {
+            trimmed
+        }
     }
 
     private fun publish(txId: String, preview: Preview) {
@@ -121,7 +142,10 @@ class KaPostLinkPreviewService @Inject constructor(
     )
 
     companion object {
-        private const val SNIPPET_MAX_LENGTH = 240
+        private const val SNIPPET_MAX_LENGTH = 300
+        /** A post the chain had nothing for is asked again after this (iOS 23920c8 `retryAfter`):
+         *  a post just made, or a node that was down, can turn up. */
+        private const val RETRY_AFTER_MS = 5 * 60 * 1000L
         private const val LIMIT = 512
         private const val AVATAR_LOOKUP_LIMIT = 3
 
@@ -134,10 +158,11 @@ class KaPostLinkPreviewService @Inject constructor(
         private val inFlight = mutableSetOf<String>()
 
         /**
-         * Ids the chain had nothing for. Retrying on every scroll would hammer the REST API for a
-         * post that is never going to resolve - a mistyped link, a pruned node, another app's tx.
+         * Ids the chain had nothing for, and when. Retrying on every scroll would hammer the REST
+         * API for a post that is never going to resolve - a mistyped link, a pruned node, another
+         * app's tx - so one is asked again only after [RETRY_AFTER_MS].
          */
-        private val unresolvable = mutableSetOf<String>()
+        private val unresolvable = mutableMapOf<String, Long>()
 
         /**
          * Safe to call on every composition: an entry already held, a fetch already running and
@@ -146,7 +171,9 @@ class KaPostLinkPreviewService @Inject constructor(
         suspend fun load(txId: String) {
             if (txId.isEmpty() || previews.value.containsKey(txId)) return
             synchronized(inFlight) {
-                if (txId in unresolvable || !inFlight.add(txId)) return
+                val missedAt = unresolvable[txId]
+                if (missedAt != null && System.currentTimeMillis() - missedAt < RETRY_AFTER_MS) return
+                if (!inFlight.add(txId)) return
             }
             try {
                 instance?.resolve(txId)

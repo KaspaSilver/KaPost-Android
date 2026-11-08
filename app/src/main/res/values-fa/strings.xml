@@ -1491,4 +1491,8 @@
     <string name="address_visibility_derive_failed">این آدرس‌ها فعلاً قابل استخراج نیستند. یک صفحه برگردید یا این صفحه را دوباره باز کنید تا دوباره امتحان شود.</string>
     <string name="compound_utxos_spending_description">UTXOهای این آدرس را ادغام می‌کند تا ورودی‌های لازم برای ارسال‌های بعدی کمتر شود. یک تراکنش فقط تعداد محدودی را می‌تواند یکجا ادغام کند؛ اگر این آدرس تعداد بسیار زیادی دارد، بعد از تأیید دوباره روی ادغام ضربه بزنید تا کمتر هم شود.</string>
     <string name="unlock_address_private_key">برای دیدن کلید خصوصی این آدرس قفل را باز کنید</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">یک پست در KaPost</string>
+    <string name="kapost_link_card_tap_to_open">برای باز کردن در KaPost ضربه بزنید.</string>
+    <string name="kapost_link_shared">یک پست KaPost را به اشتراک گذاشت</string>
 </resources>

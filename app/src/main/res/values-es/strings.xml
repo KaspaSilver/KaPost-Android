@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">Estas direcciones no se pudieron derivar ahora mismo. Vuelve una página atrás o reabre esta pantalla para reintentar.</string>
     <string name="compound_utxos_spending_description">Combina los UTXOs de esta dirección para reducir las entradas que necesitará un envío futuro. Una sola transacción solo puede unir una cantidad limitada a la vez, así que si esta dirección tiene muchísimos, toca Consolidar otra vez después de que se confirme para seguir reduciéndolos.</string>
     <string name="unlock_address_private_key">Desbloquea para ver la clave privada de esta dirección</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">Una publicación en KaPost</string>
+    <string name="kapost_link_card_tap_to_open">Toca para abrirla en KaPost.</string>
+    <string name="kapost_link_shared">Compartió una publicación de KaPost</string>
 </resources>

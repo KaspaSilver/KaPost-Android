@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">暂时无法推导出这些地址。请返回上一页，或重新打开此页面再试。</string>
     <string name="compound_utxos_spending_description">合并此地址的 UTXO，以减少以后发送所需的输入数量。单笔交易一次能合并的数量有限，所以如果数量非常多，请在确认后再次轻点“合并”，继续减少。</string>
     <string name="unlock_address_private_key">解锁以查看此地址的私钥</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">KaPost 上的帖子</string>
+    <string name="kapost_link_card_tap_to_open">轻点以在 KaPost 中打开。</string>
+    <string name="kapost_link_shared">分享了一条 KaPost 帖子</string>
 </resources>

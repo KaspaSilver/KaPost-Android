@@ -507,7 +507,7 @@ fun BroadcastListScreen(
                         PublicChatRow(
                             channelName = channel.channelName,
                             notifyOff = !channel.notifyEnabled,
-                            preview = last?.let { "${senderName(it.senderAddress)}: ${publicRoomPreview(it.content)}" },
+                            preview = last?.let { "${senderName(it.senderAddress)}: ${publicRoomPreview(it.content, stringResource(R.string.kapost_link_shared))}" },
                             emptyText = "No messages yet",
                             timeText = last?.let { publicRoomTime(it.blockTimestamp) },
                             unread = summary?.unreadCount ?: 0,
@@ -965,7 +965,7 @@ private fun PublicChatRow(
 
 /** One line of a room's newest message: replies, voice notes and links read as what they are,
  *  never as their raw JSON or a tappable link (the same rules as the chat lists). */
-private fun publicRoomPreview(raw: String): String {
+private fun publicRoomPreview(raw: String, sharedKaPostText: String): String {
     // A reply reads as its own text (iOS `MessageReplyCodec.previewText`), then the rules below.
     val content = com.kachat.app.util.MessageReply.parseOrNull(raw)?.text ?: raw
     com.kachat.app.util.InlineMediaSniff.mimeType(content)?.let { mime ->
@@ -976,7 +976,7 @@ private fun publicRoomPreview(raw: String): String {
             else -> "📎 File"
         }
     }
-    return com.kachat.app.util.NextcloudShareSniff.linkSafePreview(content)
+    return com.kachat.app.util.NextcloudShareSniff.linkSafePreview(content, sharedKaPostText)
 }
 
 /** A clock time today, "Yesterday", or the month and day, the way the chat lists read it. */

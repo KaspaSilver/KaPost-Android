@@ -1758,4 +1758,8 @@
     <string name="address_visibility_derive_failed">These addresses couldn\'t be derived right now. Go back a page or reopen this screen to retry.</string>
     <string name="compound_utxos_spending_description">Combines this address\'s UTXOs to reduce the inputs a future send needs. A single transaction can only merge so many at once, so if this address has a very large number, tap Compound again after it confirms to keep reducing.</string>
     <string name="unlock_address_private_key">Unlock to view this address\'s private key</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">A post on KaPost</string>
+    <string name="kapost_link_card_tap_to_open">Tap to open it in KaPost.</string>
+    <string name="kapost_link_shared">Shared a KaPost</string>
 </resources>

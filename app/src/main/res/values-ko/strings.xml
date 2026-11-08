@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">지금은 이 주소들을 생성할 수 없습니다. 이전 페이지로 가거나 이 화면을 다시 열어 재시도하세요.</string>
     <string name="compound_utxos_spending_description">이 주소의 UTXO를 합쳐서 이후 보내기에 필요한 입력 수를 줄입니다. 한 번의 거래로 합칠 수 있는 개수에는 한계가 있으므로, UTXO가 매우 많다면 확인된 후 통합을 다시 탭해 계속 줄이세요.</string>
     <string name="unlock_address_private_key">이 주소의 개인 키를 보려면 잠금을 해제하세요</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">KaPost 게시물</string>
+    <string name="kapost_link_card_tap_to_open">탭하여 KaPost에서 엽니다.</string>
+    <string name="kapost_link_shared">KaPost 게시물을 공유함</string>
 </resources>

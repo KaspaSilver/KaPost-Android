@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">Hiện chưa thể tạo các địa chỉ này. Hãy quay lại một trang hoặc mở lại màn hình này để thử lại.</string>
     <string name="compound_utxos_spending_description">Gộp các UTXO của địa chỉ này để giảm số đầu vào mà lần gửi sau cần. Một giao dịch chỉ gộp được một số lượng nhất định cùng lúc, nên nếu địa chỉ này có rất nhiều, hãy chạm Hợp nhất lần nữa sau khi giao dịch được xác nhận để tiếp tục giảm.</string>
     <string name="unlock_address_private_key">Mở khóa để xem khóa riêng của địa chỉ này</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">Một bài đăng trên KaPost</string>
+    <string name="kapost_link_card_tap_to_open">Chạm để mở trong KaPost.</string>
+    <string name="kapost_link_shared">Đã chia sẻ một bài đăng KaPost</string>
 </resources>

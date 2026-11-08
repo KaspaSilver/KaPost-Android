@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">Bu adresler şu anda türetilemedi. Bir sayfa geri git veya tekrar denemek için bu ekranı yeniden aç.</string>
     <string name="compound_utxos_spending_description">Bu adresin UTXO\'larını birleştirerek sonraki bir gönderimin ihtiyaç duyduğu girdileri azaltır. Tek bir işlem aynı anda ancak belirli sayıda UTXO\'yu birleştirebilir; bu yüzden adreste çok fazla varsa, azaltmaya devam etmek için onaylandıktan sonra Birleştir\'e tekrar dokun.</string>
     <string name="unlock_address_private_key">Bu adresin özel anahtarını görmek için kilidi açın</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">KaPost\'ta bir gönderi</string>
+    <string name="kapost_link_card_tap_to_open">KaPost\'ta açmak için dokunun.</string>
+    <string name="kapost_link_shared">Bir KaPost gönderisi paylaştı</string>
 </resources>

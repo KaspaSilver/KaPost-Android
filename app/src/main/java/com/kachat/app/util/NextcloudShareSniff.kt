@@ -33,8 +33,17 @@ object NextcloudShareSniff {
      * reading as one, and an in-app `kachat://` link is not a web address either. Same rule as
      * iOS's `LinkSafePreview`.
      */
-    fun linkSafePreview(text: String): String =
-        if (containsWebLink(text)) SENT_A_LINK else text
+    fun linkSafePreview(text: String, sharedKaPostText: String = "Shared a KaPost"): String {
+        // A message that is only a KaPost link reads as what it is, as in KaChat's chat list
+        // (iOS 23920c8).
+        val match = com.kachat.app.ui.screens.KaChatLink.findFirst(text)
+        if (match != null && match.ref is com.kachat.app.ui.screens.KaChatLinkRef.KaPost &&
+            text.trim() == match.raw
+        ) {
+            return sharedKaPostText
+        }
+        return if (containsWebLink(text)) SENT_A_LINK else text
+    }
 
     private fun containsWebLink(text: String): Boolean =
         TextLinkify.findUrls(text).any { !it.uri.startsWith("kachat://", ignoreCase = true) }

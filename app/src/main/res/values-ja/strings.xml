@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">現在、これらのアドレスを導出できません。前のページに戻るか、この画面を開き直して再試行してください。</string>
     <string name="compound_utxos_spending_description">このアドレスのUTXOをまとめて、今後の送信で必要な入力を減らします。1回のトランザクションでまとめられる数には上限があるため、非常に多い場合は、承認後にもう一度「統合」をタップして減らし続けてください。</string>
     <string name="unlock_address_private_key">このアドレスの秘密鍵を表示するにはロックを解除してください</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">KaPost の投稿</string>
+    <string name="kapost_link_card_tap_to_open">タップして KaPost で開きます。</string>
+    <string name="kapost_link_shared">KaPost の投稿を共有しました</string>
 </resources>

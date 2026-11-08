@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">এই ঠিকানাগুলো এখন বের করা যায়নি। এক পাতা পিছনে যান অথবা আবার চেষ্টা করতে এই স্ক্রিনটি আবার খুলুন।</string>
     <string name="compound_utxos_spending_description">এই ঠিকানার UTXO মিলিয়ে ভবিষ্যতে পাঠানোর ইনপুট কমায়। একটি লেনদেনে একবারে সীমিত সংখ্যকই মেলানো যায়, তাই এই ঠিকানায় অনেক বেশি থাকলে কনফার্ম হওয়ার পর আরও কমাতে আবার একত্র করুন-এ ট্যাপ করুন।</string>
     <string name="unlock_address_private_key">এই ঠিকানার প্রাইভেট কী দেখতে আনলক করুন</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">KaPost-এ একটি পোস্ট</string>
+    <string name="kapost_link_card_tap_to_open">KaPost-এ খুলতে ট্যাপ করুন।</string>
+    <string name="kapost_link_shared">একটি KaPost পোস্ট শেয়ার করেছেন</string>
 </resources>

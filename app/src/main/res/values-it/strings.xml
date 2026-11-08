@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">Non è stato possibile ricavare questi indirizzi ora. Torna indietro di una pagina o riapri questa schermata per riprovare.</string>
     <string name="compound_utxos_spending_description">Unisce gli UTXO di questo indirizzo per ridurre gli input necessari per un futuro invio. Una singola transazione può unirne solo un certo numero alla volta: se questo indirizzo ne ha moltissimi, tocca di nuovo Combina dopo la conferma per continuare a ridurli.</string>
     <string name="unlock_address_private_key">Sblocca per vedere la chiave privata di questo indirizzo</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">Un post su KaPost</string>
+    <string name="kapost_link_card_tap_to_open">Tocca per aprirlo in KaPost.</string>
+    <string name="kapost_link_shared">Ha condiviso un post di KaPost</string>
 </resources>

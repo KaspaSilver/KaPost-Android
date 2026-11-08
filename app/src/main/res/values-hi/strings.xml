@@ -1464,4 +1464,8 @@
     <string name="address_visibility_derive_failed">इन पतों को अभी निकाला नहीं जा सका। एक पेज पीछे जाएं या दोबारा कोशिश करने के लिए यह स्क्रीन फिर खोलें।</string>
     <string name="compound_utxos_spending_description">इस पते के UTXO को मिलाकर आगे भेजने में लगने वाले इनपुट कम करता है। एक लेन-देन में एक बार में सीमित संख्या ही मिल सकती है, इसलिए अगर इस पते पर बहुत ज़्यादा हैं, तो कन्फ़र्म होने के बाद और कम करने के लिए समेकित करें पर फिर टैप करें।</string>
     <string name="unlock_address_private_key">इस पते की निजी कुंजी देखने के लिए अनलॉक करें</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">KaPost पर एक पोस्ट</string>
+    <string name="kapost_link_card_tap_to_open">KaPost में खोलने के लिए टैप करें।</string>
+    <string name="kapost_link_shared">एक KaPost पोस्ट शेयर की</string>
 </resources>

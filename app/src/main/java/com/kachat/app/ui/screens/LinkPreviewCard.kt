@@ -5,6 +5,7 @@ import androidx.compose.material.icons.outlined.ArrowCircleUp
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.ui.res.stringResource
 import com.kachat.app.R
@@ -923,8 +924,9 @@ object KaChatLink {
 
     /** The first valid KaChat link in [text], or null. Invalid ones are skipped, not accepted. */
     fun findFirst(text: String): KaChatLinkMatch? {
-        // Neither form can appear without "kachat" - the cheap bail-out for nearly every message.
-        if (!text.contains("kachat", ignoreCase = true)) return null
+        // No form can appear without "kachat" or "kaposts" - the cheap bail-out for nearly every
+        // message. KaPost's own kaposts:// links are found in text too (iOS 23920c8).
+        if (!text.contains("kachat", ignoreCase = true) && !text.contains("kaposts", ignoreCase = true)) return null
         // Both patterns, in the order the links appear in the text (iOS scans with one).
         val candidates = (LINK_REGEX.findAll(text) + PAY_LINK_REGEX.findAll(text)).sortedBy { it.range.first }
         for (match in candidates) {
@@ -1144,7 +1146,8 @@ fun KaChatInternalLinkCard(
     val payAction = stringResource(if (payIsOwn) R.string.pr_your_request_tap_to_view else R.string.pr_tap_to_pay)
 
     val icon = when (ref) {
-        is KaChatLinkRef.KaPost -> Icons.Default.NoteAlt
+        // as KaChat's KaPost card (iOS 23920c8 "text.bubble")
+        is KaChatLinkRef.KaPost -> Icons.AutoMirrored.Outlined.Chat
         is KaChatLinkRef.BroadcastRoom -> Icons.Default.Sensors
         is KaChatLinkRef.Profile -> Icons.Default.AccountCircle
         is KaChatLinkRef.PaymentRequest -> Icons.Outlined.ArrowCircleUp
@@ -1162,18 +1165,18 @@ fun KaChatInternalLinkCard(
         is KaChatLinkRef.PaymentRequest -> payEyebrow
     }
     val title = when (ref) {
-        is KaChatLinkRef.KaPost -> post?.authorName ?: "KaPost post"
+        is KaChatLinkRef.KaPost -> post?.authorName ?: stringResource(R.string.kapost_link_card_title)
         is KaChatLinkRef.BroadcastRoom -> "#${ref.channel}"
         is KaChatLinkRef.Profile -> profileName ?: com.kachat.app.util.KaspaAddress.shortDisplay(ref.address)
         is KaChatLinkRef.PaymentRequest -> "${ref.request.amountText} ${com.kachat.app.util.KaspaUnit.symbol}"
     }
     val subtitle = when (ref) {
         is KaChatLinkRef.KaPost -> when {
-            post == null -> "Tap to open this post in KaPost."
+            post == null -> stringResource(R.string.kapost_link_card_tap_to_open)
             // A quote with no added comment is a repost: there is no text to show, so say what
             // it is rather than leaving the card looking half-loaded.
             post.snippet.isBlank() ->
-                if (post.action == "quote") "Reposted a post." else "Tap to open this post in KaPost."
+                if (post.action == "quote") "Reposted a post." else stringResource(R.string.kapost_link_card_tap_to_open)
             else -> post.snippet
         }
         is KaChatLinkRef.BroadcastRoom ->
@@ -1188,8 +1191,8 @@ fun KaChatInternalLinkCard(
             payAction,
         ).joinToString("\n")
     }
-    // The text of a real post deserves more than the placeholder's three lines.
-    val subtitleMaxLines = if (post?.snippet?.isNotBlank() == true) 6 else 3
+    // three lines, as KaChat's KaPost card (iOS 23920c8)
+    val subtitleMaxLines = 3
 
     Row(
         modifier = Modifier

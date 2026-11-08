@@ -1461,4 +1461,8 @@
     <string name="address_visibility_derive_failed">Diese Adressen konnten gerade nicht abgeleitet werden. Geh eine Seite zurück oder öffne diesen Bildschirm erneut, um es noch einmal zu versuchen.</string>
     <string name="compound_utxos_spending_description">Fasst die UTXOs dieser Adresse zusammen, damit eine spätere Zahlung weniger Eingänge braucht. Eine einzelne Transaktion kann nur begrenzt viele auf einmal zusammenführen. Hat diese Adresse sehr viele, tippe nach der Bestätigung erneut auf „Zusammenführen“, um weiter zu reduzieren.</string>
     <string name="unlock_address_private_key">Entsperren, um den privaten Schlüssel dieser Adresse anzuzeigen</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">Ein Beitrag auf KaPost</string>
+    <string name="kapost_link_card_tap_to_open">Tippe, um ihn in KaPost zu öffnen.</string>
+    <string name="kapost_link_shared">Hat einen KaPost geteilt</string>
 </resources>

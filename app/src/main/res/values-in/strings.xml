@@ -1335,4 +1335,8 @@
     <string name="address_visibility_derive_failed">Alamat-alamat ini tidak dapat diturunkan saat ini. Kembali satu halaman atau buka ulang layar ini untuk mencoba lagi.</string>
     <string name="compound_utxos_spending_description">Menggabungkan UTXO alamat ini untuk mengurangi input yang dibutuhkan pengiriman berikutnya. Satu transaksi hanya bisa menggabungkan sejumlah terbatas sekaligus, jadi jika alamat ini punya sangat banyak, ketuk Gabungkan lagi setelah terkonfirmasi untuk terus mengurangi.</string>
     <string name="unlock_address_private_key">Buka kunci untuk melihat kunci privat alamat ini</string>
+    <!-- KaPost link card (iOS 23920c8) -->
+    <string name="kapost_link_card_title">Sebuah postingan di KaPost</string>
+    <string name="kapost_link_card_tap_to_open">Ketuk untuk membukanya di KaPost.</string>
+    <string name="kapost_link_shared">Membagikan postingan KaPost</string>
 </resources>
