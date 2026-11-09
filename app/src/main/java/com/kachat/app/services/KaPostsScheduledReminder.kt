@@ -97,8 +97,9 @@ class KaPostsScheduledReminderWorker @AssistedInject constructor(
         val store = scheduledStore.get()
         try {
             store.reloadIfNeeded()
-            // Offline, a submission could only fail - and a failed post stays failed - so the
-            // reminder alone goes out and opening the app sends it. Signed out is skipped inside.
+            // Offline, a submission couldn't go anywhere, so the reminder alone goes out and
+            // opening the app sends it (iOS ee5ec98: a post stays scheduled until a node answers).
+            // Signed out is skipped inside.
             // This job's own reminder is left alone: cancelling its unique work mid-run would
             // cancel this run, and the next due post in it would be cut off. It ends by itself.
             if (hasNetwork()) store.sendDueLocally(runningReminderTxId = txId)

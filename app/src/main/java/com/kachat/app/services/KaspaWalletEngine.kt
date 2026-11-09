@@ -80,8 +80,8 @@ class KaspaWalletEngine @Inject constructor(
             reconcilePendingUtxos(available, spent, change, ownScriptHex)
         }
         // One coin ledger: nor a coin any submitted transaction spent - a post, tip, room message,
-        // scheduled post or .kachat transaction, including one whose outcome is unknown, which may
-        // yet land (iOS 33095ac: the node pool reserves every submit's inputs).
+        // scheduled post or .kachat transaction (iOS 33095ac: the node pool reserves every
+        // submit's inputs). An unknown outcome's coins stay spendable on purpose (iOS ee5ec98).
         return nodePoolManager.withoutSubmittedInputs(reconciled)
     }
 
@@ -202,11 +202,18 @@ class KaspaWalletEngine @Inject constructor(
          * (iOS 33095ac `checkFeeAgainstReview`). Null checks nothing.
          */
         expectedFeeSompi: Long? = null,
+        /**
+         * The account a chat payment was made as: taken before it waits for [sendMutex], so a
+         * payment made as one account never goes out once another is active (iOS ee5ec98
+         * `dropPaymentIfAccountChanged`). Null checks nothing.
+         */
+        madeAsAccount: String? = null,
     ): Result<String> = sendMutex.withLock {
         // The key this send derived itself, zeroed once signing is done (as PaymentRequestWallet
         // zeroes its copy). A caller's own key is the caller's to clear.
         var derivedKey: ByteArray? = null
         try {
+            accountChangedFailure(madeAsAccount)?.let { return Result.failure(it) }
             val fromAddress = fromAddress ?: walletManager.getAddress()
             val signingPrivateKey = signingPrivateKey
                 ?: walletManager.getPrivateKeyBytes().also { derivedKey = it }
@@ -517,14 +524,6 @@ class KaspaWalletEngine @Inject constructor(
             return Result.success(SubmittedSend(transactionId, selectionResult.selectedUtxos, changeUtxo))
             }
 
-            // A Wallet send whose outcome is unknown may have landed: its coins stay out of the
-            // next send, post and room message, with no change offered, since a post chained on a
-            // transaction that never landed would never land either (iOS d816404 `recordPlainSend`).
-            fun keptOutOfNextSend(unknown: SendOutcomeUnknownException): SendOutcomeUnknownException {
-                if (withdrawalCoinsOnly) recordSpend(fromAddress, changeAddress, attemptInputs, null)
-                return unknown
-            }
-
             val submitted = try {
                 attempt(utxos)
             } catch (e: Exception) {
@@ -542,8 +541,10 @@ class KaspaWalletEngine @Inject constructor(
                     logSignatureRejection(attemptInputs, fromScriptHex)
                     dropPendingChange(fromAddress, attemptInputs.filter { it.utxoEntry.blockDaaScore == 0L })
                 }
-                // The first send may have gone: new coins would pay twice (iOS e5a9b11).
-                if (e is SendOutcomeUnknownException) throw keptOutOfNextSend(e)
+                // The first send may have gone: new coins would pay twice (iOS e5a9b11). Its coins
+                // are not held either (iOS ee5ec98 `recordPlainSend` with a nil txId): a send made
+                // after "Not confirmed" picks the same ones, so only one of the two can land.
+                if (e is SendOutcomeUnknownException) throw e
                 if (!(isTransientNodeRejection(e) || signatureRejected) || !manualUtxos.isNullOrEmpty()) throw e
                 val refetched = nodePoolManager.getUtxosByAddress(fromAddress) ?: api.getUtxos(fromAddress)
                 val refetchedReconciled = reconcileUtxos(fromAddress, refetched)
@@ -554,11 +555,7 @@ class KaspaWalletEngine @Inject constructor(
                 }
                 if (confirmedOnly.isEmpty()) throw e
                 Log.w("KaspaWalletEngine", "Submit rejected (${e.message}), retrying once with confirmed-only inputs")
-                try {
-                    attempt(confirmedOnly)
-                } catch (unknown: SendOutcomeUnknownException) {
-                    throw keptOutOfNextSend(unknown)
-                }
+                attempt(confirmedOnly)
             }.getOrElse { return Result.failure(it) }
 
             recordSpend(fromAddress, changeAddress, submitted.spentUtxos, submitted.changeUtxo)
@@ -569,6 +566,14 @@ class KaspaWalletEngine @Inject constructor(
         } finally {
             derivedKey?.fill(0)
         }
+    }
+
+    /** Why a payment made as [madeAsAccount] must not go out, or null when it still may: another
+     *  account is active now (iOS ee5ec98 `dropPaymentIfAccountChanged`). */
+    private fun accountChangedFailure(madeAsAccount: String?): Exception? {
+        if (madeAsAccount == null || walletManager.getActiveAccount()?.address == madeAsAccount) return null
+        Log.w("KaspaWalletEngine", "payment dropped: the account changed while it waited")
+        return IllegalStateException(appContext.getString(com.kachat.app.R.string.payment_account_changed))
     }
 
     /**
@@ -601,7 +606,12 @@ class KaspaWalletEngine @Inject constructor(
         /** Whether an address already has on-chain history (WalletService.spendingAddressUsedState;
          *  null = can't tell): the fresh change slot is checked with it first (iOS da2c8e2). */
         isAddressUsed: suspend (String) -> Boolean?,
+        /** The fee the Review showed - see [sendKaspa] (iOS ee5ec98 `expectedFeeSompi`). */
+        expectedFeeSompi: Long? = null,
+        /** See [sendKaspa] (iOS ee5ec98 `dropPaymentIfAccountChanged`). */
+        madeAsAccount: String? = null,
     ): Result<String> {
+        accountChangedFailure(madeAsAccount)?.let { return Result.failure(it) }
         // The account the source is derived from: its change slot is probed and picked there too
         // (iOS fb2323e, IOS-109 / AND-056 follow-up).
         val owner = walletManager.getActiveAccount()?.address
@@ -659,6 +669,8 @@ class KaspaWalletEngine @Inject constructor(
                 manualUtxos = manualUtxos,
                 extraFeeSompi = extraFeeSompi,
                 senderRedeemScript = senderRedeemScript,
+                expectedFeeSompi = expectedFeeSompi,
+                madeAsAccount = madeAsAccount,
             )
         } catch (e: Throwable) {
             // Interrupted with the outcome unknown: revealed, as revealing a slot is always safe

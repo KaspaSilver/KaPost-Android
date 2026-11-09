@@ -130,7 +130,12 @@ object KaspaUtxoSelector {
         // rather than stopping there and later folding the change into the fee.
         var storageMassBlocked = false
         var noChangeShape = false
+        // The first set of coins that could send by giving its change to the fee, held back while
+        // a further coin might let that change stay (iOS ee5ec98 `foldIfNothingBetter`).
+        var foldIfNothingBetter: Triple<List<UtxoEntry>, Long, Long>? = null
         for (utxo in utxos.sortedByDescending { it.utxoEntry.amount }) {
+            // Hit the input cap holding a fold: that fold it is.
+            if (foldIfNothingBetter != null && selectedUtxos.size >= MAX_INPUTS_PER_TRANSACTION) break
             selectedUtxos.add(utxo)
             // Node-supplied: a nonsense amount is refused, never wrapped into a total (IOS-020).
             totalSelected = UtxoMath.add(totalSelected, utxo.utxoEntry.amount)
@@ -163,16 +168,43 @@ object KaspaUtxoSelector {
                 }
             } else if (totalSelected >= (amountSompi + estimatedFee)) {
                 val change = totalSelected - amountSompi - estimatedFee
+                val inputAmounts = selectedUtxos.map { it.utxoEntry.amount }
                 // No change at all is the no-change shape too: the recipient's output alone must
                 // fit (iOS d816404), which [changeIsKeptOrFoldable] checks for a change of 0.
-                if (amountSompi <= 0 ||
-                    changeIsKeptOrFoldable(selectedUtxos.map { it.utxoEntry.amount }, listOf(amountSompi), change)
-                ) {
+                if (amountSompi <= 0 || KaspaMass.fitsStorageMass(inputAmounts, listOf(amountSompi, change))) {
+                    // the change stands as its own output, whatever fold was held back
+                    foldIfNothingBetter = null
                     storageMassBlocked = false
                     break
                 }
-                storageMassBlocked = true
+                if (changeIsKeptOrFoldable(inputAmounts, listOf(amountSompi), change)) {
+                    // Only the fold fits. Worth less than this transaction's fee it really is
+                    // dust. Worth more it is real money (up to 0.1 KAS), and a further coin lets
+                    // the change stay, since a bigger change output fits the storage mass (iOS
+                    // ee5ec98).
+                    val leftover = totalSelected - amountSompi -
+                        noChangeFee(selectedUtxos.size, recipientScriptLen, payloadSize, feeRateSompiPerGram, extraFeeSompi, signatureScriptSize)
+                    storageMassBlocked = false
+                    if (leftover <= estimatedFee) {
+                        foldIfNothingBetter = null
+                        break
+                    }
+                    if (foldIfNothingBetter == null) {
+                        foldIfNothingBetter = Triple(selectedUtxos.toList(), totalSelected, estimatedFee)
+                    }
+                } else {
+                    storageMassBlocked = true
+                }
             }
+        }
+        // No further coin let the change stay: the first set that could send by folding it.
+        foldIfNothingBetter?.let { (coins, total, fee) ->
+            selectedUtxos.clear()
+            selectedUtxos.addAll(coins)
+            totalSelected = total
+            estimatedFee = fee
+            noChangeShape = false
+            storageMassBlocked = false
         }
 
         // Exactly the amount asked, or not enough: no quiet "close enough" cut, which sent up to

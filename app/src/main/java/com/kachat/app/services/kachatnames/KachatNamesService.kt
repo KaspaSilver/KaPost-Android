@@ -380,6 +380,16 @@ class KachatNamesService @Inject constructor(
         return txId
     }
 
+    /** [fundingUtxos] with the coins sends in flight spent held back (iOS ee5ec98 `unreservedUtxos`). */
+    fun unreservedFundingUtxos(utxos: List<Utxo>, me: ByteArray, virtualDaaScore: Long, respending: Set<String>? = null): List<Utxo> =
+        fundingUtxos(utxos, me, virtualDaaScore, respending, nodePoolManager.submittedInputKeys())
+
+    /** Whether a send still in flight spent any of [utxos] (iOS ee5ec98 `hasHeldCoins`). */
+    fun anyCoinHeld(utxos: List<Utxo>): Boolean {
+        val held = nodePoolManager.submittedInputKeys()
+        return utxos.any { coinKey(it) in held }
+    }
+
     /** Sign with the wallet key and submit. */
     suspend fun signAndSubmit(plan: Plan, privateKey: ByteArray, env: Env): String {
         requireLaunched()
@@ -485,13 +495,28 @@ class KachatNamesService @Inject constructor(
          * covenant into the transaction and change its storage mass), and never a coin a
          * scheduled KaPost will spend (iOS 58a0b22, IOS-064): quotes, plans and submits all fund
          * from here, so they see the same coins.
+         *
+         * Nor a coin in [held], which a send still in flight spent: a node lists it until that
+         * send is in a block. [respending] ("txid:index") rebuilds a transaction that already
+         * spends those coins: only they are offered, though the two-minute hold on them hasn't
+         * run out (iOS ee5ec98).
          */
-        fun fundingUtxos(utxos: List<Utxo>, me: ByteArray, virtualDaaScore: Long): List<Utxo> {
+        fun fundingUtxos(
+            utxos: List<Utxo>,
+            me: ByteArray,
+            virtualDaaScore: Long,
+            respending: Set<String>? = null,
+            held: Set<String> = emptySet(),
+        ): List<Utxo> {
             val mine = Codec.p2pkScript(me)
             val reserved = com.kachat.app.services.KaPostsScheduledStore.reservedOutpoints
                 .mapTo(HashSet()) { it.lowercase() }
             return utxos.filter { u ->
-                if (reserved.isNotEmpty() && "${KachatNames.hex(u.outpoint.txid)}:${u.outpoint.index}".lowercase() in reserved) {
+                val key = coinKey(u)
+                if (reserved.isNotEmpty() && key in reserved) return@filter false
+                if (respending != null) {
+                    if (key !in respending) return@filter false
+                } else if (key in held) {
                     return@filter false
                 }
                 // An overflowing or negative DAA score counts as not yet mature (IOS-020).
@@ -500,6 +525,9 @@ class KachatNamesService @Inject constructor(
                 mature && u.entry.covenantId == null && u.entry.script.contentEquals(mine)
             }
         }
+
+        /** A coin as "txid:index", lowercase. */
+        private fun coinKey(u: Utxo): String = "${KachatNames.hex(u.outpoint.txid)}:${u.outpoint.index}".lowercase()
 
         /** A node's UTXO entry as the core's [Utxo] (null for one that does not decode). */
         fun convert(e: Rpc.RpcUtxosByAddressesEntry): Utxo? = runCatching {

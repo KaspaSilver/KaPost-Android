@@ -1317,7 +1317,10 @@ class ChatRepository @Inject constructor(
         // still has lose theirs.
         database.broadcastDao().deleteChannelsForWallet(address)
         database.broadcastDao().deleteHiddenSendersForWallet(address)
+        database.broadcastDao().deleteUnsentMessagesFrom(address)
         database.broadcastDao().deleteMessagesOfUnjoinedChannels()
+        // Its follows, mutes and blocks are its own too (iOS ee5ec98 `removeAllData`).
+        settingsRepository.removeKaPostsAccountData(address)
         // The DataStore sync cursors MUST reset with the data: they survived account deletion,
         // so re-importing an account previously held on this device resumed the handshake scan
         // at the old cursor — ZERO historical handshakes came back and no contacts were

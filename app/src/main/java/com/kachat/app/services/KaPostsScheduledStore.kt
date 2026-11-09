@@ -78,6 +78,11 @@ class KaPostsScheduledStore @Inject constructor(
     @Volatile
     private var loadedWallet: String? = null
 
+    /** Posts being handed to the indexer, submitted or cancelled right now. Whichever started
+     *  first decides, so a cancel can't race a submit and a second pass can't submit again (iOS
+     *  ee5ec98). */
+    private val inFlight: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     init {
         instance = this
         // The coins scheduled KaPosts hold, for every builder from the moment a wallet loads -
@@ -144,6 +149,7 @@ class KaPostsScheduledStore @Inject constructor(
             transaction = scheduled.transaction,
         )
         persist(_entries.value.filterNot { it.txId == entry.txId } + entry)
+        inFlight.add(entry.txId)
         try {
             kaPostsService.get().scheduleOnServer(entry.txId, entry.transaction, notBeforeMs)
             entry = entry.copy(onServer = true)
@@ -153,6 +159,8 @@ class KaPostsScheduledStore @Inject constructor(
         } catch (e: Exception) {
             Log.w(TAG, "Scheduling on the indexer failed, keeping it on the phone", e)
             reminder.schedule(entry)
+        } finally {
+            inFlight.remove(entry.txId)
         }
         return entry
     }
@@ -178,18 +186,30 @@ class KaPostsScheduledStore @Inject constructor(
         persist(without + entry)
     }
 
-    /** Cancels a post that has not gone out: told to the indexer if it holds it, dropped here,
-     *  and its coins released. */
-    suspend fun cancel(entry: KaPostScheduledEntry) {
-        if (entry.onServer && entry.status == KaPostScheduledEntry.STATUS_SCHEDULED) {
-            try { kaPostsService.get().cancelScheduledOnServer(entry.txId) } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Cancelling on the indexer failed; dropping it locally anyway", e)
+    /** Cancels a post that has not gone out: told to the indexer if it holds it, then dropped
+     *  here and its coins released. Returns what to tell the person when it couldn't be, with
+     *  the post still scheduled: an indexer that didn't answer will still send it (iOS ee5ec98). */
+    @androidx.annotation.StringRes
+    suspend fun cancel(entry: KaPostScheduledEntry): Int? {
+        if (!inFlight.add(entry.txId)) return com.kachat.app.R.string.kaposts_scheduled_on_its_way
+        try {
+            val current = _entries.value.firstOrNull { it.txId == entry.txId } ?: entry
+            if (current.onServer && current.status == KaPostScheduledEntry.STATUS_SCHEDULED) {
+                try {
+                    kaPostsService.get().cancelScheduledOnServer(entry.txId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Cancelling a scheduled post failed", e)
+                    return com.kachat.app.R.string.kaposts_scheduled_cancel_unreachable
+                }
             }
+            persist(_entries.value.filterNot { it.txId == entry.txId })
+            reminder.cancel(entry.txId)
+            return null
+        } finally {
+            inFlight.remove(entry.txId)
         }
-        persist(_entries.value.filterNot { it.txId == entry.txId })
-        reminder.cancel(entry.txId)
     }
 
     /** Forgets a submitted/failed row - nothing is reserved by it any more. */
@@ -198,9 +218,9 @@ class KaPostsScheduledStore @Inject constructor(
     }
 
     /**
-     * Submits, from this phone, every post the indexer never took whose time has come, and tries
-     * the indexer again for the ones still in the future. Called when the app comes to the
-     * front, and from the background (the reminder's job, [SyncWorker]).
+     * Submits, from this phone, every post whose time has come and that the indexer isn't going
+     * to send, and tries the indexer again for the ones still in the future. Called when the app
+     * comes to the front, and from the background (the reminder's job, [SyncWorker]).
      *
      * [runningReminderTxId] is the post whose reminder job is making this call: cancelling that
      * job's unique work would cancel this very run, so its reminder is left to finish by itself.
@@ -209,9 +229,20 @@ class KaPostsScheduledStore @Inject constructor(
         // nothing goes out for an account behind the sign-in screen
         if (walletManager.isLoggedOut) return@withLock
         reloadIfNeeded()
+        // What the indexer did with posts past their time comes first; with no answer from it,
+        // the phone sends them (iOS ee5ec98).
+        val now = System.currentTimeMillis()
+        if (_entries.value.any { it.onServer && it.status == KaPostScheduledEntry.STATUS_SCHEDULED && it.notBeforeMs <= now }) {
+            pullServerOutcomes()
+        }
+        submitDue(runningReminderTxId)
+    }
+
+    /** Runs under [sendDueMutex]. */
+    private suspend fun submitDue(runningReminderTxId: String?) {
         // The wallet these entries belong to: every outcome is written back to it, even if the
         // account changes while a submission is out.
-        val wallet = loadedWallet ?: return@withLock
+        val wallet = loadedWallet ?: return
         val now = System.currentTimeMillis()
         // Each entry read fresh: a run that waited on the lock must not submit what the run
         // before it already sent.
@@ -220,50 +251,78 @@ class KaPostsScheduledStore @Inject constructor(
             currentCoroutineContext().ensureActive()
             val entry = (if (wallet == loadedWallet) _entries.value else read(wallet))
                 .firstOrNull { it.txId == snapshot.txId } ?: continue
-            if (entry.status != KaPostScheduledEntry.STATUS_SCHEDULED || entry.onServer) continue
-            if (entry.notBeforeMs <= now) {
-                // A submission that started always records how it ended: cancelled halfway, the
-                // post would stay "scheduled" with its coins held, or - caught as a failure -
-                // be marked failed with its coins released after it had already reached the node.
-                withContext(NonCancellable) {
+            if (entry.status != KaPostScheduledEntry.STATUS_SCHEDULED) continue
+            // The indexer's to send until it has had its tick. After that an indexer that's
+            // down would strand the post, so the phone sends the same signed transaction.
+            if (entry.onServer && entry.notBeforeMs + INDEXER_GRACE_MS > now) continue
+            if (!inFlight.add(entry.txId)) continue
+            try {
+                if (entry.notBeforeMs <= now) {
+                    submitNow(entry, wallet, runningReminderTxId)
+                } else {
+                    // Still in the future and still only here: offer it to the indexer again.
                     try {
-                        val txId = kaPostsService.get().submitScheduledLocally(entry.transaction)
-                        Log.i(TAG, "Scheduled post submitted from the phone: ${txId.take(12)}")
-                        update(entry.copy(status = KaPostScheduledEntry.STATUS_SUBMITTED, submittedAtMs = System.currentTimeMillis()), wallet)
+                        kaPostsService.get().scheduleOnServer(entry.txId, entry.transaction, entry.notBeforeMs)
+                        update(entry.copy(onServer = true), wallet)
+                        // The indexer sends it now; no reminder to open the app.
+                        if (entry.txId != runningReminderTxId) reminder.cancel(entry.txId)
                     } catch (e: CancellationException) {
-                        // Not a failure (a timeout inside the submission): it stays scheduled,
-                        // coins held, for the next run.
                         throw e
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Scheduled post failed to submit", e)
-                        update(entry.copy(status = KaPostScheduledEntry.STATUS_FAILED, error = e.message), wallet)
+                    } catch (_: Exception) {
+                        // Still unreachable; this phone remains the fallback.
                     }
-                    // Sent or failed, it no longer waits on the phone (iOS KaPostsScheduledStore.swift).
-                    if (entry.txId != runningReminderTxId) reminder.cancel(entry.txId)
                 }
-            } else {
-                // Still in the future and still only here: offer it to the indexer again.
-                try {
-                    kaPostsService.get().scheduleOnServer(entry.txId, entry.transaction, entry.notBeforeMs)
-                    update(entry.copy(onServer = true), wallet)
-                    // The indexer sends it now; no reminder to open the app.
-                    if (entry.txId != runningReminderTxId) reminder.cancel(entry.txId)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // Still unreachable; this phone remains the fallback.
-                }
+            } finally {
+                inFlight.remove(entry.txId)
             }
         }
     }
 
-    /** One [sendDueLocally] at a time: two at once (opening the list from the menu ran it twice)
-     *  could submit an entry twice, or mark a just-submitted one failed. */
+    /**
+     * A submission that started always records how it ended: cancelled halfway, the post would
+     * stay "scheduled" with its coins held, or - caught as a failure - be marked failed with its
+     * coins released after it had already reached the node.
+     */
+    private suspend fun submitNow(entry: KaPostScheduledEntry, wallet: String, runningReminderTxId: String?) {
+        withContext(NonCancellable) {
+            try {
+                val txId = kaPostsService.get().submitScheduledLocally(entry.transaction)
+                Log.i(TAG, "Scheduled post submitted from the phone: ${txId.take(12)}")
+                update(entry.copy(status = KaPostScheduledEntry.STATUS_SUBMITTED, submittedAtMs = System.currentTimeMillis()), wallet)
+            } catch (e: CancellationException) {
+                // Not a failure (a timeout inside the submission): it stays scheduled,
+                // coins held, for the next run.
+                throw e
+            } catch (e: NodeRejectedTransactionException) {
+                Log.w(TAG, "Scheduled post rejected", e)
+                update(entry.copy(status = KaPostScheduledEntry.STATUS_FAILED, error = e.message), wallet)
+            } catch (e: Exception) {
+                // Offline, still connecting, or no answer: it stays scheduled, its coins held,
+                // and goes again next time. The same signed transaction can't pay twice (iOS ee5ec98).
+                Log.w(TAG, "Scheduled post not sent yet", e)
+                return@withContext
+            }
+            // Sent or rejected, it no longer waits on the phone (iOS KaPostsScheduledStore.swift).
+            if (entry.txId != runningReminderTxId) reminder.cancel(entry.txId)
+        }
+    }
+
+    /** One pass at a time: two at once (opening the list from the menu ran it twice) could
+     *  submit an entry twice, or mark a just-submitted one failed. */
     private val sendDueMutex = kotlinx.coroutines.sync.Mutex()
 
-    /** Takes the indexer's view of what it holds: submitted and failed outcomes land here. */
-    suspend fun refreshFromServer() {
+    /** The indexer's view of this wallet's scheduled posts, then whatever is left for the phone. */
+    suspend fun refreshFromServer(): Unit = sendDueMutex.withLock {
         reloadIfNeeded()
+        pullServerOutcomes()
+        if (!walletManager.isLoggedOut) submitDue(null)
+    }
+
+    /**
+     * Submitted and failed outcomes land here. A post past its time that the indexer no longer
+     * knows turns local, so [submitDue] settles it: on chain, or rejected and its coins freed.
+     */
+    private suspend fun pullServerOutcomes() {
         // Only posts the server holds have anything to learn from it (iOS e5a9b11).
         if (_entries.value.none { it.onServer }) return
         val wallet = loadedWallet
@@ -276,13 +335,20 @@ class KaPostsScheduledStore @Inject constructor(
         }
         // An account switch during the fetch: this answer is the old wallet's.
         if (wallet != loadedWallet) return
-        if (remote.isEmpty()) return
         val byId = remote.associateBy { it.txId }
+        val now = System.currentTimeMillis()
         var changed = false
         val updated = _entries.value.map { entry ->
-            if (!entry.onServer) return@map entry
-            val server = byId[entry.txId] ?: return@map entry
-            val status = server.status ?: entry.status
+            if (!entry.onServer || entry.txId in inFlight) return@map entry
+            val server = byId[entry.txId]
+            if (server == null) {
+                if (entry.status == KaPostScheduledEntry.STATUS_SCHEDULED && entry.notBeforeMs <= now) {
+                    changed = true
+                    return@map entry.copy(onServer = false)
+                }
+                return@map entry
+            }
+            val status = server.status?.takeIf { it in KNOWN_STATUSES } ?: entry.status
             if (status == entry.status && server.error == entry.error) return@map entry
             changed = true
             entry.copy(status = status, error = server.error, submittedAtMs = server.submittedAt ?: entry.submittedAtMs)
@@ -301,6 +367,13 @@ class KaPostsScheduledStore @Inject constructor(
     companion object {
         private const val TAG = "KaPostsScheduled"
         private const val PREFS_NAME = "kaposts_scheduled"
+        /** How long past its time a post is left to the indexer (it ticks once a minute, section
+         *  5.10) before this phone sends it (iOS ee5ec98). */
+        private const val INDEXER_GRACE_MS = 150_000L
+        private val KNOWN_STATUSES = setOf(
+            KaPostScheduledEntry.STATUS_SCHEDULED, KaPostScheduledEntry.STATUS_SUBMITTED,
+            KaPostScheduledEntry.STATUS_FAILED, KaPostScheduledEntry.STATUS_CANCELLED,
+        )
         private val gson = Gson()
 
         /** The store this process made, for [deleteAccount]'s in-memory half. */

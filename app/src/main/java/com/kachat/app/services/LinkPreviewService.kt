@@ -1,13 +1,58 @@
 package com.kachat.app.services
 
+import coil.ImageLoader
+import coil.decode.DataSource
+import coil.decode.ImageSource
+import coil.fetch.FetchResult
+import coil.fetch.Fetcher
+import coil.fetch.SourceResult
+import coil.request.Options
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okio.Buffer
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
+
+/**
+ * A preview image fetched with a byte limit instead of holding whatever a server sends in memory:
+ * the URLs here come from strangers' posts (iOS ee5ec98 `BoundedDownload`, through
+ * `LinkPreviewService.imageData`). Coil then decodes it to the size it is shown at (iOS
+ * `ImageThumbnail`), so a few megabytes of crafted image can't ask for gigabytes of bitmap.
+ * Set per request with `fetcherFactory(BoundedImageFetcher.Factory(referer, maxBytes))`.
+ */
+class BoundedImageFetcher private constructor(
+    private val url: String,
+    private val referer: String?,
+    private val maxBytes: Long,
+    private val options: Options,
+) : Fetcher {
+    override suspend fun fetch(): FetchResult {
+        val bytes = LinkPreviewService.imageData(url, referer, maxBytes)
+            ?: throw IOException("no image within the size limit")
+        return SourceResult(
+            source = ImageSource(Buffer().write(bytes), options.context),
+            mimeType = null,
+            dataSource = DataSource.NETWORK,
+        )
+    }
+
+    class Factory(
+        private val referer: String?,
+        private val maxBytes: Long = LinkPreviewService.MAX_IMAGE_BYTES,
+    ) : Fetcher.Factory<android.net.Uri> {
+        override fun create(data: android.net.Uri, options: Options, imageLoader: ImageLoader): Fetcher? {
+            val scheme = data.scheme?.lowercase()
+            if (scheme != "http" && scheme != "https") return null
+            return BoundedImageFetcher(data.toString(), referer, maxBytes, options)
+        }
+    }
+}
 
 /** Open Graph metadata scraped from a message link, for rendering a rich preview card. */
 data class LinkPreviewData(
@@ -52,6 +97,12 @@ object LinkPreviewService {
     private const val MAX_BODY_BYTES = 1_000_000L
     private const val CACHE_LIMIT = 2_048
     private const val CACHE_TTL_MS = 24L * 60 * 60 * 1000
+
+    /** The most a preview card's image may be (iOS `maxImageBytes`). */
+    const val MAX_IMAGE_BYTES = 5_000_000L
+    /** Nextcloud's full photo and PDF viewer: above the card cap, since someone tapped to see
+     *  this; the server is still a stranger's (iOS ee5ec98 `fullImageMaxBytes`, was 50 MB). */
+    const val FULL_IMAGE_MAX_BYTES = 15_000_000L
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(FETCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -324,12 +375,13 @@ object LinkPreviewService {
      * Downloads a (public) share file to app-private cache for local rendering — the in-app PDF
      * viewer's source. Its own client without [FETCH_TIMEOUT_SECONDS]'s overall call cap: a
      * multi-MB document on a home server's uplink legitimately takes longer than a page scrape.
-     * Null on any failure or if the file exceeds [maxBytes].
+     * Null on any failure or if the file exceeds [maxBytes]: the download stops there, whatever
+     * the server sends and whatever Content-Length said (iOS ee5ec98).
      */
     suspend fun downloadToCacheFile(
         context: android.content.Context,
         url: String,
-        maxBytes: Long = 50_000_000L
+        maxBytes: Long = FULL_IMAGE_MAX_BYTES
     ): java.io.File? = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder().url(url).build()
@@ -339,14 +391,72 @@ object LinkPreviewService {
                 if (body.contentLength() > maxBytes) return@withContext null
                 val dir = java.io.File(context.cacheDir, "nextcloud_previews").apply { mkdirs() }
                 val file = java.io.File(dir, "share-${url.hashCode()}.bin")
-                file.outputStream().use { out -> body.byteStream().copyTo(out) }
-                if (file.length() > maxBytes) {
+                var total = 0L
+                var tooLarge = false
+                file.outputStream().use { out ->
+                    val input = body.byteStream()
+                    val chunk = ByteArray(16 * 1024)
+                    while (true) {
+                        val read = input.read(chunk)
+                        if (read < 0) break
+                        total += read
+                        if (total > maxBytes) {
+                            tooLarge = true
+                            break
+                        }
+                        out.write(chunk, 0, read)
+                    }
+                }
+                if (tooLarge) {
                     file.delete()
                     null
                 } else {
                     file
                 }
             }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * A preview image's bytes, at most [maxBytes], with the same browser User-Agent as the scrape
+     * plus a `Referer` (the page the image belongs to): image CDNs reject bare requests. If that
+     * is refused, once more with Meta's crawler User-Agent and no Referer. Null on any failure, or
+     * as soon as Content-Length or the body passes the limit (iOS ee5ec98 `imageData`,
+     * `BoundedDownload.Overflow.reject`).
+     */
+    suspend fun imageData(url: String, referer: String?, maxBytes: Long = MAX_IMAGE_BYTES): ByteArray? = withContext(Dispatchers.IO) {
+        fetchImageBytes(url, null, referer, maxBytes) ?: fetchImageBytes(url, FACEBOOK_EXTERNAL_HIT_UA, null, maxBytes)
+    }
+
+    private suspend fun fetchImageBytes(url: String, userAgent: String?, referer: String?, maxBytes: Long): ByteArray? {
+        val request = try {
+            Request.Builder().url(url)
+                .header("User-Agent", userAgent ?: BROWSER_USER_AGENT)
+                .header("Accept", "image/avif,image/webp,image/png,image/*,*/*;q=0.8")
+                .apply { if (referer != null) header("Referer", referer) }
+                .build()
+        } catch (e: IllegalArgumentException) {
+            return null
+        }
+        return try {
+            downloadClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val body = response.body ?: return null
+                if (body.contentLength() > maxBytes) return null
+                val source = body.source()
+                val buffer = Buffer()
+                while (true) {
+                    coroutineContext.ensureActive()
+                    val read = source.read(buffer, minOf(64L * 1024, maxBytes + 1 - buffer.size))
+                    if (read == -1L) break
+                    if (buffer.size > maxBytes) return null
+                }
+                buffer.readByteArray()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             null
         }

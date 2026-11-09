@@ -26,11 +26,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
+import coil.imageLoader
 import com.kachat.app.ui.theme.KaspaTeal
 import com.kachat.app.ui.theme.LocalAppColors
+import okhttp3.ResponseBody.Companion.asResponseBody
+import okio.buffer
 
 // Avatars and the .kachat profile look-ups every screen draws people with. They lived beside
 // KaChat's chat list, which KaPosts does not have.
@@ -131,8 +135,51 @@ fun kachatProfileBannerAndBio(address: String): Pair<String?, String?> {
 
 private val backupAvatarCache = android.util.LruCache<String, ImageBitmap>(64)
 
+/** Any avatar over this is refused while it downloads: the URL is whatever a profile says (iOS
+ *  ee5ec98 `KNSProfileImageCache.maxImageBytes`). */
+private const val MAX_AVATAR_IMAGE_BYTES = 5_000_000L
+
+private class AvatarSizeLimit : okhttp3.Interceptor {
+    override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+        val response = chain.proceed(chain.request())
+        val body = response.body ?: return response
+        if (body.contentLength() > MAX_AVATAR_IMAGE_BYTES) {
+            response.close()
+            throw java.io.IOException("Avatar over ${MAX_AVATAR_IMAGE_BYTES} bytes")
+        }
+        val capped = object : okio.ForwardingSource(body.source()) {
+            private var total = 0L
+            override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                val read = super.read(sink, byteCount)
+                if (read > 0) {
+                    total += read
+                    if (total > MAX_AVATAR_IMAGE_BYTES) throw java.io.IOException("Avatar over ${MAX_AVATAR_IMAGE_BYTES} bytes")
+                }
+                return read
+            }
+        }
+        return response.newBuilder()
+            .body(capped.buffer().asResponseBody(body.contentType(), body.contentLength()))
+            .build()
+    }
+}
+
+/** The app's Coil image loader (the same caches) with the avatar size limit on its downloads. */
+@Volatile
+private var avatarImageLoader: coil.ImageLoader? = null
+
+private fun avatarImageLoader(context: android.content.Context): coil.ImageLoader =
+    avatarImageLoader ?: synchronized(AvatarSizeLimit::class.java) {
+        avatarImageLoader ?: context.applicationContext.imageLoader.newBuilder()
+            .okHttpClient { okhttp3.OkHttpClient.Builder().addInterceptor(AvatarSizeLimit()).build() }
+            .build()
+            .also { avatarImageLoader = it }
+    }
+
 private fun decodeBase64Avatar(base64: String?): ImageBitmap? {
     if (base64.isNullOrBlank()) return null
+    // the same limit as a downloaded avatar, as base64 (4 characters per 3 bytes)
+    if (base64.length > MAX_AVATAR_IMAGE_BYTES / 3 * 4) return null
     return try {
         val bytes = Base64.decode(base64, Base64.DEFAULT)
         // Backup photos arrive in other devices' archives; the claimed size is not trusted.
@@ -173,6 +220,7 @@ private fun AvatarImageChain(candidates: List<String>, fallbackText: String, fon
         coil.compose.AsyncImage(
             model = model,
             contentDescription = null,
+            imageLoader = avatarImageLoader(LocalContext.current),
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,
             onSuccess = { loaded = true },

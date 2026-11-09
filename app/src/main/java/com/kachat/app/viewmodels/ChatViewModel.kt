@@ -1238,7 +1238,9 @@ class ChatViewModel @Inject constructor(
         } ?: com.kachat.app.util.SendFeeModel.STANDARD_SCRIPT_LEN
         // the poster's real script, a private tip's too
         val recipientScriptLen = scriptLen(_paymentTip.value?.recipientAddress)
-        val changeScriptLen = scriptLen(sourceAddress)
+        // From a spending address its change goes to a fresh quantum slot (sendSpendingPayment),
+        // a byte longer than the sender's own script (iOS ee5ec98 `freshChangeScriptForPricing`).
+        val changeScriptLen = if (sourceIndex != null) com.kachat.app.util.SendFeeModel.FRESH_CHANGE_SCRIPT_LEN else scriptLen(sourceAddress)
         val signatureScriptSize = com.kachat.app.services.WalletManager.signatureScriptSize(sourceIndex)
         // From a spending address the payment goes without a payload (sendPayment).
         val payloadSize = if (sourceIndex == null) estimatedPaymentPayloadSize(_paymentNote.value.trim(), amountSompi, tip) else 0
@@ -1311,6 +1313,8 @@ class ChatViewModel @Inject constructor(
             customExtraFeeSompi = customExtraFeeSompi,
             payloadSize = tip?.let { estimatedPaymentPayloadSize(note.trim(), balance, it) },
             signatureScriptSize = com.kachat.app.services.WalletManager.signatureScriptSize(_paymentSourceIndex.value),
+            // a fresh change slot from a spending address (iOS ee5ec98, as [previewPaymentFee])
+            changeScriptLen = if (_paymentSourceIndex.value != null) com.kachat.app.util.SendFeeModel.FRESH_CHANGE_SCRIPT_LEN else com.kachat.app.util.SendFeeModel.STANDARD_SCRIPT_LEN,
             provisionalShape = { provisional ->
                 paymentFeeInputs(spending, manual, provisional).second to
                     estimatedPaymentPayloadSize(note.trim(), provisional, tip)
@@ -3141,12 +3145,18 @@ class ChatViewModel @Inject constructor(
         extraFeeSompi: Long = 0L,
         manualUtxos: List<com.kachat.app.services.UtxoEntry>? = null,
         tip: com.kachat.app.models.KaPostTip? = null,
+        /** The fee the Review showed: a send built at the swipe that would pay more stops and
+         *  sends nothing (iOS ee5ec98 `expectedFeeSompi`). */
+        expectedFeeSompi: Long? = null,
         onResult: ((Boolean, String?, String?) -> Unit)? = null,
     ) {
         // Only one from the chatting address is a tip (KAPOSTS_INDEXER.md 5.11): from another
         // address it's a private payment, which doesn't name the post or count on it - a plain
         // payment with the chat notice (iOS 071e901 sendPaymentInternal).
         val tip = if (sourceSpendingIndex == null) tip else null
+        // Taken now, before anything waits: the payment is signed as the account it was made as,
+        // or not at all (iOS ee5ec98 `PaymentFundingAccount`, `dropPaymentIfAccountChanged`).
+        val madeAsAccount = walletManager.getActiveAccount()?.address
         // Exact (iOS 16b64bc, AND-013): "2.3" pays 230,000,000 sompi - a Double multiply and
         // toLong() paid 229,999,999. Comma or dot, at most 8 decimals, nothing above the supply.
         val sompi = KaspaUnit.sompiFromUserText(amount)?.takeIf { it > 0 }
@@ -3199,6 +3209,10 @@ class ChatViewModel @Inject constructor(
                 // `kchat:1:pay:` payload - an empty memo too (iOS buildPaymentTx): that payload is
                 // what opens our chat on the payee's side when they don't know us yet (iOS 1eb4708).
                 val payload = if (!fromChattingAddress) null else if (tip != null) {
+                    // signed below with the active account's key: not another's (iOS ee5ec98)
+                    if (walletManager.getActiveAccount()?.address != madeAsAccount) {
+                        throw IllegalStateException(appContext.getString(com.kachat.app.R.string.payment_account_changed))
+                    }
                     // A tip: the same sealed note, inside a signed payload that names the post.
                     val sealed = MessageProtocol.sealedPaymentHex(
                         note = memo,
@@ -3226,6 +3240,8 @@ class ChatViewModel @Inject constructor(
                         payloadBytes = payload,
                         manualUtxos = manualUtxos,
                         extraFeeSompi = extraFeeSompi,
+                        expectedFeeSompi = expectedFeeSompi,
+                        madeAsAccount = madeAsAccount,
                     )
                 } else {
                     walletService.sendKaspa(
@@ -3235,6 +3251,8 @@ class ChatViewModel @Inject constructor(
                         feeRateOverride = feeRate,
                         manualUtxos = manualUtxos,
                         extraFeeSompi = extraFeeSompi,
+                        expectedFeeSompi = expectedFeeSompi,
+                        madeAsAccount = madeAsAccount,
                     )
                 }
                 if (!fromChattingAddress) sendSpendingPaymentNotice(contactId, txId, sompi, memo)
@@ -3620,6 +3638,8 @@ class ChatViewModel @Inject constructor(
             payloadSize: Int? = null,
             /** The source's per-input signature-script size (a quantum-safe source's is bigger). */
             signatureScriptSize: Int = com.kachat.app.util.KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
+            /** The change output's script length, as the send prices it (iOS ee5ec98). */
+            changeScriptLen: Int = com.kachat.app.util.SendFeeModel.STANDARD_SCRIPT_LEN,
             provisionalShape: ((provisionalSompi: Long) -> Pair<Int, Int>)? = null,
         ): Long {
             // Every chat payment carries its payload, an empty memo too (iOS estimateMaxPaymentAmount).
@@ -3632,6 +3652,7 @@ class ChatViewModel @Inject constructor(
                 customExtraFeeSompi = extra,
                 payloadSize = pricedPayloadSize,
                 signatureScriptSize = signatureScriptSize,
+                changeScriptLen = changeScriptLen,
             )
             if (customExtraFeeSompi != null || feeMultiplier <= 1) {
                 return max(customExtraFeeSompi?.coerceAtLeast(0L) ?: 0L)
@@ -3641,7 +3662,7 @@ class ChatViewModel @Inject constructor(
             val (provisionalInputs, provisionalPayload) = provisionalShape?.invoke(provisional)
                 ?: (inputCount to (payloadSize ?: MessageProtocol.estimatedPaymentPayloadSize(note.trim(), provisional)))
             val base = com.kachat.app.util.SendFeeModel.baseFee(
-                provisionalInputs, rate, provisionalPayload, signatureScriptSize = signatureScriptSize
+                provisionalInputs, rate, provisionalPayload, changeScriptLen = changeScriptLen, signatureScriptSize = signatureScriptSize
             )
             return max(com.kachat.app.util.SendFeeModel.extraFee(base, feeMultiplier, null))
         }

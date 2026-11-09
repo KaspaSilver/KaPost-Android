@@ -56,8 +56,11 @@ data class KaPostDraft(
     val comments: List<KaPostDraft> = emptyList(),
     /** X-style quote embed: set when this post quotes another. */
     val quoted: QuotedRef? = null,
-    /** Set for replies fetched from the indexer - splits profile feeds into Posts/Replies. */
+    /** Set for replies fetched from the indexer - splits profile feeds into Posts/Replies - and
+     *  for this session's: what a Retry answers even if the parent has left memory (iOS ee5ec98). */
     val parentRemoteId: String? = null,
+    /** The parent's author, for a retried reply's mention of them (iOS ee5ec98). */
+    val parentPosterPubkey: String? = null,
     /** When the text shown is an edit - ours this session, or one the indexer accepted (ms). */
     val editedAt: Long? = null,
     /** When this session last put the post on the network, which for an edit is the edit's own

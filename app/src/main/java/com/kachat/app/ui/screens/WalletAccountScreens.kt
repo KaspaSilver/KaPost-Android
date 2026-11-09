@@ -1446,6 +1446,9 @@ fun SpendingAddressTxHistoryScreen(
     var showWithdraw by remember { mutableStateOf(false) }
     var showCompoundFlow by remember { mutableStateOf(false) }
     var showPrivateKey by remember { mutableStateOf(false) }
+    // The "Address Actions" sheet, and the public-key screen it can open (iOS ee5ec98).
+    var showAddressActions by remember { mutableStateOf(false) }
+    var showPublicKey by remember { mutableStateOf(false) }
     var utxoLabels by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var labelingUtxoKey by remember { mutableStateOf<String?>(null) }
     var labelInput by remember { mutableStateOf("") }
@@ -1537,23 +1540,8 @@ fun SpendingAddressTxHistoryScreen(
                 navigationIcon = {
                     SheetBarBackButton(onClick = onBack, modifier = Modifier.padding(start = 12.dp))
                 },
-                actions = {
-                    Row(
-                        modifier = Modifier.padding(end = 12.dp).heightIn(min = 44.dp).barGlass(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        ToolbarIconButton(Icons.Default.IosShare, stringResource(R.string.export), onClick = {
-                            if (biometricSpendingKeyEnabled) {
-                                context.authenticateWithDeviceCredential(title = unlockTitle, onSuccess = { showPrivateKey = true })
-                            } else {
-                                showPrivateKey = true
-                            }
-                        })
-                        ToolbarIconButton(Icons.Default.Public, stringResource(R.string.view_in_explorer), onClick = {
-                            if (address.isNotEmpty()) uriHandler.openUri(kaspaExplorer.addressUrl(address))
-                        })
-                    }
-                },
+                // One options icon at the top right, as on every address page (iOS ee5ec98).
+                actions = { AddressOptionsButton(onClick = { showAddressActions = true }) },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = colors.background),
             )
         },
@@ -1610,6 +1598,39 @@ fun SpendingAddressTxHistoryScreen(
 
     if (showQr && entry != null) {
         SpendingAddressQrSheet(entry = entry, onDismiss = { showQr = false })
+    }
+
+    if (showAddressActions) {
+        AddressActionsSheet(
+            explorerUrl = address.takeIf { it.isNotEmpty() }?.let { kaspaExplorer.addressUrl(it) },
+            // A quantum address keeps its key hidden until it spends: that's the point of it.
+            showsPublicKey = !WalletManager.isQuantumIndex(index),
+            onPrivateKey = {
+                showAddressActions = false
+                if (biometricSpendingKeyEnabled) {
+                    context.authenticateWithDeviceCredential(title = unlockTitle, onSuccess = { showPrivateKey = true })
+                } else {
+                    showPrivateKey = true
+                }
+            },
+            onPublicKey = {
+                showAddressActions = false
+                showPublicKey = true
+            },
+            onExplorer = { url ->
+                showAddressActions = false
+                uriHandler.openUri(url)
+            },
+            onDismiss = { showAddressActions = false },
+        )
+    }
+
+    if (showPublicKey) {
+        IdentityAddressPublicKeyOverlay(
+            address = address,
+            note = stringResource(R.string.address_public_half_note),
+            onDismiss = { showPublicKey = false },
+        )
     }
 
     if (showPrivateKey) {

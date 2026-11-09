@@ -27,6 +27,11 @@ object KaspaMessageSigner {
         return Schnorr.sign(toSign, privateKey).joinToString("") { "%02x".format(it) }
     }
 
+    /** Whether [signature] is a BIP-340 signature by [xOnlyPublicKey] over [message] signed the
+     *  way a KaPost is (iOS ee5ec98 `KaPostsChainPosts.signatureIsValid`). */
+    fun verifyPersonalMessage(message: String, signature: ByteArray, xOnlyPublicKey: ByteArray): Boolean =
+        Schnorr.verify(keyedBlake2b(message.toByteArray(Charsets.UTF_8)), signature, xOnlyPublicKey)
+
     private fun keyedBlake2b(data: ByteArray): ByteArray {
         val digest = Blake2bDigest(PERSONAL_MESSAGE_KEY, 32, null, null)
         digest.update(data, 0, data.size)

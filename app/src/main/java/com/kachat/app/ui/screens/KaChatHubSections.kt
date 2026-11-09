@@ -1049,7 +1049,8 @@ fun KachatAddressLiveNamesList(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (_: Exception) {
-            emptyList()
+            // a failed read keeps what's on screen: it isn't "holds no names" (iOS ee5ec98)
+            names
         }
         loaded = true
     }

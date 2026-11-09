@@ -513,7 +513,13 @@ private fun NextcloudMediaBubble(data: LinkPreviewData, url: String, txId: Strin
         contentAlignment = Alignment.Center
     ) {
         SubcomposeAsyncImage(
-            model = data.imageUrl,
+            // the default cap: this runs by itself for any link shaped like a share (iOS ee5ec98)
+            model = remember(data.imageUrl, url) {
+                ImageRequest.Builder(context)
+                    .data(data.imageUrl)
+                    .fetcherFactory(com.kachat.app.services.BoundedImageFetcher.Factory(url))
+                    .build()
+            },
             contentDescription = data.title,
             contentScale = ContentScale.Fit,
             modifier = Modifier
@@ -564,6 +570,7 @@ private fun NextcloudMediaBubble(data: LinkPreviewData, url: String, txId: Strin
     if (showPhotoViewer && data.mediaDownloadUrl != null) {
         NextcloudPhotoViewerDialog(
             downloadUrl = data.mediaDownloadUrl,
+            shareUrl = url,
             onDismiss = { showPhotoViewer = false }
         )
     }
@@ -692,12 +699,11 @@ private fun LinkPreviewCardContent(data: LinkPreviewData, url: String, txId: Str
                 // Load the OG image with a real browser UA + Referer (the page it came from).
                 // Image CDNs like cdninstagram/fbcdn 403 the header-less request Coil sends by
                 // default, which is why Instagram previews showed no picture. Mirrors iOS's
-                // LinkPreviewService.imageData(referer:).
+                // LinkPreviewService.imageData(referer:), with its 5 MB cap (iOS ee5ec98).
                 val imageRequest = remember(data.imageUrl, data.url) {
                     ImageRequest.Builder(context)
                         .data(data.imageUrl)
-                        .addHeader("User-Agent", LinkPreviewService.BROWSER_USER_AGENT)
-                        .addHeader("Referer", data.url)
+                        .fetcherFactory(com.kachat.app.services.BoundedImageFetcher.Factory(data.url))
                         .crossfade(true)
                         .build()
                 }

@@ -45,6 +45,8 @@ class BroadcastRepository @Inject constructor(
     // Public-chat authorship (audit XP-012): the indexer's senderAddress is only its guess, so
     // every row it serves is verified (input 0's address == output 0's) before it is stored.
     private val senderVerifier: com.kachat.app.services.BroadcastSenderVerifier,
+    // Whether the phone has a connection at all: offline says nothing about an indexer.
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
 ) {
     /**
      * Where a room's sends run - messages, edits, reactions, retries and voice notes - so they
@@ -307,6 +309,8 @@ class BroadcastRepository @Inject constructor(
             val hiddenHere = hiddenAddressesIn(channelName, hidden)
             val edits = editRows.mapNotNull { row ->
                 if (row.senderAddress in hiddenHere) return@mapNotNull null
+                // A failed edit never reached the chain (only an older build left one, iOS ee5ec98).
+                if (row.deliveryStatus == "failed") return@mapNotNull null
                 com.kachat.app.util.MessageEdit.parseOrNull(row.content)?.let { row to it }
             }
             val senders = HashMap<String, BroadcastMessageEntity>(edits.size)
@@ -392,6 +396,26 @@ class BroadcastRepository @Inject constructor(
          *  messages" adds. iOS's `roomWindowSize`. */
         const val ROOM_WINDOW_SIZE = 400
 
+        /** Failures in a row that confirm an indexer is down, and how close they must follow one
+         *  another (iOS ee5ec98 `noteIndexerResult`: three inside two minutes). */
+        private const val INDEXER_DOWN_FAILURES = 3
+        private const val INDEXER_FAILURE_WINDOW_MS = 120_000L
+
+        /** A handoff fails every open room's poll at the same moment, and that is one failure. */
+        private const val INDEXER_FAILURE_COALESCE_MS = 5_000L
+
+        /** How far before an outage a room's re-read starts (iOS ee5ec98: ten minutes). */
+        private const val OUTAGE_REWIND_MS = 600_000L
+
+        /** The indexer [channelName] reads from: its own override, or the app-wide one. Blank when
+         *  neither is set (iOS `indexerBaseURL(forChannel:)`). An http:// override an older build
+         *  saved is ignored, as [roomIndexerOverride] ignores it. */
+        fun indexerBaseUrl(channelName: String, appWide: String, overrides: Map<String, String>): String {
+            val own = overrides[channelName.trim().lowercase()]
+                ?.takeUnless { isCleartextHttp(it) }?.trim().orEmpty()
+            return own.ifEmpty { appWide.trim() }
+        }
+
         /** What a room indexer typed as http:// is refused with (iOS SettingsView's words). */
         const val HTTPS_REQUIRED = "Use https. Unencrypted connections are not supported."
 
@@ -450,7 +474,7 @@ class BroadcastRepository @Inject constructor(
 
     /** Channels whose full 30-day history was already paged in this process — the deep backfill
      *  runs once per room per launch; the 8s poll then only needs the newest page. */
-    private val deepBackfilledChannels = mutableSetOf<String>()
+    private val deepBackfilledChannels: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /** Where an interrupted deep backfill picks up: the `before` cursor of the next page to ask
      *  for, and how many pages of the safety valve are left. Session-only, like the completed
@@ -458,6 +482,143 @@ class BroadcastRepository @Inject constructor(
      *  restarted the whole pager from page 1 on the next 8s tick, and kept doing so until every
      *  page happened to succeed in one go (iOS deepBackfillResume). */
     private val deepBackfillResume = mutableMapOf<String, Pair<Long, Int>>()
+
+    /** Oldest a room's next backfill needs to reach after an outage (ms): the indexer gets the
+     *  last word on that stretch, without paging its whole 30 days again (iOS ee5ec98). */
+    private val deepBackfillFloor = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** The newest block time the indexer has shown for each room this session. A steady poll
+     *  whose whole page is newer than this has a gap behind it (iOS ee5ec98). */
+    private val indexerNewestSeen = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Indexers confirmed down (three failures in a row inside two minutes), and since when, by
+     *  base URL. Their rooms go back on the block stream on cellular (iOS ee5ec98). */
+    private val _unreachableIndexers = kotlinx.coroutines.flow.MutableStateFlow<Map<String, Long>>(emptyMap())
+    val unreachableIndexers: kotlinx.coroutines.flow.StateFlow<Map<String, Long>> get() = _unreachableIndexers
+
+    private class IndexerFailureRun(var count: Int, var lastAt: Long)
+
+    /** Guards [indexerFailureRuns] and the writes to [_unreachableIndexers]: the open room's poll
+     *  and the closed-room sweep report from different threads. */
+    private val indexerHealthLock = Any()
+    private val indexerFailureRuns = HashMap<String, IndexerFailureRun>()
+
+    /** The app-wide indexer and the rooms' own, for the scanner's cellular gate. */
+    fun roomIndexerBases(): Flow<Pair<String, Map<String, String>>> =
+        combine(settings.broadcastIndexerUrl, settings.broadcastIndexerOverrides) { appWide, overrides ->
+            appWide to overrides
+        }
+
+    private suspend fun indexerBaseUrl(channelName: String): String =
+        indexerBaseUrl(channelName, settings.broadcastIndexerUrl.first(), settings.broadcastIndexerOverrides.first())
+
+    /**
+     * Every answer or failure from a room's indexer (iOS ee5ec98 `noteIndexerResult`). Null, or a
+     * 4xx, means it answered: the count resets, and an indexer that was down has its rooms read
+     * the outage again. Only a failure that says the indexer is at fault counts towards three.
+     */
+    private suspend fun noteIndexerResult(base: String, failed: Exception?) {
+        if (failed == null || isClientRejection(failed)) {
+            val since = synchronized(indexerHealthLock) {
+                indexerFailureRuns.remove(base)
+                val downSince = _unreachableIndexers.value[base] ?: return
+                _unreachableIndexers.value = _unreachableIndexers.value - base
+                downSince
+            }
+            android.util.Log.i("BroadcastRepository", "Room indexer is answering again")
+            rewindRoomsAfterOutage(base, since)
+            return
+        }
+        if (!meansDown(failed) && !isServerFailure(failed)) return
+        synchronized(indexerHealthLock) {
+            val now = System.currentTimeMillis()
+            val run = indexerFailureRuns.getOrPut(base) { IndexerFailureRun(count = 0, lastAt = 0L) }
+            if (now - run.lastAt < INDEXER_FAILURE_COALESCE_MS) return
+            if (now - run.lastAt > INDEXER_FAILURE_WINDOW_MS) run.count = 0
+            run.count += 1
+            run.lastAt = now
+            if (run.count < INDEXER_DOWN_FAILURES || base in _unreachableIndexers.value) return
+            _unreachableIndexers.value = _unreachableIndexers.value + (base to now)
+        }
+        android.util.Log.w("BroadcastRepository", "Room indexer isn't answering: rooms stay on the block stream")
+    }
+
+    /** A 429 or a 5xx is the indexer's trouble (iOS `KaPostsIndexerHealth.meansDown(statusCode:)`). */
+    private fun statusMeansDown(code: Int): Boolean = code == 429 || code >= 500
+
+    /** A 4xx is the indexer answering, whatever it thinks of this request. */
+    private fun isClientRejection(error: Exception): Boolean =
+        (error as? retrofit2.HttpException)?.code()?.let { it in 400..499 && !statusMeansDown(it) } == true
+
+    private fun isServerFailure(error: Exception): Boolean =
+        (error as? retrofit2.HttpException)?.code()?.let { statusMeansDown(it) } == true
+
+    /** A transport failure while the phone has a connection. A phone that's offline says nothing
+     *  about the indexer, and neither does a cancelled request or a body that won't decode. */
+    private fun meansDown(error: Exception): Boolean {
+        if (error !is java.io.IOException) return false
+        if (error is java.io.EOFException || error is com.google.gson.stream.MalformedJsonException) return false
+        return !phoneIsOffline()
+    }
+
+    private fun phoneIsOffline(): Boolean {
+        val manager = appContext.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+        val network = manager.activeNetwork ?: return true
+        val capabilities = manager.getNetworkCapabilities(network) ?: return true
+        return !capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /** Rooms this indexer serves read that stretch from it again, from ten minutes before it went
+     *  away: what the block stream missed comes in, and the indexer has the final word (iOS
+     *  ee5ec98). The next step of the poll that noticed it does the paging. */
+    private suspend fun rewindRoomsAfterOutage(base: String, since: Long) {
+        val floor = since - OUTAGE_REWIND_MS
+        val appWide = settings.broadcastIndexerUrl.first()
+        val overrides = settings.broadcastIndexerOverrides.first()
+        for (channel in deepBackfilledChannels.toList()) {
+            if (indexerBaseUrl(channel, appWide, overrides) == base) {
+                deepBackfilledChannels.remove(channel)
+                deepBackfillFloor[channel] = floor
+            }
+        }
+    }
+
+    /** Room edits whose send failed, by room then target txId: the text, for Retry. The message
+     *  itself goes back to what it read before, since that text never reached the chain (iOS
+     *  ee5ec98 `failedEditsByChannel`). In memory only, as there. */
+    private val _failedEdits = kotlinx.coroutines.flow.MutableStateFlow<Map<String, Map<String, String>>>(emptyMap())
+    val failedEdits: kotlinx.coroutines.flow.StateFlow<Map<String, Map<String, String>>> get() = _failedEdits
+
+    /** The text of this message's failed edit, when there is one to retry. */
+    fun failedEditText(channelName: String, targetTxId: String): String? =
+        _failedEdits.value[channelName]?.get(targetTxId)
+
+    private fun setFailedEdit(channelName: String, targetTxId: String, text: String?) {
+        val room = _failedEdits.value[channelName].orEmpty()
+        val updated = if (text == null) room - targetTxId else room + (targetTxId to text)
+        _failedEdits.value = if (updated.isEmpty()) _failedEdits.value - channelName
+        else _failedEdits.value + (channelName to updated)
+    }
+
+    /**
+     * Edits one of this wallet's own messages (iOS ee5ec98 `sendPublicChatEdit`). Never sent: its
+     * row goes, which puts the message back to what it read, and the text waits for Retry. An
+     * unknown outcome keeps its row, "unconfirmed", until the delivered copy turns it into a
+     * normal edit, with no Retry, which could pay twice.
+     */
+    suspend fun sendEdit(channelName: String, targetTxId: String, text: String) {
+        setFailedEdit(channelName, targetTxId, null)
+        try {
+            sendBroadcast(channelName, com.kachat.app.util.MessageEdit.encode(targetTxId, text), dropRowOnFailure = true)
+        } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
+            throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            setFailedEdit(channelName, targetTxId, text)
+            throw e
+        }
+    }
 
     /** How many times a room's deep backfill was re-run because some rows' senders could not be
      *  verified yet (audit XP-012). Session-only. */
@@ -485,6 +646,11 @@ class BroadcastRepository @Inject constructor(
             settledForWallet = normalized
             settledPendingChannels.clear()
         }
+        // iOS ee5ec98 setCurrentWallet. The backfilled set stays: Android's room messages are one
+        // table shared by every account, so what was fetched still holds for the next one.
+        _failedEdits.value = emptyMap()
+        deepBackfillFloor.clear()
+        indexerNewestSeen.clear()
     }
 
     /**
@@ -557,12 +723,15 @@ class BroadcastRepository @Inject constructor(
         val api = (override?.let { networkService.broadcastIndexerApiFor(it) }
             ?: networkService.broadcastIndexerApi.value) ?: return emptyList()
         val hidden = hiddenAddressesIn(channelName, getHiddenSenders().first())
+        val base = indexerBaseUrl(channelName)
         val page = try {
             api.getBroadcasts(channel = channelName, limit = limit)
         } catch (e: Exception) {
+            noteIndexerResult(base, e)
             android.util.Log.w("BroadcastRepository", "Sweep fetch failed for $channelName", e)
             return emptyList()
         }
+        noteIndexerResult(base, null)
         // An indexer only stores the rooms it tracks: rows back mean it keeps this room's history.
         if (!page.messages.isNullOrEmpty()) com.kachat.app.services.IndexerTrackedRooms.markServed(channelName)
         // Neither a reaction nor an edit is a message anyone reads; the room's own backfill is
@@ -773,62 +942,104 @@ class BroadcastRepository @Inject constructor(
         val override = roomIndexerOverride(channelName)
         val api = (override?.let { networkService.broadcastIndexerApiFor(it) }
             ?: networkService.broadcastIndexerApi.value) ?: return -1
+        val base = indexerBaseUrl(channelName)
         var fetched = 0
         var unverified = 0
-        val deep = channelName !in deepBackfilledChannels
-        // Picking up an interrupted pager: everything newer than the recorded cursor is already
-        // in the store from the attempt that recorded it.
-        val resume = if (deep) deepBackfillResume[channelName] else null
-        var before: Long? = resume?.first
-        var pagesLeft = when {
-            !deep -> 1
-            resume != null -> resume.second
-            else -> 50 // 50 × 200 = 10k rows, far beyond any real room
+
+        /** Merges one page: rows back mean the indexer keeps this room's history (iOS 21c480d),
+         *  and each is stored only with a verified sender (audit XP-012). */
+        suspend fun merge(messages: List<com.kachat.app.services.BroadcastHistoryRow>) {
+            if (messages.isNotEmpty()) com.kachat.app.services.IndexerTrackedRooms.markServed(channelName)
+            unverified += admitIndexerRows(channelName, messages).unknown
+            fetched += messages.size
         }
+
         return try {
-            val cutoff = System.currentTimeMillis() - BroadcastRetention.INDEXER_MILLIS
             // The one-time deep backfill pages at 200; the recurring 8s poll only needs the
             // newest sliver (dedupe-by-txId makes overlap harmless), so its page is small —
             // 200 rows every 8s was the single biggest steady-state indexer cost per open room.
-            val pageLimit = if (deep) 200 else 30
-            while (pagesLeft > 0) {
-                pagesLeft -= 1
-                val response = api.getBroadcasts(channel = channelName, limit = pageLimit, before = before)
-                val messages = response.messages.orEmpty()
-                // An indexer only stores the rooms it tracks: rows back mean it keeps this
-                // room's history (iOS 21c480d).
-                if (messages.isNotEmpty()) com.kachat.app.services.IndexerTrackedRooms.markServed(channelName)
-                // Stored only with a verified sender (audit XP-012).
-                unverified += admitIndexerRows(channelName, messages).unknown
-                fetched += messages.size
-                if (!deep || response.hasMore != true || messages.isEmpty()) break
-                val oldest = messages.mapNotNull { it.blockTime }.minOrNull() ?: break
-                if (oldest < cutoff) break // older pages would be pruned anyway
-                before = oldest
-                // Recorded after every landed page: a thrown page resumes from here, not page 1.
-                deepBackfillResume[channelName] = oldest to pagesLeft
+            val response = api.getBroadcasts(
+                channel = channelName,
+                limit = if (channelName in deepBackfilledChannels) 30 else 200,
+            )
+            noteIndexerResult(base, null)
+            val newest = response.messages.orEmpty()
+            // The newest page goes in FIRST, before any history is paged (iOS fetchFromIndexerAndMerge).
+            merge(newest)
+            val newestTimes = newest.mapNotNull { it.blockTime }
+            // More arrived since the last poll than the page holds (a busy room, or the app away
+            // for a while): page back to the rows already seen, through the backfill below and
+            // its limit, resume and floor. It used to stay missing until the next launch (iOS ee5ec98).
+            val seen = indexerNewestSeen[channelName]
+            val oldestNewest = newestTimes.minOrNull()
+            if (channelName in deepBackfilledChannels && response.hasMore == true &&
+                seen != null && oldestNewest != null && oldestNewest > seen) {
+                deepBackfilledChannels.remove(channelName)
+                deepBackfillFloor[channelName] = seen
             }
-            // Marked done only once the pager actually finishes; a failed one keeps its resume
-            // cursor (see the catch) and the next 8s poll continues from there.
-            if (deep) {
-                deepBackfillResume.remove(channelName)
-                // Rows whose sender could not be verified yet (the REST API had no answer) were
-                // left out: page the history again on a later poll - rows already stored cost no
-                // lookup - a few times before settling for what verified.
-                val retries = deepUnverifiedRetries[channelName] ?: 0
-                if (unverified > 0 && retries < DEEP_UNVERIFIED_RETRIES) {
-                    deepUnverifiedRetries[channelName] = retries + 1
-                } else {
-                    deepBackfilledChannels.add(channelName)
-                    deepUnverifiedRetries.remove(channelName)
-                    // The whole history is in, so a send that did land has its copy to match
-                    // (iOS e5a9b11).
-                    settlePendingSendsFromBeforeThisRun(channelName)
+            newestTimes.maxOrNull()?.let { newestTime ->
+                indexerNewestSeen[channelName] = maxOf(newestTime, seen ?: newestTime)
+            }
+            var interrupted = false
+            if (channelName !in deepBackfilledChannels) {
+                val cutoff = System.currentTimeMillis() - BroadcastRetention.INDEXER_MILLIS
+                // Picking up an interrupted pager: everything newer than the recorded cursor is
+                // already in the store from the attempt that recorded it.
+                val resume = deepBackfillResume[channelName]
+                var hasMore = resume != null || response.hasMore == true
+                var oldest: Long? = resume?.first ?: oldestNewest
+                var pagesLeft = resume?.second ?: 50 // 50 × 200 = 10k rows, far beyond any real room
+                val floor = maxOf(cutoff, deepBackfillFloor[channelName] ?: cutoff)
+                while (hasMore && pagesLeft > 0) {
+                    val before = oldest ?: break
+                    if (before <= floor) break // older pages are pruned anyway, or already right
+                    pagesLeft -= 1
+                    val page = try {
+                        api.getBroadcasts(channel = channelName, limit = 200, before = before)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Keep what this attempt did get: the cursor recorded after each landed
+                        // page is where the next 8s tick resumes, not page 1.
+                        android.util.Log.w("BroadcastRepository", "Indexer backfill paused for $channelName at before=$before", e)
+                        interrupted = true
+                        break
+                    }
+                    val messages = page.messages.orEmpty()
+                    if (messages.isEmpty()) break
+                    merge(messages)
+                    hasMore = page.hasMore == true
+                    oldest = messages.mapNotNull { it.blockTime }.minOrNull()
+                    val next = oldest
+                    if (hasMore && next != null) deepBackfillResume[channelName] = next to pagesLeft
+                }
+                // Marked done only once the pager actually finishes; a paused one keeps its
+                // resume cursor and the next 8s poll continues from there.
+                if (!interrupted) {
+                    deepBackfillResume.remove(channelName)
+                    // Rows whose sender could not be verified yet (the REST API had no answer) were
+                    // left out: page the history again on a later poll - rows already stored cost no
+                    // lookup - a few times before settling for what verified.
+                    val retries = deepUnverifiedRetries[channelName] ?: 0
+                    if (unverified > 0 && retries < DEEP_UNVERIFIED_RETRIES) {
+                        deepUnverifiedRetries[channelName] = retries + 1
+                    } else {
+                        deepBackfilledChannels.add(channelName)
+                        deepBackfillFloor.remove(channelName)
+                        deepUnverifiedRetries.remove(channelName)
+                        // The whole history is in, so a send that did land has its copy to match
+                        // (iOS e5a9b11).
+                        settlePendingSendsFromBeforeThisRun(channelName)
+                    }
                 }
             }
-            fetched
+            if (interrupted) -1 else fetched
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            android.util.Log.w("BroadcastRepository", "Indexer backfill paused for $channelName at before=$before", e)
+            // Best-effort on top of live scanning - the loop just tries again next tick.
+            noteIndexerResult(base, e)
+            android.util.Log.w("BroadcastRepository", "Indexer fetch failed for $channelName", e)
             -1
         }
     }
@@ -838,9 +1049,15 @@ class BroadcastRepository @Inject constructor(
      * message shows up in the room right away and stays visible even if the send fails — matches
      * ChatViewModel.sendMessage's exact pattern for 1:1 chats. On success the placeholder is
      * swapped for the real message (real txId, "sent"); on failure it flips to "failed" in place
-     * with a Retry option, rather than disappearing silently.
+     * with a Retry option, rather than disappearing silently. [dropRowOnFailure]: an edit, whose
+     * row goes instead - see [sendEdit].
      */
-    suspend fun sendBroadcast(channelName: String, content: String, feeRateOverride: Long? = null): String {
+    suspend fun sendBroadcast(
+        channelName: String,
+        content: String,
+        feeRateOverride: Long? = null,
+        dropRowOnFailure: Boolean = false,
+    ): String {
         val myAddress = walletManager.getAddress()
         val pendingId = "pending_${java.util.UUID.randomUUID()}"
         // This run is working on it, so the leftover-pending settle leaves it alone (iOS e5a9b11).
@@ -882,7 +1099,12 @@ class BroadcastRepository @Inject constructor(
             // pending for the settle, like an unknown outcome.
             throw e
         } catch (e: Exception) {
-            database.broadcastDao().updateMessageStatus(pendingId, "failed")
+            if (dropRowOnFailure) {
+                pendingSendsThisRun.remove(pendingId)
+                database.broadcastDao().deleteMessage(pendingId)
+            } else {
+                database.broadcastDao().updateMessageStatus(pendingId, "failed")
+            }
             throw e
         }
     }

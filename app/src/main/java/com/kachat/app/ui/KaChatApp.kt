@@ -629,13 +629,72 @@ fun MainShell(
     // PaymentRequestSheetPresenter): Send Kaspa with it filled in, or your own to copy or share.
     com.kachat.app.ui.screens.PaymentRequestSheetHost(walletViewModel = walletViewModel, chatViewModel = chatViewModel)
 
+    fun openRoomFromLink(channel: String) {
+        com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
+        showTab(Screen.Broadcasts)
+        navController.navigate("broadcast_channel/$channel")
+    }
+
+    // Letters from more than one of the alphabets that share look-alike shapes, the way a Cyrillic
+    // "а" passes for a Latin "a" in a well-known room's name (iOS ee5ec98 `hasMixedScripts`).
+    fun hasMixedScripts(name: String): Boolean {
+        val seen = mutableSetOf<String>()
+        var offset = 0
+        while (offset < name.length) {
+            val scalar = name.codePointAt(offset)
+            offset += Character.charCount(scalar)
+            if (!Character.isAlphabetic(scalar)) continue
+            when (scalar) {
+                in 0x41..0x5A, in 0x61..0x7A, in 0xC0..0x24F -> seen.add("latin")
+                in 0x370..0x3FF, in 0x1F00..0x1FFF -> seen.add("greek")
+                in 0x400..0x52F, in 0x2DE0..0x2DFF, in 0xA640..0xA69F -> seen.add("cyrillic")
+                in 0x530..0x58F -> seen.add("armenian")
+                in 0x13A0..0x13FF, in 0xAB70..0xABBF -> seen.add("cherokee")
+            }
+        }
+        return seen.size > 1
+    }
+
+    // A link that would add a room asks first (iOS ee5ec98 `confirmJoin`): any app or post can
+    // hand over a link, and the name is whatever it likes. Curated rooms always exist, and one
+    // already on the list needs nothing. Cancel withdraws the join request.
+    var roomLinkToConfirm by remember { mutableStateOf<String?>(null) }
     val pendingBroadcastLinkChannel by BroadcastDeepLink.pendingChannel.collectAsState()
     LaunchedEffect(pendingBroadcastLinkChannel) {
         val channel = pendingBroadcastLinkChannel ?: return@LaunchedEffect
         BroadcastDeepLink.consumePending()
-        com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
-        showTab(Screen.Broadcasts)
-        navController.navigate("broadcast_channel/$channel")
+        val listed = channel in com.kachat.app.models.FeaturedBroadcastChannels.CURATED_NAMES ||
+            notificationBroadcastViewModel.isOnRoomList(channel)
+        if (listed) openRoomFromLink(channel) else roomLinkToConfirm = channel
+    }
+    roomLinkToConfirm?.let { channel ->
+        val cancelJoin = {
+            BroadcastDeepLink.consumeJoinRequest(channel)
+            roomLinkToConfirm = null
+        }
+        com.kachat.app.ui.theme.IosAlertDialog(
+            onDismissRequest = { cancelJoin() },
+            title = { Text(androidx.compose.ui.res.stringResource(com.kachat.app.R.string.room_link_join_title, channel)) },
+            text = {
+                val message = androidx.compose.ui.res.stringResource(com.kachat.app.R.string.room_link_join_message)
+                val warning = androidx.compose.ui.res.stringResource(com.kachat.app.R.string.room_link_mixed_scripts)
+                Text(if (hasMixedScripts(channel)) "$message\n\n$warning" else message)
+            },
+            dismissButton = {
+                TextButton(onClick = { cancelJoin() }) {
+                    Text(androidx.compose.ui.res.stringResource(com.kachat.app.R.string.cancel))
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    // The join request stays: the room screen consumes it on open.
+                    roomLinkToConfirm = null
+                    openRoomFromLink(channel)
+                }) {
+                    Text(androidx.compose.ui.res.stringResource(com.kachat.app.R.string.join))
+                }
+            },
+        )
     }
 
     // KaChat's welcome guide used to lift the hold create/import put on syncing; KaPosts has no

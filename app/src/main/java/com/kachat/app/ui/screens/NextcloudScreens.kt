@@ -242,8 +242,19 @@ fun NextcloudPdfViewerDialog(
 @Composable
 fun NextcloudPhotoViewerDialog(
     downloadUrl: String,
+    shareUrl: String? = null,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    // Above the card cap, since someone tapped to see this; the server is still a stranger's, and
+    // it is decoded no larger than this (iOS ee5ec98 `fullImageMaxBytes`, 4096 px).
+    val imageRequest = remember(downloadUrl, shareUrl) {
+        ImageRequest.Builder(context)
+            .data(downloadUrl)
+            .fetcherFactory(com.kachat.app.services.BoundedImageFetcher.Factory(shareUrl, com.kachat.app.services.LinkPreviewService.FULL_IMAGE_MAX_BYTES))
+            .size(4096)
+            .build()
+    }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         var scale by remember { mutableStateOf(1f) }
         var offset by remember { mutableStateOf(Offset.Zero) }
@@ -259,7 +270,7 @@ fun NextcloudPhotoViewerDialog(
                 .background(Color.Black)
         ) {
             SubcomposeAsyncImage(
-                model = downloadUrl,
+                model = imageRequest,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
                 loading = {

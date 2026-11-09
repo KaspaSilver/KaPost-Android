@@ -100,6 +100,8 @@ class BroadcastScanningService @Inject constructor(
     private var liveViewedChannelNames: Set<String> = emptySet()
     private var notifyEnabledChannelNames: Set<String> = emptySet()
         private var hiddenSenderRows: List<com.kachat.app.models.HiddenBroadcastSenderEntity> = emptyList()
+    /** Which indexer each room reads from and which are down; null until the settings are read. */
+    private var roomIndexerCoverage: RoomIndexerCoverage? = null
 
     init {
         // Self-observing rather than wired externally per-screen: this needs to hold/release its
@@ -151,6 +153,15 @@ class BroadcastScanningService @Inject constructor(
         scope.launch {
             meteredNetwork.isMeteredFlow.collect { reevaluate() }
         }
+        // An indexer confirmed down, or back: its rooms' delivery path changed (iOS ee5ec98).
+        scope.launch {
+            kotlinx.coroutines.flow.combine(
+                broadcastRepository.roomIndexerBases(),
+                broadcastRepository.unreachableIndexers,
+            ) { bases, down ->
+                RoomIndexerCoverage(appWideBase = bases.first, overrides = bases.second, unreachable = down.keys)
+            }.collect { setRoomIndexerCoverage(it) }
+        }
         // Rows cached before public-chat sender verification existed took output 0's address
         // (or the indexer's guess) as the sender: re-check them against the chain once (XP-012).
         scope.launch {
@@ -176,6 +187,21 @@ class BroadcastScanningService @Inject constructor(
 
     @Synchronized
     private fun isChannelNotifyEnabled(channelName: String): Boolean = channelName in notifyEnabledChannelNames
+
+    @Synchronized
+    private fun setRoomIndexerCoverage(coverage: RoomIndexerCoverage) {
+        roomIndexerCoverage = coverage
+        reevaluate()
+    }
+
+    /** Whether an indexer covers this room: an indexer that isn't answering covers nothing, and
+     *  its rooms keep the stream until it does (iOS ee5ec98 `scanWantedChannels`). */
+    private fun hasIndexerDelivery(channelName: String): Boolean {
+        if (!FeaturedBroadcastChannels.isIndexerTracked(channelName)) return false
+        val coverage = roomIndexerCoverage ?: return true
+        val base = BroadcastRepository.indexerBaseUrl(channelName, coverage.appWideBase, coverage.overrides)
+        return base.isNotEmpty() && base !in coverage.unreachable
+    }
 
     @Synchronized
     private fun setHiddenSenderRows(rows: List<com.kachat.app.models.HiddenBroadcastSenderEntity>) {
@@ -322,7 +348,7 @@ class BroadcastScanningService @Inject constructor(
      * other delivery path — the indexer-tracked rooms (curated, or added on the indexer)
      * already get an 8s indexer poll while open (BroadcastViewModel.startIndexerBackfill) plus a 30-day history backfill on
      * open, and their bell notifications ride remote push, so only non-indexed always-listen /
-     * live-viewed channels need the stream — and even then only while the app is foregrounded
+     * live-viewed channels (and those whose indexer is confirmed down, iOS ee5ec98) need the stream — and even then only while the app is foregrounded
      * (backgrounded metered streaming trades the whole data budget for messages nobody is
      * watching; the retention cache just has a gap for that window, same as an app restart).
      */
@@ -337,7 +363,7 @@ class BroadcastScanningService @Inject constructor(
                 (
                     notificationHelper.isAppInForeground &&
                         (alwaysListenChannelNames + liveViewedChannelNames)
-                            .any { !FeaturedBroadcastChannels.isIndexerTracked(it) }
+                            .any { !hasIndexerDelivery(it) }
                     )
             )
         if (shouldRun) startInternal() else stopInternal()
@@ -566,6 +592,12 @@ class BroadcastScanningService @Inject constructor(
             }
         }
     }
+
+    private data class RoomIndexerCoverage(
+        val appWideBase: String,
+        val overrides: Map<String, String>,
+        val unreachable: Set<String>,
+    )
 
     companion object {
         /** How often a room nobody is looking at is refreshed from the indexer - see the sweep. */

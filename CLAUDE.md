@@ -46,10 +46,14 @@ What is still KaChat-shaped underneath:
 
 Every KaChat app has KaPay's full wallet (owner's call, 2026-11-07; it replaced "chatting address
 only" from 2026-11-05). Profile > Wallet (`KaPostWalletScreen`) is KaPay's Wallet tab: the total
-split into chatting and spending, Send, Receive and More (Compound UTXOs, Request Payment, the
-chatting address's keys), Backup Hygiene when due, then the Manage Addresses and Chatting Address
-squares (`WalletAddressSquares`), Your Domains (below) and Help (`WalletHelpScreen`, the .kachat
-names guide); then the history. The squares, Manage Addresses (`ManageAddressesScreen`, its
+split into chatting and spending, Send, Receive and Request (iOS ee5ec98: Compound UTXOs and an
+address's keys are in Manage Addresses, under that address), Backup Hygiene when due, then the
+Manage Addresses and Chatting Address squares (`WalletAddressSquares`), Your Domains (below) and
+Help (`WalletHelpScreen`, the .kachat names guide). No transaction history on this screen (owner's
+call, 2026-11-09). Each single-address page (the Chatting Address and a spending address) has one
+options icon at the top right (`AddressOptionsButton`), opening `AddressActionsSheet`: View Private
+Key, View Public Key (not for a quantum address, whose key stays hidden until it spends) and View
+in Explorer. The squares, Manage Addresses (`ManageAddressesScreen`, its
 floating Address Actions button: Generate, Discover, Address Visibility), a spending address's page
 (`SpendingAddressTxHistoryScreen`, route `spending_address_detail/{index}`), Address Visibility, the
 Chatting Address QR page (`chatting_address_qr`) and Receive's fresh address (`ReceiveKaspaQrPage`)
@@ -84,9 +88,9 @@ Status: Listed row has nothing to show.
 |---|---|---|
 | Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
 | Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once; Select (top right) picks rooms for Read, Unread, Mute and Delete; rows swipe (`SwipeActionsRow`; left: Delete, Mute, Pin; right: read state), and a pinned room moves into the circles row above the list, saved per account (`KaPostRoomPins`); the tab's badge is the unread count across the rooms (`KaPostsDock.unreadPublicChats`) |
-| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`, Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and More (iOS 7d8b258: Compound UTXOs, dimmed until the chatting address holds two or more coins, Request Payment, View Private Key behind the seed's lock, View Public Key, as in KaPlay), the backup hygiene card, the Manage Addresses and Chatting Address squares, Your Domains and Help (iOS 071e901, see Full wallet), then the chatting address's history) |
+| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`; Log Out (red, beside Wallet, iOS ee5ec98); Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and Request (iOS ee5ec98), the backup hygiene card, the Manage Addresses and Chatting Address squares, Your Domains and Help (iOS 071e901, see Full wallet)) |
 | Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; a row opens its post on the Feed (a follow opens the follower's profile); the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
-| Settings | `settings` | `SettingsScreen`, alphabetical (iOS e5a9b11): About (version, Terms of Use, Open Source Licenses), Account Name, Back Up Account (Complete Your Backup, View 12 or 24 Words, Back Up to NFC Card), Connection (its tabs swipe; the .kachat names indexer URL is on Domains), Customization, Diagnostics, KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency; instant tips are capped at 10 KAS and ask for the phone's lock once when turned on; Tips From, iOS 071e901), Notifications, Security, Storage; then Delete Account (`DeleteAccountSheet`, the warning the opening screen's Delete also shows; both ask for the phone's lock first; `WalletViewModel.deleteCurrentAccount`), Log Out |
+| Settings | `settings` | `SettingsScreen`, alphabetical (iOS e5a9b11): About (version, Terms of Use, Open Source Licenses), Account Name, Back Up Account (Complete Your Backup, View 12 or 24 Words, Back Up to NFC Card), Connection (its tabs swipe; the .kachat names indexer URL is on Domains), Customization, Diagnostics, KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency; instant tips are capped at 10 KAS and ask for the phone's lock once when turned on; Tips From, iOS 071e901), Notifications, Security, Storage; then Delete Account (`DeleteAccountSheet`, the warning the opening screen's Delete also shows; both ask for the phone's lock first; `WalletViewModel.deleteCurrentAccount`). Log Out is on the Profile |
 
 The dock stays in reach on every screen and steps aside for the keyboard. Pushed screens keep the
 real one (`AboveDock` lays them out above it; the Wallet, a room and the tabs run on under it
@@ -152,6 +156,15 @@ older saved "on" is switched off once per install (`KEY_ACCOUNT_LOGIN_BIOMETRICS
   recovery screen. The Screen Lock Required dialog is its own window and shows once at a time. iOS's
   Keychain-only items (snapshots, tightening seed items at launch, the active slot) have no Android
   counterpart: every account sits in the one encrypted store.
+- Accounts (iOS ee5ec98): Delete Account also clears the account's follows, mutes and blocks
+  (`AppSettingsRepository.removeKaPostsAccountData`, from `ChatRepository.wipeAllLocalDataForAddress`).
+  iOS's key repair at launch has no Android counterpart: words and address are one record, written
+  in one commit. The recovery screen tries the store again whenever it comes to the front
+  (`WalletViewModel.retryKeyRecovery`, iOS `reloadOnceUnlocked`). Log Out and Delete never wait for the
+  push unregister (`unregisterAsync` snapshots the key first), which iOS now caps at 4 s.
+- A link that would add a room asks first (iOS ee5ec98 `confirmJoin`, in `MainShell`): a curated room
+  or one already on the list opens, anything else shows Join #name?, with a warning when the name
+  mixes alphabets. Cancel withdraws the join request.
 - The diagnostics export shortens every Kaspa address in the logs it bundles to its last 8
   characters (`redactingKaspaAddresses`, iOS `AppLog.log`).
 
@@ -161,9 +174,71 @@ older saved "on" is switched off once per install (`KEY_ACCOUNT_LOGIN_BIOMETRICS
 `docs/PROTOCOL.md` in KaChat-NFC, so a card works across apps; `family` uses iOS's names, and iOS's
 payload version 2 (the doc still shows version 1). In every build, Play too (iOS e5a9b11).
 Settings > Back Up Account > Back Up to NFC Card only exists for an account with a BIP39 passphrase,
-which is never written to the card. A new PIN is typed twice (iOS 33095ac). Import Account > Restore
+which is never written to the card. A new PIN is typed twice (iOS 33095ac), and PIN and passphrase
+fields are hidden unless their eye is tapped (iOS ee5ec98). Import Account > Restore
 from NFC Card; an account already saved here keeps its name. Android has no system
 scan sheet, so the app draws `NfcScanSheet` while reader mode runs.
+
+## Rooms during an indexer outage (iOS ee5ec98)
+
+`BroadcastRepository.noteIndexerResult`, per indexer (a room can have its own), apart from the KaPost
+indexer's detector: three failures in a row inside two minutes confirm it down (offline, a cancelled
+request or a body that won't decode don't count; any answer, a 4xx too, resets it; failures inside 5 s
+are one). While down a room stays on the block stream on cellular too (`unreachableIndexers`, read by
+`BroadcastScanningService.hasIndexerDelivery`). On recovery each backfilled room pages that indexer again
+from ten minutes before the outage (`rewindRoomsAfterOutage`, `deepBackfillFloor`); a steady poll whose
+whole page is newer than anything seen pages back the same way (`indexerNewestSeen`). Older room history
+has no other source; saved rows stay. A failed room edit deletes its row, so the message reads as before,
+and keeps its text in memory for Retry (`failedEdits`); an unknown outcome shows "Not confirmed". iOS's
+crafted-voice-note fix has no counterpart: Android has no WebM parser, `MediaPlayer` plays the file.
+
+## .kachat names with the indexer down (iOS ee5ec98)
+
+`KachatNamesRegistry`, as iOS: after 3 failures in a row inside 120 s (`indexerOutageConfirmed`; an
+undecodable body doesn't count, nor does being offline) the registry moves to its chain copy
+(`fromIndexer`, `failOverToChain`), and a refresh goes back when it recovers. One missed status check
+doesn't drop a working indexer; a wrong covenant id, `synced == false` or too much lag still do. A chain
+copy answers only if this session's walk reached the tip in the last 10 minutes (`chainTipAt`,
+`readChainState`), so saved names keep showing and a name never reads as free from a stale or partial
+copy. After a failover the indexer isn't asked for 60 s (`chainHoldUntil`). A failed read keeps what's on
+screen and never marks a pending claim failed. `confirmOnChain` always checks the live UTXO, whatever
+the source: no record is trusted to pay on its own. A commit from the chain copy forces a walk first
+(`lookupForCommit`), and a commit resend reuses its own coins (`PendingRegistration.commitInputs`), so it
+can't land twice. A walk repeats until the tip (`walkToTip`), the standby copy is walked every 30
+minutes (2 hours on a metered network), and without an indexer a person's profile is read from their
+own chain record (`chainProfile`). `.kachat` funding leaves out the coins a send in flight spent
+(`KachatNamesService.unreservedFundingUtxos`).
+
+Download caps (iOS ee5ec98): a link preview's page stops at 1 MB, its image at 5 MB, and Nextcloud's
+photo and PDF viewer at 15 MB (`BoundedImageFetcher`, `LinkPreviewService.downloadToCacheFile`), whatever
+Content-Length says. Coil decodes each to the size it is shown at; the viewer to 4096 px at most.
+
+## With the indexer down (iOS ee5ec98)
+
+What relies on the indexer keeps working from the node where it can, shows what it saved where it
+can't, and recovers by itself (`services/KaPostsChainFallback.kt`).
+
+- The indexer is the source whenever it's online. `KaPostsIndexerHealth`: every KaPost read and write
+  reports. Confirmed down only after 3 failures in a row inside 120 s (a network failure while the
+  phone has a connection, 429 or 5xx), and any answer resets the count; a body that won't decode is
+  an answer. Until then a failed request throws as before. One small request a minute looks for
+  its return (`KaPostsService.probeIndexer`).
+- Saved pages: `KaPostsService.get` keeps each read's first page on disk (`KaPostsPageCache`, per
+  account, cleared by Delete Account) and serves it only while confirmed down or with the phone
+  offline.
+- From the chain, first pages only: a person's posts and replies from Kaspa REST
+  (`KaPostsChainPosts`, through `KaPostChainReader.addressPayloads`), the Following feed from the people
+  followed (the first 20), and new posts and replies from the block stream (`KaPostsLiveChainFeed`, only
+  while down and in front, its own owner on the connection `BroadcastScanningService` streams from). Every
+  one must pass its Schnorr signature, since a payload can name anyone. Nothing but the indexer lists every post, or who reacted to yours, so the global
+  feed is the saved page plus what's new, and notifications are the saved page until it returns.
+- The feed says so while it lasts. When the indexer answers, the feed, your profile and notifications
+  reload, and every load gate is cleared, so it has the final word.
+- Scheduled posts: only a node's rejection fails one. Offline, connecting or no answer leaves it
+  scheduled with its coins held. Past its time, a post the indexer doesn't send within 150 s goes from
+  the phone. A Cancel the indexer didn't answer stays scheduled and says so.
+- Posts not on chain yet (`KaPostsHeldPostStore`): their words are kept until they land, and what a kill
+  leaves comes back as a draft.
 
 ## KaPost links in rooms (as iOS 23920c8)
 
@@ -257,7 +332,10 @@ That shows "Not confirmed" with only Done on the swipe screen, and posts, replie
 instant tips marked `UNCONFIRMED` offer no Retry, which could post and pay twice. A room message
 whose outcome is unknown keeps its row as `deliveryStatus` "unconfirmed" under the transaction's
 id, and its delivered copy (indexer or block scan) makes it "sent"; a pending row an earlier run
-left is settled the same way, never marked failed (iOS 33095ac). Coin Control lists every coin at
+left is settled the same way, never marked failed (iOS 33095ac). What a send spent stays reserved
+(`NodePoolManager.submittedInputs`) until it is in a block, but an unknown outcome is deliberately
+not held (iOS ee5ec98): a send made after "Not confirmed" picks the same coins, so only one of the
+two can land. Coin Control lists every coin at
 the address and greys out, unselectable, the ones the send won't spend (spent by a send in flight,
 held by a scheduled post, unconfirmed, or a mining reward where the send takes neither).
 
@@ -283,9 +361,11 @@ names the post, counts on it and lists the tipper. From another address a tip is
 call, 2026-11-07): `ChatViewModel.sendPayment` drops the tip and sends a plain payment with the chat
 notice, so the author gets it in your chat but it names no post, isn't counted and doesn't list
 you; the fee preview and Max price it the same way (`previewPaymentFee`, `paymentMaxSompi`). KaPost
-Settings > Tips From (`KaPostTipSourcePage`, `AppSettingsRepository.kaPostsDefaultTipSourceIndex`,
-resolved by `kaPostDefaultTipSource`; a spending index that can't be derived reads as the chatting
-address) picks the instant tip's address and the tip sheet's first choice; an instant tip from
+Settings > Tips From (`KaPostTipSourcePage`, per account: `WalletViewModel.kaPostsTipSourceIndex`,
+iOS ee5ec98 `KaPostsTipSourceStore`; the old device-wide value seeds each account once; resolved by
+`kaPostDefaultTipSource`, which answers null for a spending index the account hasn't revealed or
+can't derive, so nothing goes out on its own and the row says Not available) picks the instant tip's
+address and the tip sheet's first choice; an instant tip from
 another address isn't counted on the post and its toast says "privately". Compound Max at Fast /
 Priority already priced its own coins and skipped coins in flight
 (`WalletViewModel.maxConsolidatableChunk`), so iOS 071e901's fix there needed no change.

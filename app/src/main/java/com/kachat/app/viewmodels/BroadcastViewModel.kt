@@ -2,6 +2,7 @@ package com.kachat.app.viewmodels
 
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emitAll
 import com.kachat.app.util.redactedForLog
 import android.content.Context
@@ -360,6 +361,11 @@ class BroadcastViewModel @Inject constructor(
     val joinedChannels: StateFlow<List<BroadcastChannelEntity>> = broadcastRepository.getJoinedChannels()
         .map { channels -> channels.filter { it.channelName !in com.kachat.app.services.ChessTournamentService.SERVICE_CHANNELS } }
         .flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** Whether [channelName] is on this account's list already, read from the database: a link
+     *  opened on a cold start finds [joinedChannels] still empty (iOS ee5ec98 `confirmJoin`). */
+    suspend fun isOnRoomList(channelName: String): Boolean =
+        broadcastRepository.getJoinedChannels().first().any { it.channelName == channelName }
 
     /**
      * Each joined room's newest message and unread count, for the Public Chats list. Rebuilt when
@@ -950,6 +956,20 @@ class BroadcastViewModel @Inject constructor(
         _editingMessage.value = null
     }
 
+    init {
+        // Another account's composer targets don't carry over (iOS ee5ec98 setCurrentWallet). Here,
+        // after the two flows it clears: their declarations run in order.
+        viewModelScope.launch {
+            walletManager.activeAddressFlow.drop(1).collect {
+                _replyingTo.value = null
+                _editingMessage.value = null
+            }
+        }
+    }
+
+    /** Edits that never left the phone, by room then message, waiting for Retry (iOS ee5ec98). */
+    val failedEdits: StateFlow<Map<String, Map<String, String>>> get() = broadcastRepository.failedEdits
+
     /** The newest edit per message in [channelName], keyed by the edited message's txId - see
      *  [BroadcastRepository.getEdits]. */
     fun getEdits(channelName: String) = broadcastRepository.getEdits(channelName)
@@ -965,18 +985,43 @@ class BroadcastViewModel @Inject constructor(
         // A still-pending target has no real txId yet - an edit naming it could never be resolved
         // by anyone else (same guard as [sendReaction]).
         if (targetTxId.startsWith("pending_")) return
-        _editingMessage.value = null
+        // Only this message's: a Retry must not close another edit under way (iOS ee5ec98).
+        if (_editingMessage.value?.id == targetTxId) _editingMessage.value = null
+        launchEdit(channelName, targetTxId, clean)
+    }
+
+    /** Sends a failed edit's text again (iOS ee5ec98 `retryFailedEdit`). */
+    fun retryFailedEdit(channelName: String, targetTxId: String) {
+        val text = broadcastRepository.failedEditText(channelName, targetTxId) ?: return
+        launchEdit(channelName, targetTxId, text)
+    }
+
+    private fun launchEdit(channelName: String, targetTxId: String, text: String) {
         // On the repository's scope, so Back doesn't cancel it (see [BroadcastRepository.sendScope]).
         broadcastRepository.sendScope.launch {
             try {
-                broadcastRepository.sendBroadcast(channelName, com.kachat.app.util.MessageEdit.encode(targetTxId, clean))
+                broadcastRepository.sendEdit(channelName, targetTxId, text)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e("BroadcastViewModel", "Error sending broadcast edit", e)
-                // A toast, as iOS PublicChatChannelView.send shows (3 s).
-                showFailureToast("Failed to edit", e)
+                showEditFailure(e)
             }
+        }
+    }
+
+    /** A toast, as iOS PublicChatChannelView.showEditFailure shows (3 s). */
+    private fun showEditFailure(e: Exception) {
+        // Not "Failed": it may well have gone through.
+        if (e is com.kachat.app.services.SendOutcomeUnknownException) {
+            if (!roomClosed) {
+                com.kachat.app.ui.screens.IosToasts.show(
+                    com.kachat.app.services.SendOutcomeUnknownException.MESSAGE,
+                    durationMs = com.kachat.app.ui.screens.IosToastDuration.LONG,
+                )
+            }
+        } else {
+            showFailureToast("Failed to edit", e)
         }
     }
 
@@ -1014,7 +1059,8 @@ class BroadcastViewModel @Inject constructor(
             _sendBroadcastState.value = SendBroadcastUiState(status = SendBroadcastStatus.SENDING)
             try {
                 broadcastRepository.sendBroadcast(channelName, payload, feeRateOverride = feeRate)
-                _replyingTo.value = null
+                // Only this reply: another may have been started while the send was out (iOS ee5ec98).
+                if (reply != null && _replyingTo.value?.id == reply.id) _replyingTo.value = null
                 _sendBroadcastState.value = SendBroadcastUiState()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _sendBroadcastState.value = SendBroadcastUiState()

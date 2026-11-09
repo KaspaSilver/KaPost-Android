@@ -559,7 +559,8 @@ class KachatLiveViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                emptyList()
+                // a failed read keeps what's on screen (iOS ee5ec98)
+                grace
             }
             // the chatting address and every used address of this wallet (iOS d1026de, IOS-085)
             loadOwnKeys()
@@ -3076,8 +3077,11 @@ fun KachatLiveNameDetailScreen(
         if (held == null && !vm.isMine(info.owner) && owner != null) {
             runCatching { vm.registry.identity(owner) }.getOrNull()?.let { ownerLabel = it.label }
         }
-        history = runCatching { vm.registry.history(info.name) }.getOrNull() ?: emptyList()
-        offers = KachatLive.currentOffers(runCatching { vm.registry.offers(info.name) }.getOrNull() ?: emptyList(), info.owner, history)
+        // a failed read keeps what's on screen: it isn't "no history" or "no offers" (iOS ee5ec98)
+        history = runCatching { vm.registry.history(info.name) }.getOrNull() ?: history
+        runCatching { vm.registry.offers(info.name) }.getOrNull()?.let { open ->
+            offers = KachatLive.currentOffers(open, info.owner, history)
+        }
         if (offers.isNotEmpty()) {
             vm.actions.refreshVirtualDaa()
             // Expired offers don't stay on your name: the owner's app (and the buyer's) send them
@@ -4632,7 +4636,10 @@ fun KachatLiveProfileEditorScreen(
             linktree = Profile.linktreeUsername(p.linktree)
         }
         KachatNamesRegistry.keyOf(address)?.let { key ->
-            activeNames = (runCatching { vm.registry.names(key, includeInactive = false) }.getOrNull() ?: emptyList()).map { it.name }
+            // a failed read isn't "no names": saving would drop the primary name (iOS ee5ec98)
+            runCatching { vm.registry.names(key, includeInactive = false) }.getOrNull()?.let { held ->
+                activeNames = held.map { it.name }
+            }
         }
         p?.primaryName?.let { if (it in activeNames) primary = it }
         loaded = true

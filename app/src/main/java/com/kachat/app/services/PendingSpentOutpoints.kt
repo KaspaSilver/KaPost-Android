@@ -38,6 +38,10 @@ internal class PendingSpentOutpoints(
         outpoints.forEach { pending[outpointKey(it)] = at }
     }
 
+    /** The coins ("txid:index") being kept out at [address] right now. */
+    @Synchronized
+    fun pendingKeys(address: String): Set<String> = livePending(address)?.keys?.toSet() ?: emptySet()
+
     /** How many coins at [address] are being kept out right now. */
     @Synchronized
     fun pendingCount(address: String): Int = livePending(address)?.size ?: 0

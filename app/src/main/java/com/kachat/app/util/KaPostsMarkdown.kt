@@ -62,10 +62,21 @@ object KaPostsMarkdown {
         val hasFormatting: Boolean get() = spans.isNotEmpty()
     }
 
+    /**
+     * [text] without the bidi embedding, override and isolate controls. Anyone can post them, and
+     * one reverses the order the rest of the text is read in. The plain direction marks (U+200E,
+     * U+200F) stay: they can't reorder anything, and right-to-left writing uses them (iOS ee5ec98).
+     */
+    fun strippingBidiControls(text: String): String =
+        if (text.none(::isBidiControl)) text else text.filterNot(::isBidiControl)
+
+    private fun isBidiControl(char: Char): Boolean =
+        char.code in 0x202A..0x202E || char.code in 0x2066..0x2069
+
     fun render(source: String): Rendered {
         val out = StringBuilder()
         val spans = mutableListOf<Span>()
-        source.split("\n").forEachIndexed { index, line ->
+        strippingBidiControls(source).split("\n").forEachIndexed { index, line ->
             if (index > 0) out.append('\n')
             renderLine(line, out, spans)
         }

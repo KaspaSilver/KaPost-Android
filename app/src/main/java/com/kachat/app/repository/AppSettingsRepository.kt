@@ -976,6 +976,40 @@ class AppSettingsRepository @Inject constructor(
         dataStore.edit { it[kapostsMutedKey(walletAddress)] = value }
     suspend fun setKapostsBlocked(walletAddress: String, value: Set<String>) =
         dataStore.edit { it[kapostsBlockedKey(walletAddress)] = value }
+
+    /** Delete Account: one wallet's follows, mutes and blocks, from this device (iOS ee5ec98
+     *  `KaPostsFollowStore` and `KaPostsModerationStore.removeAllData`). */
+    suspend fun removeKaPostsAccountData(walletAddress: String) = dataStore.edit {
+        it.remove(kapostsFollowingKey(walletAddress))
+        it.remove(kapostsMutedKey(walletAddress))
+        it.remove(kapostsBlockedKey(walletAddress))
+        it.remove(kaPostsTipSourceKey(walletAddress))
+    }
+
+    /** KaPost Settings > Tips From, per account (iOS ee5ec98 `KaPostsTipSourceStore`): a spending
+     *  index only means something on the account that revealed it. */
+    private fun kaPostsTipSourceKey(walletAddress: String) =
+        androidx.datastore.preferences.core.intPreferencesKey("kaposts_tip_source_${walletAddress.trim().lowercase()}")
+
+    /** The spending address [walletAddress] tips from, by index. null = the chatting address. */
+    fun kaPostsTipSourceIndex(walletAddress: String): Flow<Int?> =
+        dataStore.data.map { it[kaPostsTipSourceKey(walletAddress)] }
+
+    suspend fun setKaPostsTipSourceIndex(walletAddress: String, index: Int?) = dataStore.edit {
+        val key = kaPostsTipSourceKey(walletAddress)
+        if (index != null) it[key] = index else it.remove(key)
+    }
+
+    /** The setting used to be one per device: every saved account starts from what it was (iOS
+     *  ee5ec98 `moveDeviceSettingIfNeeded`), once per install. */
+    suspend fun moveKaPostsTipSourceToAccounts(accounts: List<String>) = dataStore.edit { prefs ->
+        val moved = androidx.datastore.preferences.core.booleanPreferencesKey("kaposts_tip_source_moved")
+        if (prefs[moved] == true) return@edit
+        prefs[moved] = true
+        val index = prefs[KEY_KAPOSTS_DEFAULT_TIP_SOURCE_INDEX] ?: return@edit
+        accounts.forEach { prefs[kaPostsTipSourceKey(it)] = index }
+    }
+
     suspend fun setTrustedNodeAddress(value: String) = dataStore.edit { it[KEY_TRUSTED_NODE_ADDRESS] = value }
     suspend fun setKnownGoodNodeAddresses(addresses: List<String>) = dataStore.edit {
         it[knownGoodNodesKey] = addresses.joinToString(",")

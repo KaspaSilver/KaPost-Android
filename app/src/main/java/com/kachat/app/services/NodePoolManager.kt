@@ -788,34 +788,31 @@ class NodePoolManager @Inject constructor(
         submit: suspend () -> String,
     ): String {
         val txId = expectedTxId.lowercase()
-        // Whatever it spends is held back from the next send, here rather than at each caller:
-        // on success, and on an unknown outcome, which may yet land (iOS 33095ac `reserveInputs`).
-        val sent = try {
-            SubmitConfirmation.submitOrConfirmKnown(
-                txId = txId,
-                isKnown = { isTransactionKnown(it, rest) },
-                onRecovered = { e ->
-                    Log.w("NodePoolManager", "Submit of ${txId.take(12)} reported \"${e.message}\" but the network has it: treated as sent")
-                },
-                onForeignAnswer = { Log.w("NodePoolManager", "A node answered a submit with a different id than ${txId.take(12)}") },
-                onAnswered = { resendIfNetworkCantSee(txId, rest, submit) },
-                lookup = { id -> isInAnyMempool(id) || (rest != null && isAcceptedViaRest(rest, id)) },
-                // a node turned it down: only a mempool or the built-in REST server can call it sent
-                isKnownAfterRejection = { isTransactionKnown(it, rest, builtInServerOnly = true) },
-                submit = submit,
-            )
-        } catch (unknown: SendOutcomeUnknownException) {
-            submittedInputs.record(SUBMITTED_INPUTS_KEY, inputs)
-            throw unknown
-        }
+        // Whatever it spends is held back from the next send, here rather than at each caller (iOS
+        // 33095ac `reserveInputs`), once the submit is known to have gone. An unknown outcome is
+        // deliberately not held (iOS ee5ec98): a resend then picks these same coins, so only one
+        // of the two can land, where held it would pick other coins and both could.
+        val sent = SubmitConfirmation.submitOrConfirmKnown(
+            txId = txId,
+            isKnown = { isTransactionKnown(it, rest) },
+            onRecovered = { e ->
+                Log.w("NodePoolManager", "Submit of ${txId.take(12)} reported \"${e.message}\" but the network has it: treated as sent")
+            },
+            onForeignAnswer = { Log.w("NodePoolManager", "A node answered a submit with a different id than ${txId.take(12)}") },
+            onAnswered = { resendIfNetworkCantSee(txId, rest, submit) },
+            lookup = { id -> isInAnyMempool(id) || (rest != null && isAcceptedViaRest(rest, id)) },
+            // a node turned it down: only a mempool or the built-in REST server can call it sent
+            isKnownAfterRejection = { isTransactionKnown(it, rest, builtInServerOnly = true) },
+            submit = submit,
+        )
         submittedInputs.record(SUBMITTED_INPUTS_KEY, inputs)
         return sent
     }
 
     /**
      * Every submitted transaction's inputs, held back from the next send (iOS 33095ac
-     * `NodePoolService.reserveInputs` -> `ChatService.reserveOutpointKeys`): on success, and on an
-     * unknown outcome, which may yet land. Kept here rather than at each caller, so no path (posts,
+     * `NodePoolService.reserveInputs` -> `ChatService.reserveOutpointKeys`), once the submit went
+     * through (an unknown outcome is not held, iOS ee5ec98). Kept here rather than at each caller, so no path (posts,
      * tips, room messages, scheduled posts, KNS, `.kachat`) can skip it, and [KaspaWalletEngine]
      * leaves them out of every coin fetch it builds, prices or counts from. For 120 s
      * ([PendingSpentOutpoints.TTL_MS], iOS `pendingMessageUtxoTTL`).
@@ -825,6 +822,10 @@ class NodePoolManager @Inject constructor(
     /** [utxos] without the coins a transaction submitted in the last 120 s spent ([submittedInputs]). */
     fun withoutSubmittedInputs(utxos: List<UtxoEntry>): List<UtxoEntry> =
         submittedInputs.filter(SUBMITTED_INPUTS_KEY, utxos)
+
+    /** The same coins as "txid:index", for `.kachat` funding, whose coins aren't [UtxoEntry]s (iOS ee5ec98). */
+    fun submittedInputKeys(): Set<String> =
+        submittedInputs.pendingKeys(SUBMITTED_INPUTS_KEY).mapTo(HashSet()) { it.lowercase() }
 
     /**
      * In the background, a transaction the network can't see a moment after a node took it goes out

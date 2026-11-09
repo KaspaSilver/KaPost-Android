@@ -1112,6 +1112,8 @@ fun BroadcastChannelScreen(
     // envelope itself is never a message row.
     val editsFlow = remember(channelName) { broadcastViewModel.getEdits(channelName) }
     val editsByTxId by editsFlow.collectAsState(initial = emptyMap())
+    // Edits that never left the phone, waiting for Retry: their messages read as before (iOS ee5ec98).
+    val failedEdits by broadcastViewModel.failedEdits.collectAsState()
     val editingMessage by broadcastViewModel.editingMessage.collectAsState()
     val kaspaExplorer by broadcastViewModel.kaspaExplorer.collectAsState()
     val networkFeeRate by broadcastViewModel.networkFeeRate.collectAsState()
@@ -1806,6 +1808,18 @@ fun BroadcastChannelScreen(
                         else message.copy(content = com.kachat.app.util.MessageEdit.apply(editForRow.text, message.content))
                     }
                     val isMine = message.senderAddress == myAddress
+                    // The status under the bubble carries the edit's send state; `message` keeps
+                    // the row's own for the actions (iOS ee5ec98).
+                    val failedEditText = failedEdits[channelName]?.get(message.id)
+                    val shownDeliveryStatus = when {
+                        failedEditText != null -> "failed"
+                        editForRow?.deliveryStatus == "unconfirmed" -> "unconfirmed"
+                        else -> message.deliveryStatus
+                    }
+                    val retryMessage: () -> Unit = {
+                        if (failedEditText != null) broadcastViewModel.retryFailedEdit(channelName, message.id)
+                        else broadcastViewModel.retryBroadcast(message)
+                    }
                     val replyContent = remember(message.content) { MessageReply.parseOrNull(message.content) }
                     val displayContent = replyContent?.text ?: message.content
                     val voiceContent = remember(displayContent) { VoiceMessage.parseOrNull(displayContent) }
@@ -1844,8 +1858,10 @@ fun BroadcastChannelScreen(
                     val translationState = translationStates[translationKey]
                     // The text the bubble draws: the translation while one is showing, otherwise the
                     // message. Everything that decides WHAT the message is still reads displayContent.
-                    val shownText = (translationState as? com.kachat.app.services.PostTranslationService.TranslationState.Translated)
-                        ?.takeIf { translationKey !in translationOriginals }?.text ?: displayContent
+                    val shownText = strippingRoomBidiControls(
+                        (translationState as? com.kachat.app.services.PostTranslationService.TranslationState.Translated)
+                            ?.takeIf { translationKey !in translationOriginals }?.text ?: displayContent
+                    )
                     val isEntirelyInternalLinkMessage =
                         // The card is the WHOLE message wherever a KaChat link appears - see
                         // 1:1's identical rule. Copy and the full-text dialog keep everything.
@@ -1987,7 +2003,7 @@ fun BroadcastChannelScreen(
                                             .padding(horizontal = 14.dp, vertical = 10.dp)
                                     ) {
                                         Text(
-                                            displayContent.take(MESSAGE_TEXT_PREVIEW_LENGTH) + "…",
+                                            shownText.take(MESSAGE_TEXT_PREVIEW_LENGTH) + "…",
                                             color = if (isMine) LocalAppColors.current.onOutgoingBubble else LocalAppColors.current.textPrimary,
                                             fontSize = 17.sp,
                                         )
@@ -2001,7 +2017,8 @@ fun BroadcastChannelScreen(
                                     }
                                     if (showFullText) {
                                         FullMessageTextDialog(
-                                            text = displayContent,
+                                            // Every way a room's body is drawn reads shownText (iOS ee5ec98).
+                                            text = shownText,
                                             onDismiss = { showFullText = false },
                                             // iOS PublicChatChannelView's onCopyMessage: "Message copied." for 3 s.
                                             onCopy = {
@@ -2245,13 +2262,13 @@ fun BroadcastChannelScreen(
                                             showMenu = false
                                         }
                                         // Retry, then Reactions last, as iOS bubbleActions orders them.
-                                        if (isMine && message.deliveryStatus == "failed") {
+                                        if (isMine && shownDeliveryStatus == "failed") {
                                             ActionSheetRow(
                                                 icon = Icons.Default.Refresh,
                                                 title = stringResource(R.string.retry_send),
                                                 subtitle = "Sends this message again.",
                                             ) {
-                                                broadcastViewModel.retryBroadcast(message)
+                                                retryMessage()
                                                 showMenu = false
                                             }
                                         }
@@ -2366,10 +2383,8 @@ fun BroadcastChannelScreen(
                             ) {
                                 if (isMine) {
                                     DeliveryStatusLabel(
-                                        status = deliveryStatusOf(message.deliveryStatus),
-                                        onRetry = if (message.deliveryStatus == "failed") {
-                                            { broadcastViewModel.retryBroadcast(message) }
-                                        } else null,
+                                        status = deliveryStatusOf(shownDeliveryStatus),
+                                        onRetry = if (shownDeliveryStatus == "failed") retryMessage else null,
                                     )
                                 }
                             }
@@ -2494,6 +2509,14 @@ fun BroadcastChannelScreen(
 
 
 // MARK: - Room screen pieces (iOS PublicChatChannelView)
+
+private fun isRoomBidiControl(c: Char): Boolean = c.code in 0x202A..0x202E || c.code in 0x2066..0x2069
+
+/** [text] without the bidi embedding, override and isolate controls: anyone can post them, and one
+ *  reverses the order the rest of the text is read in. The plain direction marks (U+200E, U+200F)
+ *  stay: right-to-left writing uses them (iOS ee5ec98 `strippingBidiControls`). */
+private fun strippingRoomBidiControls(text: String): String =
+    if (text.none { isRoomBidiControl(it) }) text else text.filterNot { isRoomBidiControl(it) }
 
 /** iOS secondarySystemBackground: the room's incoming bubbles, its day dividers and the
  *  composer's reply/edit banners. */

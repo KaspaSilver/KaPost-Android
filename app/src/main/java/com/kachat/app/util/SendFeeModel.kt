@@ -20,6 +20,11 @@ object SendFeeModel {
      *  is not known yet. */
     const val STANDARD_SCRIPT_LEN = 34
 
+    /** A fresh change slot's scriptPublicKey length, for pricing only: a KIP-22 P2SH script, 35
+     *  bytes against P2PK's 34. Only its length reaches the fee, so no slot is derived or probed
+     *  for a Review (iOS ee5ec98 `freshChangeScriptForPricing`). */
+    const val FRESH_CHANGE_SCRIPT_LEN = 35
+
     /** Passes of [previewAutomaticSelection]'s fixed point. Each pass that does not settle adds at
      *  least one input, so this only bounds pathological coin sets. */
     private const val MAX_PREVIEW_PASSES = 16

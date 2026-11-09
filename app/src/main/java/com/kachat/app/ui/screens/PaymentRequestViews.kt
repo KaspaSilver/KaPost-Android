@@ -790,11 +790,10 @@ fun PaymentRequestSummary(request: PaymentRequest, modifier: Modifier = Modifier
 
         val creator = request.creator
         if (creator != null) {
-            // Who made it - checked against the signature in the link when it was opened.
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Filled.Verified, contentDescription = null, tint = colors.success, modifier = Modifier.size(14.dp))
-                Text(stringResource(R.string.pr_requested_by), color = colors.success, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            }
+            // Who made it. The signature in the link was checked when it was opened, but it
+            // covers the address only: the name on the card comes from the indexer or the KNS
+            // API, so no green check sits over it (iOS ee5ec98).
+            Text(stringResource(R.string.pr_requested_by), color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             AddressResolutionCard(address = creator)
             if (!creator.equals(request.address, ignoreCase = true)) {
                 Text(stringResource(R.string.pr_signed_by_their_chatting), color = colors.textSecondary, fontSize = 12.sp)

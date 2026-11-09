@@ -238,6 +238,9 @@ class AddressActivityNotifier @Inject constructor(
         } catch (e: Exception) {
             emptyList()
         }
+        // That read takes a moment, and an account switch meanwhile makes this someone else's
+        // receive: nothing below may record or announce it (iOS ee5ec98).
+        if (walletAddressOrNull() != walletAddress) return
         // the chatting address: only plain transfers newer than what was already looked at
         val floorKey = chattingFloorKey(walletAddress)
         val floor = prefs.getLong(floorKey, 0L).coerceAtLeast(0L)

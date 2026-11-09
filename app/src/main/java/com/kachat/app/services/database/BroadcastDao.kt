@@ -33,6 +33,11 @@ interface BroadcastDao {
     @Query("DELETE FROM broadcast_messages WHERE channelName NOT IN (SELECT channelName FROM broadcast_channels)")
     suspend fun deleteMessagesOfUnjoinedChannels()
 
+    /** A deleted account's sends that never landed. The room table is shared, so they would stay
+     *  in a room another account still has, as if they had been posted (iOS ee5ec98: its store goes). */
+    @Query("DELETE FROM broadcast_messages WHERE senderAddress = :senderAddress AND deliveryStatus != 'sent'")
+    suspend fun deleteUnsentMessagesFrom(senderAddress: String)
+
     /** How many accounts on this device still have [channelName] joined. */
     @Query("SELECT COUNT(*) FROM broadcast_channels WHERE channelName = :channelName")
     suspend fun countJoinedAccounts(channelName: String): Int

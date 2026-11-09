@@ -166,7 +166,11 @@ class WalletService @Inject constructor(
         /** Coin control and the extra fee - the Send KAS sheet with Chats Payment Privacy off
          *  (iOS 62c2773). Defaults keep every other caller unchanged. */
         manualUtxos: List<UtxoEntry>? = null,
-        extraFeeSompi: Long = 0L
+        extraFeeSompi: Long = 0L,
+        /** The fee the Review showed, and the account a chat payment was made as - see
+         *  [KaspaWalletEngine.sendKaspa] (iOS ee5ec98). */
+        expectedFeeSompi: Long? = null,
+        madeAsAccount: String? = null,
     ): String {
         // Off the main thread: the key is derived again (PBKDF2) and every input signed here, which
         // stuttered the screen when a post, tip or room message went out from the UI.
@@ -176,7 +180,9 @@ class WalletService @Inject constructor(
                 feeRateOverride = feeRateOverride,
                 manualUtxos = manualUtxos,
                 allowReducedAmount = allowReducedAmount,
-                extraFeeSompi = extraFeeSompi
+                extraFeeSompi = extraFeeSompi,
+                expectedFeeSompi = expectedFeeSompi,
+                madeAsAccount = madeAsAccount,
             )
         }
 
@@ -220,6 +226,9 @@ class WalletService @Inject constructor(
          *  Priority / custom extra fee (iOS 62c2773). */
         manualUtxos: List<UtxoEntry>? = null,
         extraFeeSompi: Long = 0L,
+        /** See [sendKaspa] (iOS ee5ec98). */
+        expectedFeeSompi: Long? = null,
+        madeAsAccount: String? = null,
     ): String {
         val result = walletEngine.sendSpendingPayment(
             toAddress = toAddress,
@@ -230,6 +239,8 @@ class WalletService @Inject constructor(
             manualUtxos = manualUtxos,
             extraFeeSompi = extraFeeSompi,
             isAddressUsed = { spendingAddressUsedState(it) },
+            expectedFeeSompi = expectedFeeSompi,
+            madeAsAccount = madeAsAccount,
         )
 
         if (result.isSuccess) {
@@ -367,6 +378,8 @@ class WalletService @Inject constructor(
         // against the shared REST host routinely got throttled, and every swallowed failure
         // painted a funded/used row as fresh. An entirely-empty result means the host answered
         // nothing: bail out as a failed load rather than fabricate an all-zero list.
+        // Read before the fetch: it is this account's, whichever is active when the answer comes.
+        val lastKnown = cachedSpendingAddressList().associate { it.address to it.balanceSompi }
         val balances = fetchBalancesBatched(addressByIndex.values.toList())
         if (balances.isEmpty()) return emptyList()
         // Re-read the primary index AFTER the slow balance round trip — a send can rotate it
@@ -399,8 +412,11 @@ class WalletService @Inject constructor(
                                 used
                             }
                         }
+                        // A failed read says nothing about the balance: the last known figure stays,
+                        // or the list shows 0 and the snapshot saves that 0 over good data
+                        // (iOS ee5ec98).
                         SpendingAddressEntry(
-                            index, address, balance ?: 0L, everUsed,
+                            index, address, balance ?: lastKnown[address] ?: 0L, everUsed,
                             isCurrent = index == primaryNow,
                             hidden = index in hiddenIndices,
                             label = labels[index],

@@ -159,11 +159,13 @@ class WalletManager @Inject constructor(
 
         /** The next fresh quantum slot (public index): one past [maxQuantumIndex] (chain index;
          *  -1 = none revealed) and past every slot in [inFlight] (public indices a send picked
-         *  for its change and has not revealed yet). */
-        internal fun nextFreshQuantumIndex(maxQuantumIndex: Int, inFlight: Collection<Int>): Int {
+         *  for its change and has not revealed yet). Never [receivePointer]: the slot the Receive
+         *  QR is pointing at is that QR's alone, even while it sits past the chain's end (iOS
+         *  ee5ec98 `nextFreshQuantumIndex`). */
+        internal fun nextFreshQuantumIndex(maxQuantumIndex: Int, inFlight: Collection<Int>, receivePointer: Int? = null): Int {
             val revealed = QUANTUM_INDEX_BASE + maxQuantumIndex + 1
-            val pending = inFlight.maxOrNull() ?: return revealed
-            return maxOf(revealed, pending + 1)
+            val next = inFlight.maxOrNull()?.let { maxOf(revealed, it + 1) } ?: revealed
+            return if (receivePointer == next) next + 1 else next
         }
 
         /** How many used slots [verifyFreshQuantumIndex] skips at most (iOS
@@ -199,14 +201,14 @@ class WalletManager @Inject constructor(
         /**
          * The public slots one allocation on an account takes (iOS fb2323e, IOS-109 / AND-056
          * follow-up): [count] in a row from THAT account's fresh slot - past [revealedMax], its
-         * quantum bound, and [inFlight], its own sends' change picks - whichever account is
-         * active. Null, so nothing is taken or written, when [revealedMax] is null: the account
-         * has been removed since its probe started.
+         * quantum bound, and [inFlight], its own sends' change picks, and never [receivePointer]
+         * (iOS ee5ec98) - whichever account is active. Null, so nothing is taken or written, when
+         * [revealedMax] is null: the account has been removed since its probe started.
          */
-        internal fun freshQuantumAllocation(revealedMax: Int?, inFlight: Collection<Int>, count: Int): List<Int>? {
+        internal fun freshQuantumAllocation(revealedMax: Int?, inFlight: Collection<Int>, count: Int, receivePointer: Int? = null): List<Int>? {
             if (revealedMax == null || count <= 0) return null
-            val first = nextFreshQuantumIndex(revealedMax, inFlight)
-            return List(count) { first + it }
+            val first = nextFreshQuantumIndex(revealedMax, inFlight, receivePointer)
+            return generateSequence(first) { it + 1 }.filter { it != receivePointer }.take(count).toList()
         }
 
         // --- Writes after a send land on the account it started on (iOS ca09dd0, IOS-109 / AND-056)
@@ -638,6 +640,9 @@ class WalletManager @Inject constructor(
             android.util.Log.w("WalletManager", "passphrase form stamp skipped", e)
         }
     }
+
+    /** Every saved account's chatting address (iOS `savedAccounts.map(\.publicAddress)`). */
+    fun savedAccountAddresses(): List<String> = getAccounts().map { it.address }
 
     private fun getAccounts(): List<Account> {
         accountsCache?.let { return it }
@@ -1465,7 +1470,8 @@ class WalletManager @Inject constructor(
      *  slot a send still in flight picked for its change ([pickFreshQuantumChange]), so nothing
      *  else is handed the same one before that send reveals it. */
     fun nextFreshQuantumIndex(): Int = synchronized(spendingIndexAllocationLock) {
-        nextFreshQuantumIndex(maxQuantumAddressIndex(), getActiveAccount()?.let { pendingQuantumChange[it.address] }.orEmpty())
+        val active = getActiveAccount()
+        nextFreshQuantumIndex(maxQuantumAddressIndex(), active?.let { pendingQuantumChange[it.address] }.orEmpty(), active?.let { getReceiveAddressIndex(it.address) })
     }
 
     /**
@@ -1506,7 +1512,7 @@ class WalletManager @Inject constructor(
 
     /** [nextFreshQuantumIndex] for [account], whichever account is active. */
     private fun nextFreshQuantumIndex(account: SpendingSweepAccount): Int = synchronized(spendingIndexAllocationLock) {
-        nextFreshQuantumIndex(sweepAccountRecord(account)?.let { maxQuantumIndex(it) } ?: -1, pendingQuantumChange[account.owner].orEmpty())
+        nextFreshQuantumIndex(sweepAccountRecord(account)?.let { maxQuantumIndex(it) } ?: -1, pendingQuantumChange[account.owner].orEmpty(), getReceiveAddressIndex(account.owner))
     }
 
     /** Raises [account]'s quantum bound past used public [index] (iOS
@@ -1546,7 +1552,7 @@ class WalletManager @Inject constructor(
         val account = getAccounts().firstOrNull { it.address == walletAddress } ?: getActiveAccount()
         val revealedMax = account?.let { maxQuantumIndex(it) } ?: -1
         val inFlight = pendingQuantumChange[walletAddress].orEmpty()
-        val index = nextFreshQuantumIndex(revealedMax, inFlight)
+        val index = nextFreshQuantumIndex(revealedMax, inFlight, getReceiveAddressIndex(walletAddress))
         inFlight.filter { it - QUANTUM_INDEX_BASE > revealedMax }
             .forEach { setSpendingAddressHidden(walletAddress, it, true) }
         ensureMaxQuantumAddressIndexAtLeast(walletAddress, index - QUANTUM_INDEX_BASE)
@@ -1851,7 +1857,7 @@ class WalletManager @Inject constructor(
      */
     fun pickFreshQuantumChange(account: SpendingSweepAccount): QuantumChangePick? = synchronized(spendingIndexAllocationLock) {
         val revealedMax = sweepAccountRecord(account)?.let { maxQuantumIndex(it) }
-        val index = freshQuantumAllocation(revealedMax, pendingQuantumChange[account.owner].orEmpty(), 1)?.single()
+        val index = freshQuantumAllocation(revealedMax, pendingQuantumChange[account.owner].orEmpty(), 1, getReceiveAddressIndex(account.owner))?.single()
             ?: return@synchronized null
         val address = deriveSpendingAddresses(listOf(index), account)[index] ?: return@synchronized null
         pendingQuantumChange.getOrPut(account.owner) { HashSet() }.add(index)
@@ -1936,7 +1942,7 @@ class WalletManager @Inject constructor(
         val inFlight = pendingQuantumChange[account.owner].orEmpty()
         // past any slot a send in flight picked for its change, too - kept hidden as the bound
         // passes it, as a reveal past it would; its send lists it if it goes through
-        val indices = freshQuantumAllocation(revealedMax, inFlight, count) ?: return@synchronized emptyList()
+        val indices = freshQuantumAllocation(revealedMax, inFlight, count, getReceiveAddressIndex(account.owner)) ?: return@synchronized emptyList()
         val derived = try { account.derive(indices) } catch (e: Exception) { return@synchronized emptyList() }
         val result = indices.map { index -> index to (derived[index] ?: return@synchronized emptyList()) }
         inFlight.filter { it - QUANTUM_INDEX_BASE > revealedMax }
@@ -1957,7 +1963,7 @@ class WalletManager @Inject constructor(
      */
     fun nextFreshSpendingAddress(account: SpendingSweepAccount): String? {
         val index = synchronized(spendingIndexAllocationLock) {
-            freshQuantumAllocation(sweepAccountRecord(account)?.let { maxQuantumIndex(it) }, pendingQuantumChange[account.owner].orEmpty(), 1)?.single()
+            freshQuantumAllocation(sweepAccountRecord(account)?.let { maxQuantumIndex(it) }, pendingQuantumChange[account.owner].orEmpty(), 1, getReceiveAddressIndex(account.owner))?.single()
         } ?: return null
         return deriveSpendingAddresses(listOf(index), account)[index]
     }

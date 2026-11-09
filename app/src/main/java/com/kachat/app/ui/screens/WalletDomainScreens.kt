@@ -174,6 +174,7 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     val kachatCount = rememberKachatHeldCount(walletAddress ?: "")
     val primaryDomainName by viewModel.primaryDomainName.collectAsState()
     val setPrimaryState by viewModel.setPrimaryState.collectAsState()
+    val confirmPrimaryTitle = stringResource(R.string.wd_confirm_primary_domain)
     // A .kachat name opened from the .kachat card's list: its live page.
     var selectedKachat by remember { mutableStateOf<NameInfo?>(null) }
     // Inscribe: the .kachat marketplace over Your Domains; the list refreshes when it closes.
@@ -243,8 +244,12 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                     ?.trim()
                     ?.let { if (it.length > 160) it.take(157) + "..." else it },
                 onSetPrimary = {
-                    pendingPrimary = selectedDomain.asset.orEmpty()
-                    viewModel.setPrimaryDomain(assetId)
+                    // It signs with this account's key and changes the name everyone sees: the
+                    // phone's lock comes first. Declining leaves everything as it was (iOS ee5ec98).
+                    context.authenticateWithDeviceCredential(title = confirmPrimaryTitle, onSuccess = {
+                        pendingPrimary = selectedDomain.asset.orEmpty()
+                        viewModel.setPrimaryDomain(assetId)
+                    })
                 },
                 onSend = {
                     viewModel.resetTransferDomainState()
@@ -775,9 +780,16 @@ private fun KnsDomainSendScreen(
     Column(Modifier.fillMaxSize()) {
         SheetNavBar(
             title = stringResource(R.string.send_domain),
-            leading = { SheetBarButton(stringResource(R.string.cancel), onClick = onCancel, enabled = !inFlight) },
+            leading = {
+                // It may have gone through: only Done, as sending again could spend twice (iOS ee5ec98).
+                if (!transferState.outcomeUnknown) {
+                    SheetBarButton(stringResource(R.string.cancel), onClick = onCancel, enabled = !inFlight)
+                }
+            },
             trailing = {
-                if (inFlight) {
+                if (transferState.outcomeUnknown) {
+                    SheetBarButton(stringResource(R.string.done), onClick = onCancel, emphasized = true)
+                } else if (inFlight) {
                     IosActivityIndicator(color = KaspaTeal)
                 } else {
                     SheetBarButton(

@@ -5,6 +5,8 @@ import com.kachat.app.util.KaPostsProtocol
 import com.kachat.app.util.KaspaAddress
 import com.kachat.app.util.KaspaMessageSigner
 import com.kachat.app.util.Secp256k1
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -344,12 +346,22 @@ data class KScheduledPostsResponse(val posts: List<KScheduledPost>?)
  */
 @Singleton
 class KaPostsService @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
     private val networkService: NetworkService,
     private val walletManager: WalletManager,
     private val walletService: WalletService,
+    private val settings: com.kachat.app.repository.AppSettingsRepository,
+    /** With the indexer down (iOS ee5ec98): whether it is, a person's posts, new posts. */
+    private val health: KaPostsIndexerHealth,
+    private val chainPosts: KaPostsChainPosts,
+    private val liveFeed: KaPostsLiveChainFeed,
 ) {
     companion object {
         private const val TAG = "KaPostsService"
+
+        /** A read while the indexer is down with nothing saved, asked briefly (iOS ee5ec98). */
+        private const val DOWN_READ_TIMEOUT_MS = 6_000L
+        private const val PROBE_TIMEOUT_MS = 20_000L
 
         /** When this account last put a post action on chain (epoch ms, 0 = not this run): your
          *  profile's pages loaded before it are out of date - a new post, a delete, an edit
@@ -469,20 +481,33 @@ class KaPostsService @Inject constructor(
 
     /** Global feed (K "watching" = all posts). Filtered to KaChat-marked posts. */
     suspend fun fetchGlobalFeedPage(limit: Int = 25, before: String? = null): KPage<KPost> =
-        rethrowingApiError {
-            val response = api().getPostsWatching(requesterPubkey(), limit, before)
+        withChain(before, read = {
+            val requester = requesterPubkey()
+            val response = get(
+                KPostsResponse::class.java, "get-posts-watching",
+                mapOf("requesterPubkey" to requester, "limit" to "$limit", "before" to before),
+            ) { it.getPostsWatching(requester, limit, before) }
             val raw = response.posts.orEmpty()
             pageOf(raw, filterKaChat(raw), response.pagination, limit) { it.id }
-        }
+        }, chain = {
+            // nothing lists every post but the indexer: what's new since it went away
+            liveFeed.posts.value.filter { it.parentPostId == null }
+        })
 
     /** Content from accounts the requester follows. Top-level content only - replies live under threads. */
     suspend fun fetchFollowingFeedPage(limit: Int = 25, before: String? = null): KPage<KPost> =
-        rethrowingApiError {
-            val response = api().getContentsFollowing(requesterPubkey(), limit, before)
+        withChain(before, read = {
+            val requester = requesterPubkey()
+            val response = get(
+                KPostsResponse::class.java, "get-contents-following",
+                mapOf("requesterPubkey" to requester, "limit" to "$limit", "before" to before),
+            ) { it.getContentsFollowing(requester, limit, before) }
             val raw = response.posts.orEmpty()
             val filtered = filterKaChat(raw).filter { (it.contentType ?: "post") != "reply" }
             pageOf(raw, filtered, response.pagination, limit) { it.id }
-        }
+        }, chain = {
+            followedPostsFromChain().filter { it.parentPostId == null }
+        })
 
     /** One user's posts (by K pubkey). NOTE: the deployed indexer ignores includeReplies
      *  (get-posts serves content_type post/quote only) - use fetchUserReplies for replies. */
@@ -491,30 +516,48 @@ class KaPostsService @Inject constructor(
         limit: Int = 25,
         before: String? = null,
         includeReplies: Boolean = false,
-    ): KPage<KPost> = rethrowingApiError {
-        val response = api().getUserPosts(
-            pubkey, requesterPubkey(), limit, if (includeReplies) "true" else null, before,
-        )
+    ): KPage<KPost> = withChain(before, read = {
+        val requester = requesterPubkey()
+        val replies = if (includeReplies) "true" else null
+        val response = get(
+            KPostsResponse::class.java, "get-posts",
+            mapOf("user" to pubkey, "requesterPubkey" to requester, "limit" to "$limit", "includeReplies" to replies, "before" to before),
+        ) { it.getUserPosts(pubkey, requester, limit, replies, before) }
         val raw = response.posts.orEmpty()
         pageOf(raw, filterKaChat(raw), response.pagination, limit) { it.id }
-    }
+    }, chain = {
+        val posts = chainPosts.posts(pubkey).orEmpty()
+        if (includeReplies) posts else posts.filter { it.parentPostId == null }
+    })
 
     /** One user's replies across ALL threads: get-replies with `user` instead of `post`
      *  (verified live + against the fork's handle_get_replies). Items carry parentPostId.
      *  The profile Replies tab must read this - get-posts never returns replies. */
     suspend fun fetchUserRepliesPage(pubkey: String, limit: Int = 25, before: String? = null): KPage<KPost> =
-        rethrowingApiError {
-            val response = api().getUserReplies(pubkey, requesterPubkey(), limit, before)
+        withChain(before, read = {
+            val requester = requesterPubkey()
+            val response = get(
+                KRepliesResponse::class.java, "get-replies",
+                mapOf("user" to pubkey, "requesterPubkey" to requester, "limit" to "$limit", "before" to before),
+            ) { it.getUserReplies(pubkey, requester, limit, before) }
             val raw = response.replies.orEmpty()
             pageOf(raw, filterKaChat(raw), response.pagination, limit) { it.id }
-        }
+        }, chain = {
+            chainPosts.posts(pubkey).orEmpty().filter { it.parentPostId != null }
+        })
 
     suspend fun fetchRepliesPage(postId: String, limit: Int = 25, before: String? = null): KPage<KPost> =
-        rethrowingApiError {
-            val response = api().getReplies(postId, requesterPubkey(), limit, before)
+        withChain(before, read = {
+            val requester = requesterPubkey()
+            val response = get(
+                KRepliesResponse::class.java, "get-replies",
+                mapOf("post" to postId, "requesterPubkey" to requester, "limit" to "$limit", "before" to before),
+            ) { it.getReplies(postId, requester, limit, before) }
             val raw = response.replies.orEmpty()
             pageOf(raw, filterKaChat(raw), response.pagination, limit) { it.id }
-        }
+        }, chain = {
+            liveFeed.posts.value.filter { it.parentPostId == postId }
+        })
 
     /**
      * One post by id, any age, any author.
@@ -523,27 +566,39 @@ class KaPostsService @Inject constructor(
      * they are another client's content, but a parent IS the context the reader asked for, and a
      * hole in a thread is worse than a Kasia-origin post inside it.
      */
-    suspend fun fetchPost(id: String): KPost? = rethrowingApiError {
-        api().getPost(id, requesterPubkey()).post
+    suspend fun fetchPost(id: String): KPost? {
+        val requester = requesterPubkey()
+        return get(KPostResponse::class.java, "get-post", mapOf("id" to id, "requesterPubkey" to requester)) {
+            it.getPost(id, requester)
+        }.post
     }
 
     /** One poll's current numbers, for refreshing a card without reloading the feed. */
-    suspend fun fetchPoll(postId: String): KPoll? = rethrowingApiError {
-        api().getPoll(postId, requesterPubkey()).toPoll()
+    suspend fun fetchPoll(postId: String): KPoll? {
+        val requester = requesterPubkey()
+        return get(KPollResponse::class.java, "get-poll", mapOf("postId" to postId, "requesterPubkey" to requester)) {
+            it.getPoll(postId, requester)
+        }.toPoll()
     }
 
     /** A post's whole ancestor chain, root first - one request instead of one per level. */
-    suspend fun fetchThread(id: String): List<KPost> = rethrowingApiError {
-        api().getThread(id, requesterPubkey()).ancestors.orEmpty()
+    suspend fun fetchThread(id: String): List<KPost> {
+        val requester = requesterPubkey()
+        return get(KThreadResponse::class.java, "get-thread", mapOf("id" to id, "requesterPubkey" to requester)) {
+            it.getThread(id, requester)
+        }.ancestors.orEmpty()
     }
 
     /** The requester's notification stream - actions on OUR content. */
-    suspend fun fetchNotificationsPage(limit: Int = 50, before: String? = null): KPage<KNotification> =
-        rethrowingApiError {
-            val response = api().getNotifications(requesterPubkey(), limit, before)
-            val raw = response.notifications.orEmpty()
-            pageOf(raw, raw, response.pagination, limit) { it.id }
-        }
+    suspend fun fetchNotificationsPage(limit: Int = 50, before: String? = null): KPage<KNotification> {
+        val requester = requesterPubkey()
+        val response = get(
+            KNotificationsResponse::class.java, "get-notifications",
+            mapOf("requesterPubkey" to requester, "limit" to "$limit", "before" to before),
+        ) { it.getNotifications(requester, limit, before) }
+        val raw = response.notifications.orEmpty()
+        return pageOf(raw, raw, response.pagination, limit) { it.id }
+    }
 
     /** Per-post actor lists (KaChat indexer fork) - works for ANY post. */
     suspend fun fetchPostEngagementPage(
@@ -551,26 +606,32 @@ class KaPostsService @Inject constructor(
         type: String = "all",
         limit: Int = 50,
         before: String? = null,
-    ): KPage<KEngagementEntry> = rethrowingApiError {
-        val response = api().getPostEngagement(postId, type, requesterPubkey(), limit, before)
+    ): KPage<KEngagementEntry> {
+        val requester = requesterPubkey()
+        val response = get(
+            KEngagementResponse::class.java, "get-post-engagement",
+            mapOf("postId" to postId, "type" to type, "requesterPubkey" to requester, "limit" to "$limit", "before" to before),
+        ) { it.getPostEngagement(postId, type, requester, limit, before) }
         val raw = response.engagement.orEmpty()
-        pageOf(raw, raw, response.pagination, limit) { it.actionTxId }
+        return pageOf(raw, raw, response.pagination, limit) { it.actionTxId }
     }
 
     /** Who tipped a post, newest first (`get-post-tippers`, KAPOSTS_INDEXER.md 5.11). */
-    suspend fun fetchTippersPage(postId: String, limit: Int = 50, before: String? = null): KPage<KTip> =
-        rethrowingApiError {
-            val response = api().getPostTippers(postId, limit, before)
-            val raw = response.tippers.orEmpty()
-            val cursor = response.pagination?.nextCursor
-            KPage(
-                items = raw,
-                rawIds = raw.map { it.id },
-                cursor = cursor,
-                // iOS: more only when the server says so AND hands a cursor.
-                hasMore = response.pagination?.hasMore == true && cursor != null,
-            )
-        }
+    suspend fun fetchTippersPage(postId: String, limit: Int = 50, before: String? = null): KPage<KTip> {
+        val response = get(
+            KTippersResponse::class.java, "get-post-tippers",
+            mapOf("postId" to postId, "limit" to "$limit", "before" to before),
+        ) { it.getPostTippers(postId, limit, before) }
+        val raw = response.tippers.orEmpty()
+        val cursor = response.pagination?.nextCursor
+        return KPage(
+            items = raw,
+            rawIds = raw.map { it.id },
+            cursor = cursor,
+            // iOS: more only when the server says so AND hands a cursor.
+            hasMore = response.pagination?.hasMore == true && cursor != null,
+        )
+    }
 
     /** Who [pubkey] follows (followers=false) or who follows them (followers=true). */
     suspend fun fetchFollowListPage(
@@ -578,22 +639,28 @@ class KaPostsService @Inject constructor(
         followers: Boolean,
         limit: Int = 50,
         before: String? = null,
-    ): KPage<KFollowUser> = rethrowingApiError {
+    ): KPage<KFollowUser> {
+        val requester = requesterPubkey()
+        val query = mapOf("userPubkey" to pubkey, "requesterPubkey" to requester, "limit" to "$limit", "before" to before)
         val response = if (followers) {
-            api().getUsersFollowers(pubkey, requesterPubkey(), limit, before)
+            get(KFollowListResponse::class.java, "get-users-followers", query) { it.getUsersFollowers(pubkey, requester, limit, before) }
         } else {
-            api().getUsersFollowing(pubkey, requesterPubkey(), limit, before)
+            get(KFollowListResponse::class.java, "get-users-following", query) { it.getUsersFollowing(pubkey, requester, limit, before) }
         }
         val raw = response.items
-        pageOf(raw, raw, response.pagination, limit) { it.userPublicKey }
+        return pageOf(raw, raw, response.pagination, limit) { it.userPublicKey }
     }
 
     /** Single-page convenience for callers that never paginate (the notification poller). */
     suspend fun fetchNotifications(limit: Int = 100, before: String? = null): List<KNotification> =
         fetchNotificationsPage(limit, before).items
 
-    suspend fun fetchUserDetails(pubkey: String): KUserDetails =
-        rethrowingApiError { api().getUserDetails(pubkey, requesterPubkey()) }
+    suspend fun fetchUserDetails(pubkey: String): KUserDetails {
+        val requester = requesterPubkey()
+        return get(KUserDetails::class.java, "get-user-details", mapOf("user" to pubkey, "requesterPubkey" to requester)) {
+            it.getUserDetails(pubkey, requester)
+        }
+    }
 
     /**
      * KaChat-only filter: keep posts whose decoded content carries the invisible marker, and
@@ -605,15 +672,159 @@ class KaPostsService @Inject constructor(
         KaPostsProtocol.isKaChatContent(content)
     }
 
+    // MARK: - With the indexer down (iOS ee5ec98)
+
+    private val pageGson = com.google.gson.Gson()
+
+    /**
+     * Every indexer read. Reports to [health], keeps each read's first page ([KaPostsPageCache]),
+     * and answers from it while the indexer is confirmed down or the phone has no connection.
+     * Any other failure throws as it always did, so the caller asks the indexer again.
+     */
+    private suspend fun <T : Any> get(
+        type: Class<T>,
+        path: String,
+        query: Map<String, String?>,
+        call: suspend (KaPostApi) -> T,
+    ): T {
+        val client = api()
+        val sent = query.entries.mapNotNull { (key, value) -> value?.let { key to it } }.toMap()
+        val pageKey = KaPostsPageCache.key(settings.kapostIndexerUrl.first(), path, sent)
+        // Confirmed down: the saved page at once, not after a timeout. The probe looks for its
+        // return. With nothing saved it's still asked, briefly: any answer ends the outage.
+        val down = health.isDown.value
+        if (down) savedPage(type, pageKey)?.let { return it }
+        val decoded: T = try {
+            if (down) {
+                kotlinx.coroutines.withTimeoutOrNull(DOWN_READ_TIMEOUT_MS) { call(client) }
+                    ?: throw java.net.SocketTimeoutException("The KaPost indexer didn't answer")
+            } else {
+                call(client)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            if (KaPostsIndexerHealth.meansDown(e.code())) {
+                health.noteFailure()
+                if (health.isDown.value) savedPage(type, pageKey)?.let { return it }
+            } else {
+                health.noteAnswered()
+            }
+            throw apiError(e)
+        } catch (e: Exception) {
+            if (KaPostsIndexerHealth.isUnreadableBody(e)) {
+                // The indexer answered, with something this build can't read: no outage.
+                health.noteUnreadableAnswer()
+                throw e
+            }
+            health.note(e)
+            // A saved page only for a confirmed outage or a phone with no connection.
+            if (health.isDown.value || health.meansOffline(e)) savedPage(type, pageKey)?.let { return it }
+            throw e
+        }
+        health.noteAnswered()
+        if (pageKey != null) KaPostsPageCache.save(appContext, pageGson.toJson(decoded).toByteArray(Charsets.UTF_8), pageKey)
+        return decoded
+    }
+
+    private suspend fun <T : Any> savedPage(type: Class<T>, key: String?): T? {
+        val data = KaPostsPageCache.load(appContext, key ?: return null) ?: return null
+        return try {
+            pageGson.fromJson(String(data, Charsets.UTF_8), type)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Whether the indexer answers. A placeholder key, since the answer isn't read for anyone. */
+    suspend fun probeIndexer(): Boolean {
+        val client = networkService.kapostApi.value ?: return false
+        return try {
+            kotlinx.coroutines.withTimeoutOrNull(PROBE_TIMEOUT_MS) {
+                client.getPostsWatching("02" + "0".repeat(64), 1, null)
+            } != null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            // Any answer of its own ends the outage: a 4xx is an answer, about this request.
+            !KaPostsIndexerHealth.meansDown(e.code())
+        } catch (e: Exception) {
+            KaPostsIndexerHealth.isUnreadableBody(e)
+        }
+    }
+
+    /**
+     * A first page while the indexer is down: what the read saved (or nothing), with what [chain]
+     * adds. No cursor, since one is only good with the indexer. Any other time, just the read.
+     */
+    private suspend fun withChain(
+        before: String?,
+        read: suspend () -> KPage<KPost>,
+        chain: suspend () -> List<KPost>,
+    ): KPage<KPost> {
+        val page = try {
+            read()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (before != null || !health.isDown.value) throw e
+            val rows = chain()
+            if (rows.isEmpty()) throw e
+            return chainPage(emptyList(), rows)
+        }
+        if (before != null || !health.isDown.value) return page
+        return chainPage(page.items, chain())
+    }
+
+    /** The indexer's copy wins a tie: it has the counts and the viewer's own votes. */
+    private fun chainPage(saved: List<KPost>, chain: List<KPost>): KPage<KPost> {
+        val known = saved.mapTo(HashSet()) { it.id }
+        val merged = (saved + chain.filter { it.id !in known }).sortedByDescending { it.timestamp }
+        return KPage(items = merged, rawIds = merged.map { it.id }, cursor = null, hasMore = false)
+    }
+
+    /** The people this account follows, as their posts on chain: the first 20, a few at a time. */
+    private suspend fun followedPostsFromChain(): List<KPost> {
+        val address = try { walletManager.getAddress() } catch (_: Exception) { return emptyList() }
+        val pubkeys = settings.kapostsFollowing(address).first().sorted().take(20)
+            .mapNotNull { kapostPubkeyFromAddress(it) }
+        val found = mutableListOf<KPost>()
+        for (group in pubkeys.chunked(4)) {
+            found += kotlinx.coroutines.coroutineScope {
+                group.map { pubkey -> async { chainPosts.posts(pubkey).orEmpty() } }.awaitAll().flatten()
+            }
+        }
+        // On x-only: `pubkeys` is built from addresses as "02" + x, and a real post carries true parity.
+        val live = pubkeys.mapTo(HashSet()) { KaPostsChainPosts.xOnly(it) }
+        val seen = HashSet<String>()
+        return (found + liveFeed.posts.value.filter { KaPostsChainPosts.xOnly(it.userPublicKey) in live })
+            .filter { seen.add(it.id) }
+    }
+
     /** Surfaces the indexer's JSON error body message instead of Retrofit's opaque HTTP line. */
-    private inline fun <T> rethrowingApiError(block: () -> T): T = try {
-        block()
-    } catch (e: HttpException) {
+    private fun apiError(e: HttpException): IllegalStateException {
         val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
         val message = body
             ?.let { Regex("\"error\"\\s*:\\s*\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
             ?: "KaPost indexer error (HTTP ${e.code()})"
-        throw IllegalStateException(message, e)
+        return IllegalStateException(message, e)
+    }
+
+    /** An indexer write: reports to [health], like every read. */
+    private suspend fun <T> posting(block: suspend () -> T): T {
+        val answer = try {
+            block()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            if (KaPostsIndexerHealth.meansDown(e.code())) health.noteFailure() else health.noteAnswered()
+            throw apiError(e)
+        } catch (e: Exception) {
+            if (KaPostsIndexerHealth.isUnreadableBody(e)) health.noteUnreadableAnswer() else health.note(e)
+            throw e
+        }
+        health.noteAnswered()
+        return answer
     }
 
     // MARK: - Writes (on-chain self-send transactions; txid = content id)
@@ -747,8 +958,9 @@ class KaPostsService @Inject constructor(
     suspend fun scheduleOnServer(txId: String, transaction: RawTransaction, notBeforeMs: Long) {
         val pubkey = requesterPubkey()
         val signature = sign(KaPostsProtocol.scheduleSigningString(txId, notBeforeMs))
-        rethrowingApiError {
-            api().schedulePost(
+        val client = api()
+        posting {
+            client.schedulePost(
                 KSchedulePostRequest(
                     pubkey = pubkey,
                     txId = txId,
@@ -764,14 +976,18 @@ class KaPostsService @Inject constructor(
     suspend fun cancelScheduledOnServer(txId: String) {
         val pubkey = requesterPubkey()
         val signature = sign(KaPostsProtocol.cancelScheduleSigningString(txId))
-        rethrowingApiError {
-            api().cancelScheduledPost(KCancelScheduledRequest(pubkey = pubkey, txId = txId, signature = signature))
+        val client = api()
+        posting {
+            client.cancelScheduledPost(KCancelScheduledRequest(pubkey = pubkey, txId = txId, signature = signature))
         }
     }
 
     /** What the indexer is holding for this wallet, and how each one went. */
-    suspend fun fetchScheduledPosts(): List<KScheduledPost> = rethrowingApiError {
-        api().getScheduledPosts(requesterPubkey()).posts.orEmpty()
+    suspend fun fetchScheduledPosts(): List<KScheduledPost> {
+        val requester = requesterPubkey()
+        return get(KScheduledPostsResponse::class.java, "scheduled-posts", mapOf("pubkey" to requester)) {
+            it.getScheduledPosts(requester)
+        }.posts.orEmpty()
     }
 
     /** Submits a scheduled post from this phone, when the indexer never took it. */
@@ -850,10 +1066,14 @@ class KaPostsService @Inject constructor(
      * refreshes the balance after submit.
      */
     private suspend fun submitPayloadTx(payload: String): String {
+        val account = walletManager.getAddress()
         val txId = walletService.sendKaspa(
-            toAddress = walletManager.getAddress(),
+            toAddress = account,
             amountSompi = 0,
             payloadBytes = payload.toByteArray(Charsets.UTF_8),
+            // One outgoing transaction at a time (the wallet's send lock): the wait may have
+            // outlasted the account that signed this payload (iOS ee5ec98).
+            madeAsAccount = account,
         )
         // Only what shows on your profile: a post, reply, quote, edit, delete or poll (iOS 33095ac).
         val action = payload.split(":", limit = 5).getOrNull(2)

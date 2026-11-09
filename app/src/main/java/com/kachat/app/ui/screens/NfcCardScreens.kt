@@ -25,8 +25,11 @@ import androidx.compose.material.icons.filled.Contactless
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.SdCard
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -48,6 +51,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kachat.app.R
@@ -130,12 +135,14 @@ private fun NfcScanSheet(scanner: NfcScanner) {
     }
 }
 
-/** A PIN or passphrase entry, shown as typed so a mistake is caught before it costs a PIN try. It
+/** A PIN or passphrase entry, hidden unless its eye is tapped, so it isn't in screenshots and
+ *  screen shares, while a mistake can still be caught before it costs a PIN try (iOS ee5ec98). It
  *  never offers to save the value or autofill it, and the Password keyboard learns nothing. A PIN
  *  field only takes digits, up to the PIN's length. */
 @Composable
 private fun NfcCardSecretField(title: String, value: String, onValueChange: (String) -> Unit, isNumeric: Boolean) {
     val colors = LocalAppColors.current
+    var revealed by remember { mutableStateOf(false) }
     TextField(
         value = value,
         onValueChange = { typed ->
@@ -143,6 +150,16 @@ private fun NfcCardSecretField(title: String, value: String, onValueChange: (Str
         },
         placeholder = { Text(title, color = colors.textSecondary) },
         singleLine = true,
+        visualTransformation = if (revealed) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(onClick = { revealed = !revealed }) {
+                Icon(
+                    imageVector = if (revealed) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                    contentDescription = stringResource(if (revealed) R.string.hide_password else R.string.show_password),
+                    tint = colors.textSecondary,
+                )
+            }
+        },
         keyboardOptions = KeyboardOptions(
             keyboardType = if (isNumeric) KeyboardType.NumberPassword else KeyboardType.Password,
             capitalization = KeyboardCapitalization.None,

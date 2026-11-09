@@ -17,13 +17,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * In-app KaPosts notification pings, mirroring iOS's KaPostsNotificationService: while the app is
- * in the FOREGROUND (KaChatApplication's process lifecycle observer calls [start]/[stop] on
- * foreground/background transitions), polls the indexer's notification stream every 30s and posts
- * a local notification for new actions on your content ("alice liked your post"). Once the app is
- * backgrounded or closed, the push service is the only KaPosts notification source — deliberately
- * no background continuation here, so push failures stay visible. Last-seen is stored per wallet
- * so nothing replays, and opening the Notifications screen marks everything seen.
+ * While the app is in the FOREGROUND (KaChatApplication's process lifecycle observer calls
+ * [start]/[stop] on foreground/background transitions), polls the indexer's notification stream
+ * every 30s and keeps the unseen count. Banners come from remote pushes, and from here only for a
+ * device with no push at all ([PushState]). Once the app is backgrounded or closed, the push
+ * service is the only KaPosts notification source — deliberately no background continuation here,
+ * so push failures stay visible. Last-seen is stored per wallet so nothing replays, and opening the
+ * Notifications screen marks everything seen.
  */
 @Singleton
 class KaPostsNotificationPoller @Inject constructor(
@@ -128,10 +128,28 @@ class KaPostsNotificationPoller @Inject constructor(
         if (settingsRepository.kapostIndexerUrl.first().isBlank()) return
         // Notifications off: nothing here would be shown, so the indexer isn't asked (iOS 33095ac).
         if (!settingsRepository.notificationsEnabled.first()) return
-        val notifications = kaPostsService.fetchNotifications(limit = 50)
-        val newest = notifications.maxOfOrNull { it.timestamp } ?: return
+        var page = kaPostsService.fetchNotificationsPage(limit = 50)
+        var notifications = page.items
         val key = lastSeenKey(address)
         val lastSeen = dataStore.data.first()[key]
+        // A long absence runs past the first page: the bell counts all of it, within reason (iOS ee5ec98).
+        if (lastSeen != null) {
+            var pages = 1
+            while (pages < MAX_UNSEEN_COUNT_PAGES && page.hasMore && !page.cursor.isNullOrEmpty()) {
+                val oldest = notifications.minOfOrNull { it.timestamp } ?: break
+                if (oldest <= lastSeen) break
+                page = try {
+                    kaPostsService.fetchNotificationsPage(limit = 50, before = page.cursor)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    break
+                }
+                notifications = notifications + page.items
+                pages++
+            }
+        }
+        val newest = notifications.maxOfOrNull { it.timestamp } ?: return
         if (lastSeen == null) {
             // First run for this wallet: baseline silently instead of replaying history.
             dataStore.edit { it[key] = newest }
@@ -204,6 +222,9 @@ class KaPostsNotificationPoller @Inject constructor(
     private companion object {
         /** Same cadence as iOS's KaPostsNotificationService. */
         const val POLL_INTERVAL_MS = 30_000L
+
+        /** How far back one poll follows the bell's count (50 a page, iOS ee5ec98). */
+        const val MAX_UNSEEN_COUNT_PAGES = 10
     }
 
     private fun actionText(contentType: String?, voteType: String?, text: String, tipAmountSompi: Long? = null): String = when (contentType) {

@@ -55,6 +55,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Flag
@@ -555,6 +558,68 @@ fun ActionSheetRow(
         // iOS: the tile's title takes the tint, unless it is the accent.
         tileTitleColor = if (tint == KaspaTeal) null else tint,
     )
+}
+
+/**
+ * The one options icon at the top right of every page for a single address (iOS ee5ec98
+ * `AddressOptionsButton`, the same as KaChat and KaPay). Opens [AddressActionsSheet].
+ */
+@Composable
+fun AddressOptionsButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val haptic = com.kachat.app.util.rememberHaptics()
+    Row(
+        modifier = modifier.padding(end = 12.dp).height(44.dp).barGlass(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ToolbarIconButton(
+            icon = Icons.Default.MoreHoriz,
+            contentDescription = stringResource(R.string.address_actions),
+            onClick = {
+                haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                onClick()
+            },
+        )
+    }
+}
+
+/**
+ * The same half sheet on every address page (iOS ee5ec98 `AddressActionsSheet`): View Private Key,
+ * View Public Key (not for a quantum address, whose key stays hidden until it spends) and View in
+ * Explorer ([explorerUrl], when there is one).
+ */
+@Composable
+fun AddressActionsSheet(
+    explorerUrl: String?,
+    showsPublicKey: Boolean = true,
+    onPrivateKey: () -> Unit,
+    onPublicKey: () -> Unit,
+    onExplorer: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ActionSheetContainer(title = stringResource(R.string.address_actions), subtitle = null, onDismiss = onDismiss) {
+        ActionSheetRow(
+            icon = Icons.Default.Key,
+            title = "View Private Key",
+            subtitle = "The key that spends this address. Never share it.",
+            onClick = onPrivateKey,
+        )
+        if (showsPublicKey) {
+            ActionSheetRow(
+                icon = Icons.Default.Numbers,
+                title = "View Public Key",
+                subtitle = "The public half of this address, for anyone who asks for it.",
+                onClick = onPublicKey,
+            )
+        }
+        if (explorerUrl != null) {
+            ActionSheetRow(
+                icon = Icons.Default.Public,
+                title = stringResource(R.string.view_in_explorer),
+                subtitle = "Opens this address on your chosen block explorer.",
+                onClick = { onExplorer(explorerUrl) },
+            )
+        }
+    }
 }
 
 /**

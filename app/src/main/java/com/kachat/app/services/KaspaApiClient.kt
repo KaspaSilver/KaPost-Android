@@ -147,6 +147,14 @@ data class TransactionPayloadResponse(
     @SerializedName("block_time") val blockTime: Long?,
 )
 
+/** One row of [KaspaRestApi.getAddressPayloads]. */
+data class AddressPayloadRow(
+    @SerializedName("transaction_id") val transactionId: String,
+    @SerializedName("is_accepted") val isAccepted: Boolean? = null,
+    val payload: String? = null,
+    @SerializedName("block_time") val blockTime: Long? = null,
+)
+
 /** Only whether the REST API has a transaction accepted - see [KaspaRestApi.getTransactionAcceptance]. */
 data class TransactionAcceptanceResponse(
     @SerializedName("is_accepted") val isAccepted: Boolean?,
@@ -291,6 +299,17 @@ interface KaspaRestApi {
         @Query("offset") offset: Int = 0,
         @Query("resolve_previous_outpoints") resolvePreviousOutpoints: String = "light"
     ): List<TransactionResponse>
+
+    /** One address's transactions, only what a KaPost is read from (iOS ee5ec98, a person's posts
+     *  with the indexer down). */
+    @GET("addresses/{address}/full-transactions")
+    suspend fun getAddressPayloads(
+        @Path("address") address: String,
+        @Query("limit") limit: Int,
+        @Query("offset") offset: Int,
+        @Query("resolve_previous_outpoints") resolvePreviousOutpoints: String = "no",
+        @Query("fields") fields: String = "transaction_id,is_accepted,payload,block_time",
+    ): List<AddressPayloadRow>
 
     @POST("transactions")
     suspend fun postTransaction(

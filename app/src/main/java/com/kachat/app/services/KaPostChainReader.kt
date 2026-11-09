@@ -61,6 +61,22 @@ class KaPostChainReader @Inject constructor(
         )
     }
 
+    /** One page of [address]'s transactions from Kaspa REST, or null when it didn't answer
+     *  (iOS ee5ec98 `KaPostsChainPosts.posts(ofPubkey:)`). */
+    suspend fun addressPayloads(address: String, limit: Int, offset: Int): List<AddressPayloadRow>? {
+        val api = networkService.kaspaRestApi.value
+            ?: withTimeoutOrNull(5_000) { networkService.kaspaRestApi.filterNotNull().first() }
+            ?: return null
+        return try {
+            withTimeoutOrNull(20_000) { api.getAddressPayloads(address, limit, offset) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "No transactions for an address: ${e.message}")
+            null
+        }
+    }
+
     private fun hexToString(hex: String): String? = try {
         val clean = hex.trim()
         if (clean.length % 2 != 0) null

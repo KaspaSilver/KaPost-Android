@@ -551,6 +551,10 @@ class NameServicesClient @Inject constructor(
             ) {
                 return context.getString(com.kachat.app.R.string.kachat_names_not_live_here)
             }
+            // the service couldn't be asked: that says nothing about whether the name exists (iOS ee5ec98)
+            if (results.any { it.tld == wanted && it.failed }) {
+                return context.getString(com.kachat.app.R.string.tld_lookup_failed, wanted.suffix)
+            }
             return context.getString(com.kachat.app.R.string.no_tld_domain_found, wanted.suffix)
         }
     }

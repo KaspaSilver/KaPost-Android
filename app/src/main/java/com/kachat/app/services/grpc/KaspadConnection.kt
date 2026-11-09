@@ -150,20 +150,56 @@ class KaspadConnection internal constructor(
     private val blockSubscribers = mutableSetOf<String>()
     private var blockSubscribersGeneration = -1L
 
-    /** Consecutive auto-reconnect attempts since the last successful [connect] - drives backoff
-     * so a node that's actively rejecting new streams (e.g. it logged "reached connection
-     * capacity") gets breathing room instead of a retry every ~100ms-1s indefinitely, which
-     * just keeps re-triggering the same rejection. */
+    /** Consecutive auto-reconnect attempts since the stream last answered - drives backoff so a
+     * node that's actively rejecting new streams (e.g. it logged "reached connection capacity")
+     * gets breathing room instead of a retry every ~100ms-1s indefinitely, which just keeps
+     * re-triggering the same rejection. Not reset by [connect], which is instant even for a node
+     * refusing every stream: that kept the backoff on its first step forever (iOS ee5ec98). */
     private var reconnectAttempts = 0
+
+    /** Set by the first message on the current stream: only that shows the node is up (iOS
+     *  ee5ec98 `streamProvenAlive`). */
+    @Volatile
+    private var streamProvenAlive = false
+
+    /** When the current stream was opened. */
+    @Volatile
+    private var connectedAtMs = 0L
+
+    /** The stream is gone: nothing can answer what is waiting, and it reconnects by itself. */
+    private fun onStreamEnded(cause: Exception) {
+        // A stream that held for a while isn't a node refusing us: the backoff starts over, even
+        // if nothing was asked of it (iOS ee5ec98 `handleStreamClosed`).
+        if (System.currentTimeMillis() - connectedAtMs > 60_000L) reconnectAttempts = 0
+        isConnected = false
+        // Death is its own generation bump (not just the later reconnect's): a watcher
+        // must learn its subscription is gone even if this connection never reconnects
+        // (e.g. NodePoolManager closes it and hands out a different node next).
+        generation.value++
+        pending.values.forEach { it.completeExceptionally(cause) }
+        pending.clear()
+        Log.w("KaspadConnection", "Stream died unexpectedly on $address: ${cause.javaClass.simpleName}: ${cause.message}")
+        scheduleAutoReconnect()
+    }
 
     fun connect() {
         if (isConnected) return
         isConnected = true
-        reconnectAttempts = 0
+        streamProvenAlive = false
+        connectedAtMs = System.currentTimeMillis()
         generation.value++
         streamJob = scope.launch {
             try {
                 stub.messageStream(outbound.receiveAsFlow()).collect { response ->
+                    // The first message is what shows the node really is up (iOS ee5ec98).
+                    if (!streamProvenAlive) {
+                        streamProvenAlive = true
+                        reconnectAttempts = 0
+                    }
+                    // Matched by the request's own id, which the node echoes: a late reply to a
+                    // request that timed out matches nothing here and is dropped, so it can't be
+                    // taken for a later request's answer (iOS ee5ec98's `lateReplyOwed` is for
+                    // its match by type alone).
                     val matched = pending.remove(response.id)
                     if (matched != null) {
                         matched.complete(response)
@@ -172,20 +208,15 @@ class KaspadConnection internal constructor(
                     }
                     // Any other unsolicited response is still ignored.
                 }
+                // The server ended the stream cleanly: as gone as an error, and nothing else
+                // would have noticed (iOS ee5ec98 `handleStreamClosed`, `.success`).
+                if (!closed) onStreamEnded(IllegalStateException("Connection lost"))
             } catch (e: CancellationException) {
                 // A deliberate close() cancels this job itself - `closed`/`isConnected` are
                 // already set there, so this must not be treated as an unexpected drop.
                 throw e
             } catch (e: Exception) {
-                isConnected = false
-                // Death is its own generation bump (not just the later reconnect's): a watcher
-                // must learn its subscription is gone even if this connection never reconnects
-                // (e.g. NodePoolManager closes it and hands out a different node next).
-                generation.value++
-                pending.values.forEach { it.completeExceptionally(e) }
-                pending.clear()
-                Log.w("KaspadConnection", "Stream died unexpectedly on $address: ${e.javaClass.simpleName}: ${e.message}")
-                scheduleAutoReconnect()
+                onStreamEnded(e)
             }
         }
     }
@@ -282,6 +313,12 @@ class KaspadConnection internal constructor(
             extract = { it.getUtxosByAddressesResponse }
         )
         if (response.hasError()) throw IllegalStateException(response.error.message)
+        // Coins for addresses not asked about are a crossed or broken answer: refused, so the
+        // caller asks elsewhere (iOS ee5ec98).
+        val requested = addresses.map { it.lowercase() }.toSet()
+        if (!response.entriesList.all { it.address.isEmpty() || it.address.lowercase() in requested }) {
+            throw IllegalStateException("UTXO response for addresses not requested")
+        }
         // more than the Kaspa supply (a coin, or all of them) is a broken or hostile node's:
         // refused here, where it's decoded (iOS 283cd28, IOS-020)
         return com.kachat.app.util.UtxoMath.checkedFromNetwork(response.entriesList) { it.utxoEntry.amount }

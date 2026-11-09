@@ -154,6 +154,22 @@ class WalletViewModel @Inject constructor(
         _needsKeyRecovery.value = false
     }
 
+    /**
+     * The recovery screen came to the front: the account store is tried again, and the accounts
+     * are back if the Keystore opens it now. iOS ee5ec98 `reloadOnceUnlocked` looks again when the
+     * phone unlocks; a Keystore that only refused at launch is Android's form of that.
+     */
+    fun retryKeyRecovery() {
+        if (!_needsKeyRecovery.value) return
+        viewModelScope.launch(Dispatchers.Default) {
+            if (!walletManager.reopenSecureStore()) return@launch
+            _hasWallet.value = walletManager.hasWallet()
+            _accounts.value = walletManager.getAllAccounts()
+            recoveryImportPending = false
+            _needsKeyRecovery.value = false
+        }
+    }
+
     /** Import was left without importing: back to the recovery screen, as iOS's Back from its
      *  pushed import (WalletRecoveryView). Only while the store is still unreadable. */
     fun leaveRecoveryImport() {
@@ -520,9 +536,11 @@ class WalletViewModel @Inject constructor(
             val storedIndex = walletManager.getReceiveAddressIndex(walletAddress)
             val stored = storedIndex?.let { try { walletManager.deriveSpendingAddress(it) } catch (e: Exception) { null } }
             val chosen: Pair<Int, String> = if (storedIndex != null && stored != null &&
-                WalletManager.isQuantumIndex(storedIndex) && !confirmedUsed(stored)
+                WalletManager.isQuantumIndex(storedIndex) && !walletManager.isQuantumAddressSpentLocally(stored) &&
+                !confirmedUsed(stored)
             ) {
                 // Rule 1: the pointer from last time, while it is still untouched - and quantum.
+                // An address this phone has spent from is used, whatever else says (iOS ee5ec98).
                 storedIndex to stored
             } else {
                 // Rule 2: the lowest quantum slot never used (iOS lowestUnusedQuantumAddress,
@@ -545,7 +563,9 @@ class WalletViewModel @Inject constructor(
                     onResult(current)
                     return@launch
                 }
-                walletManager.setReceiveAddressIndex(walletAddress, index)
+                // Only a QR really on screen holds a slot: a pointer written while warming could
+                // sit past the chain's end and be handed to change or a Request (iOS ee5ec98).
+                if (revealing) walletManager.setReceiveAddressIndex(walletAddress, index)
                 index to address
             }
             if (switched()) {
@@ -740,6 +760,42 @@ class WalletViewModel @Inject constructor(
     fun ownAddressLabel(address: String): String? =
         try { walletManager.ownAddressLabel(address) } catch (e: Exception) { null }
 
+    /** The spending address (its index) the active account tips from, null = the chatting
+     *  address (iOS ee5ec98 `KaPostsTipSourceStore`). */
+    suspend fun kaPostsTipSourceIndex(): Int? {
+        val account = walletManager.getActiveAccount()?.address ?: return null
+        settings.moveKaPostsTipSourceToAccounts(walletManager.savedAccountAddresses())
+        return settings.kaPostsTipSourceIndex(account).first()
+    }
+
+    /** [walletAddress]'s Tips From, for the Settings row. */
+    fun kaPostsTipSourceFlow(walletAddress: String?): Flow<Int?> =
+        if (walletAddress == null) flowOf(null) else flow {
+            settings.moveKaPostsTipSourceToAccounts(walletManager.savedAccountAddresses())
+            emitAll(settings.kaPostsTipSourceIndex(walletAddress))
+        }
+
+    fun setKaPostsTipSourceIndex(index: Int?) {
+        val account = walletManager.getActiveAccount()?.address ?: return
+        viewModelScope.launch {
+            settings.moveKaPostsTipSourceToAccounts(walletManager.savedAccountAddresses())
+            settings.setKaPostsTipSourceIndex(account, index)
+        }
+    }
+
+    /** Whether [index] is one of the active account's revealed spending slots: Tips From reads
+     *  as not available otherwise, never quietly as the chatting address (iOS ee5ec98
+     *  `SendSource.defaultTip`). */
+    fun isRevealedSpendingIndex(index: Int): Boolean {
+        if (index < 0) return false
+        val account = walletManager.getActiveAccount() ?: return false
+        return if (WalletManager.isQuantumIndex(index)) {
+            index - WalletManager.QUANTUM_INDEX_BASE <= WalletManager.maxQuantumIndex(account)
+        } else {
+            index <= WalletManager.legacyMaxSpendingIndex(account)
+        }
+    }
+
     /** Addresses for a whole range, paying the BIP-39 seed derivation once rather than once per
      *  index - see [WalletManager.deriveSpendingAddresses]. Call it off the main thread. */
     fun spendingAddressesAt(indices: Iterable<Int>): Map<Int, String> =
@@ -828,7 +884,8 @@ class WalletViewModel @Inject constructor(
             // `verifiedFreshQuantumIndex`, IOS-101 / AND-049). Slot and address from the source's
             // account, whichever is active once the probe returns (iOS fb2323e
             // `verifiedFreshQuantumSlot`, IOS-109 / AND-056 follow-up).
-            val fresh = if (owner != null && !isSelfSend && (isQuantumSource || index == activeIndex)) {
+            val sourceIsPrimary = index == activeIndex
+            val fresh = if (owner != null && sendUsesFreshChange(index, isSelfSend)) {
                 walletManager.verifiedFreshQuantumChange(owner = owner) { walletService.spendingAddressUsedState(it) }
             } else null
             // Never change back onto the key this spend reveals: a quantum source whose fresh
@@ -876,9 +933,10 @@ class WalletViewModel @Inject constructor(
             }
             if (fresh != null) {
                 walletManager.finishQuantumChangePick(fresh, reveal = result.isSuccess)
-                if (result.isSuccess) {
+                if (result.isSuccess && sourceIsPrimary) {
                     // The primary follows its change onto the fresh address. Manage Addresses
-                    // reloads below and moves its star.
+                    // reloads below and moves its star. A non-primary quantum source's slot is
+                    // just revealed, above: the primary stays where it was (iOS ee5ec98).
                     walletManager.setSpendingAddressIndex(fresh.walletAddress, fresh.index)
                 }
             }
@@ -890,6 +948,27 @@ class WalletViewModel @Inject constructor(
                 loadManageAddresses()
             }
         }
+    }
+
+    /** Whether a send from this spending address puts its change on a fresh quantum slot: the
+     *  primary and any quantum source do, and a self-send (Compound) never does. The send and
+     *  its estimates share this, or the Review prices change the send doesn't build (iOS ee5ec98
+     *  `sendUsesFreshChange`). */
+    private fun sendUsesFreshChange(index: Int, isSelfSend: Boolean): Boolean =
+        !isSelfSend && (WalletManager.isQuantumIndex(index) || index == walletManager.getActiveAccount()?.spendingAddressIndex)
+
+    /**
+     * The script length a send's change will really have, for the fee: a fresh slot's is a byte
+     * longer than the source's own (11 mass grams, 1,100 sompi at the minimum fee, past the
+     * Review's margin), so priced at the sender's own the send from the primary was refused (iOS
+     * ee5ec98 `changeScriptForPricing`). A chat payment from a spending address always leaves its
+     * change on a fresh slot (`sendSpendingPayment`).
+     */
+    fun changeScriptLenForPricing(index: Int?, fromAddress: String, toAddress: String, chatPayment: Boolean = false): Int {
+        val fresh = index != null && (chatPayment || sendUsesFreshChange(index, toAddress.equals(fromAddress, ignoreCase = true)))
+        if (fresh) return SendFeeModel.FRESH_CHANGE_SCRIPT_LEN
+        return runCatching { KaspaAddress.getScriptPublicKey(fromAddress).length / 2 }
+            .getOrDefault(SendFeeModel.STANDARD_SCRIPT_LEN)
     }
 
     /** Coin control's data source for a spending address - see `SpendingAddressSendFlow`. Never
@@ -932,11 +1011,14 @@ class WalletViewModel @Inject constructor(
         signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
         payloadSize: Int = 0,
         withdrawalCoins: Boolean = false,
+        /** The change's real script length ([changeScriptLenForPricing], iOS ee5ec98); null = the
+         *  address's own. */
+        changeScriptLen: Int? = null,
     ): SendFeeModel.Preview {
         val utxos = if (withdrawalCoins) walletEngine.fetchWithdrawalUtxosOrThrow(address) else walletEngine.fetchUtxosOrThrow(address)
         // iOS estimateWithdrawalFee / estimatePaymentFee's wording
         if (utxos.isEmpty()) throw IllegalStateException("No spendable UTXOs")
-        val changeScriptLen = runCatching { KaspaAddress.getScriptPublicKey(address).length / 2 }
+        val changeScriptLen = changeScriptLen ?: runCatching { KaspaAddress.getScriptPublicKey(address).length / 2 }
             .getOrDefault(SendFeeModel.STANDARD_SCRIPT_LEN)
         return SendFeeModel.previewAutomaticSelection(
             utxos = utxos,
@@ -1002,6 +1084,9 @@ class WalletViewModel @Inject constructor(
         /** The recipient's real script length (a P2SH or ECDSA address's is a byte longer): the
          *  send prices it, so Max does too (iOS `estimateSendAllFee(recipientScriptPubKey:)`). */
         recipientScriptLen: Int = SendFeeModel.STANDARD_SCRIPT_LEN,
+        /** The change's real script length ([changeScriptLenForPricing], iOS ee5ec98); null = the
+         *  address's own. */
+        changeScriptLen: Int? = null,
     ): SendFeeModel.MaxAmount {
         val fetched = if (withdrawalCoins) walletEngine.fetchWithdrawalUtxosOrThrow(address) else walletEngine.fetchUtxosOrThrow(address)
         if (fetched.isEmpty()) throw IllegalStateException("No spendable UTXOs")
@@ -1039,7 +1124,7 @@ class WalletViewModel @Inject constructor(
 
         // Priced on the real recipient and change scripts, plus iOS `estimateSendAllFee`'s 3-sompi
         // buffer: a 34-byte guess left a P2SH or ECDSA recipient's send 1,100 sompi short.
-        val changeScriptLen = runCatching { KaspaAddress.getScriptPublicKey(address).length / 2 }
+        val changeScriptLen = changeScriptLen ?: runCatching { KaspaAddress.getScriptPublicKey(address).length / 2 }
             .getOrDefault(SendFeeModel.STANDARD_SCRIPT_LEN)
         // maxAfterFees is 0 exactly when the balance does not exceed the fee (iOS `totalBalance > fee`).
         val max = SendFeeModel.maxAfterFees(
@@ -1079,10 +1164,19 @@ class WalletViewModel @Inject constructor(
         signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
         /** See [estimateMaxSendableAmount]. */
         withdrawalCoins: Boolean = false,
+        /** The coins Coin Control picked, null for all of them; the chunk is taken from those
+         *  (iOS ee5ec98 `maxConsolidatableChunk(selection:)`). */
+        selection: List<UtxoEntry>? = null,
     ): SendFeeModel.ConsolidationChunk? {
         val fetched = if (withdrawalCoins) walletEngine.fetchWithdrawalUtxosOrThrow(address) else walletEngine.fetchUtxos(address)
         if (fetched.isEmpty()) return null
-        val chunk = fetched.sortedByDescending { it.utxoEntry.amount }
+        // iOS `resolveReviewSelection`: none of the pick left is an error, not the whole address
+        val candidates = if (selection.isNullOrEmpty()) fetched else {
+            val freshByOutpoint = fetched.associateBy { it.outpoint }
+            selection.mapNotNull { freshByOutpoint[it.outpoint] }
+                .ifEmpty { throw IllegalStateException("Selected UTXOs are no longer available - please reselect") }
+        }
+        val chunk = candidates.sortedByDescending { it.utxoEntry.amount }
             .take(KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION)
         if (chunk.isEmpty()) return null
 
@@ -1101,7 +1195,7 @@ class WalletViewModel @Inject constructor(
             bufferSompi = KaspaUtxoSelector.FEE_BUFFER_SOMPI,
         )
         // the address holds more coins than this one transaction combines (iOS d816404)
-        return SendFeeModel.ConsolidationChunk(maxAmount, chunk, cappedAtInputLimit = chunk.size < fetched.size)
+        return SendFeeModel.ConsolidationChunk(maxAmount, chunk, cappedAtInputLimit = chunk.size < candidates.size)
     }
 
     private val _spendingAddressTxHistory = MutableStateFlow<List<ColdStorageAddressDiscovery.AddressTransaction>>(emptyList())
@@ -1588,7 +1682,11 @@ class WalletViewModel @Inject constructor(
         for (variant in com.kachat.app.util.KaspaNetwork.accountAddressVariants(address)) {
             com.kachat.app.ui.screens.KaPostDraftStore.deleteAll(appContext, variant)
             kaPostsUnseenStore.removeAllData(variant)
+            // And any post text still held for it (iOS ee5ec98 `KaPostsHeldPostStore`).
+            com.kachat.app.services.KaPostsHeldPostStore.removeAllData(appContext, variant)
         }
+        // Nothing an account read stays behind (iOS ee5ec98 `KaPostsPageCache.removeAll`).
+        com.kachat.app.services.KaPostsPageCache.removeAll(appContext)
         // Its scheduled posts and their reminders (every network's form of the address).
         com.kachat.app.services.KaPostsScheduledStore.deleteAccount(appContext, address)
         accountBackupStatus.forget(address)
@@ -1881,7 +1979,12 @@ class WalletViewModel @Inject constructor(
                     // iOS da2c8e2). Only this path: a typed-in recovery phrase; creating or
                     // switching accounts doesn't scan. Tied to the restored account: it writes
                     // there even if another account is active by then (iOS e571f45, IOS-107).
-                    discoverSpendingAddresses(owner = importedAddress) { }
+                    // Then the balances are read again now every address is known, the Wallet's
+                    // total included (iOS ee5ec98; the sweep has already reloaded Manage Addresses).
+                    discoverSpendingAddresses(owner = importedAddress) {
+                        refreshBalance()
+                        refreshSpendingAddress()
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -2260,7 +2363,10 @@ class WalletViewModel @Inject constructor(
     data class TransferDomainUiState(
         val status: KnsInscribeUiStatus = KnsInscribeUiStatus.IDLE,
         val errorMessage: String? = null,
-        val result: WalletService.TransferDomainResult? = null
+        val result: WalletService.TransferDomainResult? = null,
+        /** The transfer got no answer: it may have gone through, so the screen offers only Done
+         *  (iOS ee5ec98 `outcomeUnknown`). */
+        val outcomeUnknown: Boolean = false,
     )
 
     private val _transferDomainState = MutableStateFlow(TransferDomainUiState())
@@ -2282,7 +2388,11 @@ class WalletViewModel @Inject constructor(
                 _transferDomainState.value = TransferDomainUiState(status = KnsInscribeUiStatus.SUCCESS, result = result)
                 refreshOwnedDomains()
             } catch (e: Exception) {
-                _transferDomainState.value = TransferDomainUiState(status = KnsInscribeUiStatus.FAILED, errorMessage = UserFacingError.message(e, "Transfer failed"))
+                _transferDomainState.value = TransferDomainUiState(
+                    status = KnsInscribeUiStatus.FAILED,
+                    errorMessage = UserFacingError.message(e, "Transfer failed"),
+                    outcomeUnknown = e is com.kachat.app.services.SendOutcomeUnknownException,
+                )
             }
         }
     }
