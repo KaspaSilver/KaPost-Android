@@ -1,10 +1,11 @@
 package com.kachat.app.models
 
 /**
- * Identity derivation-path family of the wallet a seed phrase was imported from — the
- * KasWare-style "which wallet is this seed from?" selection shown before seed entry. Different
- * Kaspa wallets put the same seed's funds and KNS domains on different BIP32 branches; picking
- * the right family at import is what lets KaChat find them. Ported from iOS's
+ * Identity derivation-path family of the wallet a seed phrase was imported from — found by
+ * import's auto-detect (iOS 1ab014f `findImportAccounts`, [com.kachat.app.viewmodels.WalletViewModel.findImportAccounts]),
+ * which replaced the "which wallet is this seed from?" list. Different Kaspa wallets put the same
+ * seed's funds and KNS domains on different BIP32 branches; opening the right family at import is
+ * what lets KaChat find them. Ported from iOS's
  * `WalletSourceFamily` (`Services/WalletManager.swift`), whose rules were replicated from
  * KasWare's ADDRESS_TYPES/RESTORE_WALLETS constants and its `hd-keyring.ts` `_pubkeyFromIndex`
  * derivation switch.
@@ -29,15 +30,40 @@ package com.kachat.app.models
 enum class WalletSourceFamily {
     KASPA_STANDARD,
     KASPA_LEGACY_972,
+    /** Chainge: m/44'/111111'/0'/0', one hardened leaf - exactly one address per seed, so only
+     *  index 0 exists (iOS `chainge`). Placed where iOS lists it, since import walks [entries]. */
+    CHAINGE,
     ONE_KEY;
 
-    /** Human-readable base path, shown in small monospaced text on the import chooser rows. */
-    val pathDescription: String
+    /**
+     * How import names this wallet type (iOS 1ab014f `displayName`). Standard covers KaChat,
+     * KasWare, Kaspium, Kastle, Core Golang CLI, OKX and Ledger, which all use the same addresses.
+     * Standard's name is translated: the screens show `R.string.import_standard_kaspa_wallet`.
+     */
+    val displayName: String
         get() = when (this) {
-            KASPA_STANDARD -> "m/44'/111111'/0'"
-            KASPA_LEGACY_972 -> "m/44'/972/0'"
-            ONE_KEY -> "m/44'/111111'/0' (OneKey)"
+            KASPA_STANDARD -> "Standard Kaspa Wallet"
+            KASPA_LEGACY_972 -> "KDX / Kaspanet Web"
+            CHAINGE -> "Chainge"
+            ONE_KEY -> "OneKey"
         }
+
+    /**
+     * How many addresses import's auto-detect checks (iOS 1ab014f `importSearchDepth`). The
+     * standard chain keeps the depth of one page of the chatting address picker; the others only
+     * have to be recognised.
+     */
+    val importSearchDepth: IntRange
+        get() = when (this) {
+            KASPA_STANDARD -> 0 until 50
+            KASPA_LEGACY_972, ONE_KEY -> 0 until 20
+            CHAINGE -> 0 until 1
+        }
+
+    /** True when the family has a whole receive chain to scan; false for Chainge, where only
+     *  index 0 exists (iOS `supportsIndexScan`). */
+    val supportsIndexScan: Boolean
+        get() = this != CHAINGE
 
     companion object {
         fun fromRaw(raw: String?): WalletSourceFamily =
@@ -45,30 +71,23 @@ enum class WalletSourceFamily {
     }
 }
 
-/** An address the import's passphrase step found on the identity chain (iOS 9653c04). */
-data class FoundChattingAddress(val index: Int, val address: String, val balanceSompi: Long)
+/** Which wallet type and address an import should open (iOS 1ab014f `ImportAccountChoice`). */
+data class ImportAccountChoice(
+    val family: WalletSourceFamily = WalletSourceFamily.KASPA_STANDARD,
+    val index: Int = 0,
+)
 
 /**
- * One row of the import source-wallet chooser: a wallet the user might be coming from, and the
- * derivation [family] its seeds belong to. Order mirrors KasWare's restore list, with KaChat
- * first and preselected.
+ * An address import's auto-detect looked at (iOS 1ab014f `ImportAccountCandidate`,
+ * [com.kachat.app.viewmodels.WalletViewModel.findImportAccounts]).
  */
-data class SourceWalletOption(
-    val displayName: String,
+data class ImportAccountCandidate(
     val family: WalletSourceFamily,
-    val isDefault: Boolean = false
+    val index: Int,
+    val address: String,
+    val balanceSompi: Long = 0L,
+    val hasHistory: Boolean = false,
 ) {
-    companion object {
-        val ALL: List<SourceWalletOption> = listOf(
-            SourceWalletOption("KaChat", WalletSourceFamily.KASPA_STANDARD, isDefault = true),
-            SourceWalletOption("KasWare Wallet", WalletSourceFamily.KASPA_STANDARD),
-            SourceWalletOption("Kaspium Wallet", WalletSourceFamily.KASPA_STANDARD),
-            SourceWalletOption("Kastle Wallet", WalletSourceFamily.KASPA_STANDARD),
-            SourceWalletOption("KDX Wallet", WalletSourceFamily.KASPA_LEGACY_972),
-            SourceWalletOption("Core Golang Cli Wallet", WalletSourceFamily.KASPA_STANDARD),
-            SourceWalletOption("OKX Wallet", WalletSourceFamily.KASPA_STANDARD),
-            SourceWalletOption("OneKey Wallet", WalletSourceFamily.ONE_KEY),
-            SourceWalletOption("Ledger Wallet", WalletSourceFamily.KASPA_STANDARD)
-        )
-    }
+    val choice: ImportAccountChoice get() = ImportAccountChoice(family, index)
+    val id: String get() = "${family.name}-$index"
 }

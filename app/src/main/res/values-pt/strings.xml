@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">Não foi possível deixar de seguir</string>
     <string name="kaposts_couldnt_post_vote">Não foi possível postar seu voto</string>
     <string name="kaposts_scheduled_sending_soon">Enviando assim que a rede responder</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">Carteira Kaspa padrão</string>
+    <string name="import_has_history">Tem histórico</string>
+    <string name="import_see_every_wallet_type">Ver todos os tipos de carteira</string>
+    <string name="import_checks_every_wallet_type">O KaPost verifica suas palavras em todos os tipos de carteira Kaspa, então você não precisa saber de qual delas vieram.</string>
+    <string name="import_address_has_history">Este endereço tem histórico, então parece ser a conta certa.</string>
+    <string name="import_no_funds_or_history">Sem fundos ou histórico neste endereço.</string>
+    <string name="import_picked_most_likely_account">Escolhemos a conta mais provável. Toque em outra se não for a que você usa.</string>
+    <string name="import_your_account">Sua conta</string>
 </resources>

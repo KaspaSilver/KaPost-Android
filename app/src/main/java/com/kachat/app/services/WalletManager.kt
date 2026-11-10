@@ -1168,11 +1168,17 @@ class WalletManager @Inject constructor(
                 val account = HDKeyDerivation.deriveChildKey(coinType, ChildNumber(0, true))
                 HDKeyDerivation.deriveChildKey(account, ChildNumber(0, true))
             }
+            // m/44'/111111'/0' - the single 0' leaf is applied as the "index 0" step in
+            // [identityPrivateKeyBytes] (iOS `chainge`).
+            WalletSourceFamily.CHAINGE -> {
+                val coinType = HDKeyDerivation.deriveChildKey(purpose, ChildNumber(111111, true))
+                HDKeyDerivation.deriveChildKey(coinType, ChildNumber(0, true))
+            }
         }
     }
 
-    /** Applies the family's index rule to [baseNode]. Null when the key is unusable (only
-     *  reachable via a failed OneKey tweak). */
+    /** Applies the family's index rule to [baseNode]. Null for an index the family doesn't have
+     *  (Chainge has exactly one address) or when a OneKey tweak fails. */
     private fun identityPrivateKeyBytes(
         baseNode: DeterministicKey,
         index: Int,
@@ -1182,6 +1188,8 @@ class WalletManager @Inject constructor(
             HDKeyDerivation.deriveChildKey(baseNode, ChildNumber(index, false)).privKeyBytes
         WalletSourceFamily.KASPA_LEGACY_972 ->
             HDKeyDerivation.deriveChildKey(baseNode, ChildNumber(index, true)).privKeyBytes
+        WalletSourceFamily.CHAINGE ->
+            if (index == 0) HDKeyDerivation.deriveChildKey(baseNode, ChildNumber(0, true)).privKeyBytes else null
         WalletSourceFamily.ONE_KEY ->
             oneKeyTweakedPrivateKey(HDKeyDerivation.deriveChildKey(baseNode, ChildNumber(index, false)).privKeyBytes)
     }

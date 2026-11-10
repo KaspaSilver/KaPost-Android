@@ -587,6 +587,27 @@ class WalletService @Inject constructor(
         return fetchBalancesBatched(addresses).takeIf { it.isNotEmpty() }
     }
 
+    /**
+     * The addresses with at least one transaction, from Kaspa REST's transactions-count (iOS
+     * 1ab014f `addressesWithHistory`). A failed probe counts as no history: this only ranks what
+     * import shows first, and every wallet type stays one tap away.
+     */
+    suspend fun addressesWithHistory(addresses: List<String>): Set<String> = coroutineScope {
+        val api = readyApi() ?: return@coroutineScope emptySet()
+        addresses.map { address ->
+            async { if (addressHasHistory(api, address)) address else null }
+        }.awaitAll().filterNotNull().toSet()
+    }
+
+    private suspend fun addressHasHistory(api: KaspaRestApi, address: String): Boolean = try {
+        // iOS: an 8 s request timeout
+        withTimeoutOrNull(8_000) { api.getTransactionsCount(address).total > 0 } ?: false
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        false
+    }
+
     private suspend fun fetchBalancesBatched(addresses: List<String>): Map<String, Long> = coroutineScope {
         val api = readyApi() ?: return@coroutineScope emptyMap()
         try {

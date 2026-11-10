@@ -498,10 +498,7 @@
     <string name="i_already_have_a_domain_somewhere">I already have a domain somewhere else</string>
     <string name="transfer_your_domain_to_this_address">Transfer your domain to this address so that your identity is connected to KaChat.</string>
 
-    <!-- Import source-wallet chooser -->
-    <string name="where_is_this_seed_phrase_from">Where are your 12 or 24 words from?</string>
-    <string name="different_wallets_store_your_kaspa">Different wallets store your Kaspa on different address paths. Pick where these words come from so KaPost finds your funds and domains.</string>
-    <string name="default_label">Default</string>
+    <!-- Continue (the Send steps) -->
     <string name="continue_label">Continue</string>
 
     <!-- Chatting-address picker (import runs only) -->
@@ -1788,4 +1785,13 @@
     <string name="kaposts_couldnt_unfollow">Couldn\'t unfollow</string>
     <string name="kaposts_couldnt_post_vote">Couldn\'t post your vote</string>
     <string name="kaposts_scheduled_sending_soon">Sending as soon as the network answers</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">Standard Kaspa Wallet</string>
+    <string name="import_has_history">Has history</string>
+    <string name="import_see_every_wallet_type">See Every Wallet Type</string>
+    <string name="import_checks_every_wallet_type">KaPost checks your words against every kind of Kaspa wallet, so you don\'t need to know which one they came from.</string>
+    <string name="import_address_has_history">This address has history, so this looks like the right account.</string>
+    <string name="import_no_funds_or_history">No funds or history on this address.</string>
+    <string name="import_picked_most_likely_account">We picked the most likely account. Tap another if that\'s not the one you use.</string>
+    <string name="import_your_account">Your Account</string>
 </resources>

@@ -40,6 +40,12 @@ data class ActiveAddressResponse(
     @SerializedName("lastTxBlockTime") val lastTxBlockTime: Long?
 )
 
+/** `GET addresses/{address}/transactions-count`: how many transactions the chain has seen at an
+ *  address (iOS 1ab014f `TransactionsCount`). */
+data class TransactionsCountResponse(
+    val total: Int
+)
+
 // Field names verified live against api.kaspa.org's real response (snake_case) —
 // a bare Gson converter (no naming policy) needs explicit @SerializedName for these.
 data class TransactionResponse(
@@ -230,6 +236,15 @@ interface KaspaRestApi {
     suspend fun getActiveAddresses(
         @Body request: ActiveAddressesRequest
     ): List<ActiveAddressResponse>
+
+    /**
+     * How many transactions an address has had - import's auto-detect asks it about each wallet
+     * type's address #0, so an emptied wallet still counts (iOS 1ab014f `addressHasHistory`).
+     */
+    @GET("addresses/{address}/transactions-count")
+    suspend fun getTransactionsCount(
+        @Path("address") address: String
+    ): TransactionsCountResponse
 
     /**
      * Network hashrate over time. `resolution` is one of 15m/1h/3h/1d/7d; the chart uses 1d

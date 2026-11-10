@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">تعذر إلغاء المتابعة</string>
     <string name="kaposts_couldnt_post_vote">تعذر نشر تصويتك</string>
     <string name="kaposts_scheduled_sending_soon">سيتم الإرسال فور استجابة الشبكة</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">محفظة Kaspa القياسية</string>
+    <string name="import_has_history">له سجل</string>
+    <string name="import_see_every_wallet_type">عرض كل أنواع المحافظ</string>
+    <string name="import_checks_every_wallet_type">يفحص KaPost كلماتك مقابل كل أنواع محافظ Kaspa، فلا تحتاج إلى معرفة المحفظة التي جاءت منها.</string>
+    <string name="import_address_has_history">لهذا العنوان سجل، لذا يبدو أن هذا هو الحساب الصحيح.</string>
+    <string name="import_no_funds_or_history">لا توجد أموال أو سجل على هذا العنوان.</string>
+    <string name="import_picked_most_likely_account">اخترنا الحساب الأرجح. اضغط على حساب آخر إذا لم يكن هذا هو الذي تستخدمه.</string>
+    <string name="import_your_account">حسابك</string>
 </resources>

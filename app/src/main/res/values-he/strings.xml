@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">לא ניתן להפסיק לעקוב</string>
     <string name="kaposts_couldnt_post_vote">לא ניתן לפרסם את ההצבעה שלכם</string>
     <string name="kaposts_scheduled_sending_soon">יישלח ברגע שהרשת תגיב</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">ארנק Kaspa רגיל</string>
+    <string name="import_has_history">יש היסטוריה</string>
+    <string name="import_see_every_wallet_type">הצגת כל סוגי הארנקים</string>
+    <string name="import_checks_every_wallet_type">KaPost בודק את המילים שלך מול כל סוגי ארנקי Kaspa, כך שלא צריך לדעת מאיזה ארנק הן הגיעו.</string>
+    <string name="import_address_has_history">לכתובת הזו יש היסטוריה, כך שנראה שזה החשבון הנכון.</string>
+    <string name="import_no_funds_or_history">אין כספים או היסטוריה בכתובת הזו.</string>
+    <string name="import_picked_most_likely_account">בחרנו את החשבון הסביר ביותר. אם זה לא החשבון שבו משתמשים, אפשר להקיש על אחר.</string>
+    <string name="import_your_account">החשבון שלך</string>
 </resources>

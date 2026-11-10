@@ -28,6 +28,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -1532,6 +1534,7 @@ class WalletViewModel @Inject constructor(
     fun abandonImport() {
         pendingAccountName = ""
         pendingMnemonicWords = emptyList()
+        pendingSourceFamily = WalletSourceFamily.KASPA_STANDARD
         pendingChattingAddressIndex = 0
     }
 
@@ -1752,16 +1755,12 @@ class WalletViewModel @Inject constructor(
      * a different, empty account — so it's only collected on the next screen.
      */
     /**
-     * Source-wallet derivation family picked on the import chooser (the screen shown BEFORE seed
-     * entry). Carried in memory across the chooser -> seed -> passphrase steps, then persisted on
-     * the account by [commitImport]. Reset to the default whenever a fresh import run starts.
+     * Source-wallet derivation family the passphrase step found or the user picked there (iOS
+     * 1ab014f `ImportAccountChoice.family`; it replaced the chooser shown before seed entry), or
+     * an NFC card's. Carried in memory to [commitImport], which persists it on the account. Reset
+     * to the default whenever a fresh import run starts.
      */
     private var pendingSourceFamily: WalletSourceFamily = WalletSourceFamily.KASPA_STANDARD
-
-    fun setPendingSourceFamily(family: WalletSourceFamily) {
-        pendingSourceFamily = family
-        pendingChattingAddressIndex = 0
-    }
 
     /** True while the CURRENT onboarding run is an import (not a create) — gates the wizard's
      *  "Change Chatting Address" option, which must never appear on Help replays or after a
@@ -1788,36 +1787,95 @@ class WalletViewModel @Inject constructor(
         return true
     }
 
-    /** The chatting address the pending seed would produce with [passphrase] - drives the live
-     *  preview on the passphrase entry screen. See [WalletManager.previewIdentityAddress]. */
+    /** The standard chatting address the pending seed would produce with [passphrase] - drives
+     *  the live preview on the passphrase screens, before the search places the words (iOS 1ab014f
+     *  `family: .kaspaStandard`). See [WalletManager.previewIdentityAddress]. */
     fun previewChattingAddress(passphrase: String): String? =
         if (pendingMnemonicWords.isEmpty()) null
-        else walletManager.previewIdentityAddress(pendingMnemonicWords, passphrase, pendingSourceFamily)
+        else walletManager.previewIdentityAddress(pendingMnemonicWords, passphrase, WalletSourceFamily.KASPA_STANDARD)
 
     /** The address the passphrase step found or the user picked there. */
     private var pendingChattingAddressIndex: Int = 0
 
-    fun setPendingChattingAddressIndex(index: Int) {
-        pendingChattingAddressIndex = index
+    /** The wallet type and address the passphrase step found or the user picked there (iOS
+     *  1ab014f `importChoice`). */
+    fun setPendingImportChoice(choice: com.kachat.app.models.ImportAccountChoice) {
+        pendingSourceFamily = choice.family
+        pendingChattingAddressIndex = choice.index
     }
 
     /**
-     * For an import's passphrase step: address #0 plus every other address in the first 50 on the
-     * identity chain holding funds, in index order (iOS 9653c04 `findChattingAddresses`). Null when
-     * the balances couldn't be checked.
+     * Address #0 of every wallet type the pending words could be, for an import before there's an
+     * account: the rows "See Every Wallet Type" offers (iOS 1ab014f `importAddressesAtZero`).
+     * Needs no network; derives keys, so call it off the main thread.
      */
-    suspend fun findChattingAddresses(passphrase: String): List<com.kachat.app.models.FoundChattingAddress>? {
-        if (pendingMnemonicWords.isEmpty()) return null
-        val derived = withContext(Dispatchers.Default) {
-            walletManager.previewIdentityAddresses(pendingMnemonicWords, passphrase, pendingSourceFamily, 0 until 50)
+    fun importAddressesAtZero(passphrase: String): List<com.kachat.app.models.ImportAccountCandidate> {
+        val words = pendingMnemonicWords
+        if (words.isEmpty()) return emptyList()
+        return WalletSourceFamily.entries.flatMap { importCandidates(words, passphrase, it, 0..0) }
+    }
+
+    /**
+     * Import's auto-detect (iOS 1ab014f `findImportAccounts`): every wallet type's addresses
+     * ([WalletSourceFamily.importSearchDepth]) in one batched balance call, keeping the ones with
+     * funds, plus any address #0 with transaction history (a chat identity or an emptied wallet
+     * holds no coins). The wallet type holding the most comes first and each type's addresses are
+     * in index order, so the first entry is the likeliest account. Empty when nothing has any
+     * activity; null when the words are invalid or the balances couldn't be checked.
+     */
+    suspend fun findImportAccounts(passphrase: String): List<com.kachat.app.models.ImportAccountCandidate>? {
+        val words = pendingMnemonicWords
+        if (words.isEmpty()) return null
+        val candidates = withContext(Dispatchers.Default) {
+            WalletSourceFamily.entries.flatMap { importCandidates(words, passphrase, it, it.importSearchDepth) }
         }
-        if (derived.isEmpty()) return null
-        val balances = walletService.balancesOrNull(derived.map { it.second }) ?: return null
-        return derived.mapNotNull { (index, address) ->
-            val balance = balances[address] ?: 0L
-            if (index == 0 || balance > 0) com.kachat.app.models.FoundChattingAddress(index, address, balance) else null
+        if (candidates.isEmpty()) return null
+
+        return coroutineScope {
+            val balancesCall = async { walletService.balancesOrNull(candidates.map { it.address }) }
+            val usedCall = async { walletService.addressesWithHistory(candidates.filter { it.index == 0 }.map { it.address }) }
+            val balanceByAddress = balancesCall.await()
+            if (balanceByAddress == null) {
+                usedCall.cancel()
+                return@coroutineScope null
+            }
+            val withHistory = usedCall.await()
+
+            val totals = mutableMapOf<WalletSourceFamily, Long>()
+            val active = candidates.mapNotNull { candidate ->
+                val found = candidate.copy(
+                    balanceSompi = balanceByAddress[candidate.address] ?: 0L,
+                    hasHistory = candidate.address in withHistory,
+                )
+                if (found.balanceSompi <= 0 && !found.hasHistory) return@mapNotNull null
+                totals[found.family] = (totals[found.family] ?: 0L) + found.balanceSompi
+                found
+            }
+            val familyOrder = WalletSourceFamily.entries
+            active.sortedWith(Comparator { lhs, rhs ->
+                val left = totals[lhs.family] ?: 0L
+                val right = totals[rhs.family] ?: 0L
+                when {
+                    lhs.family == rhs.family -> lhs.index.compareTo(rhs.index)
+                    left != right -> right.compareTo(left)
+                    // Ties go to the earlier type, so the standard wallet wins when nothing tells them apart.
+                    else -> familyOrder.indexOf(lhs.family).compareTo(familyOrder.indexOf(rhs.family))
+                }
+            })
         }
     }
+
+    /** [family]'s identity-chain addresses at [indices], derived exactly as an import of that
+     *  family would (iOS 1ab014f `importCandidates`). */
+    private fun importCandidates(
+        words: List<String>,
+        passphrase: String,
+        family: WalletSourceFamily,
+        indices: IntRange,
+    ): List<com.kachat.app.models.ImportAccountCandidate> =
+        walletManager.previewIdentityAddresses(words, passphrase, family, indices).map { (index, address) ->
+            com.kachat.app.models.ImportAccountCandidate(family = family, index = index, address = address)
+        }
 
     // --- NFC card backup (iOS 9653c04) ----------------------------------------------------------
 
@@ -1896,8 +1954,8 @@ class WalletViewModel @Inject constructor(
                 val words = pendingMnemonicWords
                 val name = pendingAccountName
                 val family = pendingSourceFamily
-                // With no passphrase it opens address #0 (iOS 9653c04).
-                val chattingIndex = if (passphrase.isEmpty()) 0 else pendingChattingAddressIndex
+                // With or without a passphrase it opens the picked type and address (iOS 1ab014f).
+                val chattingIndex = pendingChattingAddressIndex
                 // Key derivation and the encrypted save are slow: off the main thread.
                 withContext(Dispatchers.Default) {
                     // From the recovery screen: the unreadable store is set aside and a new one
@@ -2018,7 +2076,9 @@ class WalletViewModel @Inject constructor(
 
     fun resetImportWalletState() {
         _importWalletState.value = ImportWalletUiState()
-        pendingSourceFamily = WalletSourceFamily.KASPA_STANDARD
+        // The picked wallet type stays: dismissing a failed import's error on the passphrase step
+        // keeps the choice made there, as iOS keeps `importChoice` (iOS 1ab014f). A new import
+        // run starts from the standard type through [abandonImport].
     }
 
     // --- Chatting-address picker (import onboarding runs only) --------------------------------

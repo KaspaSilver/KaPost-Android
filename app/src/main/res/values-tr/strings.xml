@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">Takip bırakılamadı</string>
     <string name="kaposts_couldnt_post_vote">Oyunuz paylaşılamadı</string>
     <string name="kaposts_scheduled_sending_soon">Ağ yanıt verir vermez gönderilecek</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">Standart Kaspa Cüzdanı</string>
+    <string name="import_has_history">Geçmişi var</string>
+    <string name="import_see_every_wallet_type">Tüm Cüzdan Türlerini Gör</string>
+    <string name="import_checks_every_wallet_type">KaPost kelimelerinizi her tür Kaspa cüzdanıyla karşılaştırır, bu yüzden hangi cüzdandan geldiklerini bilmeniz gerekmez.</string>
+    <string name="import_address_has_history">Bu adresin geçmişi var, yani doğru hesap gibi görünüyor.</string>
+    <string name="import_no_funds_or_history">Bu adreste bakiye veya geçmiş yok.</string>
+    <string name="import_picked_most_likely_account">En olası hesabı seçtik. Kullandığınız bu değilse başka birine dokunun.</string>
+    <string name="import_your_account">Hesabınız</string>
 </resources>

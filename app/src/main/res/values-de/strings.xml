@@ -1491,4 +1491,13 @@
     <string name="kaposts_couldnt_unfollow">Entfolgen fehlgeschlagen</string>
     <string name="kaposts_couldnt_post_vote">Deine Stimme konnte nicht abgegeben werden</string>
     <string name="kaposts_scheduled_sending_soon">Wird gesendet, sobald das Netzwerk antwortet</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">Standard-Kaspa-Wallet</string>
+    <string name="import_has_history">Hat Verlauf</string>
+    <string name="import_see_every_wallet_type">Alle Wallet-Typen anzeigen</string>
+    <string name="import_checks_every_wallet_type">KaPost prüft deine Wörter mit jeder Art von Kaspa-Wallet, du musst also nicht wissen, woher sie stammen.</string>
+    <string name="import_address_has_history">Diese Adresse hat einen Verlauf, das sieht also nach dem richtigen Konto aus.</string>
+    <string name="import_no_funds_or_history">Kein Guthaben und kein Verlauf auf dieser Adresse.</string>
+    <string name="import_picked_most_likely_account">Wir haben das wahrscheinlichste Konto ausgewählt. Tippe auf ein anderes, wenn du dieses nicht verwendest.</string>
+    <string name="import_your_account">Dein Konto</string>
 </resources>

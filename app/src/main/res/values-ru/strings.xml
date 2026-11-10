@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">Не удалось отписаться</string>
     <string name="kaposts_couldnt_post_vote">Не удалось опубликовать ваш голос</string>
     <string name="kaposts_scheduled_sending_soon">Отправится, как только сеть ответит</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">Стандартный кошелёк Kaspa</string>
+    <string name="import_has_history">Есть история</string>
+    <string name="import_see_every_wallet_type">Показать все типы кошельков</string>
+    <string name="import_checks_every_wallet_type">KaPost проверяет ваши слова по всем типам кошельков Kaspa, поэтому вам не нужно знать, из какого они.</string>
+    <string name="import_address_has_history">У этого адреса есть история, похоже, это нужный аккаунт.</string>
+    <string name="import_no_funds_or_history">На этом адресе нет средств и истории.</string>
+    <string name="import_picked_most_likely_account">Мы выбрали наиболее вероятный аккаунт. Нажмите на другой, если вы используете не этот.</string>
+    <string name="import_your_account">Ваш аккаунт</string>
 </resources>

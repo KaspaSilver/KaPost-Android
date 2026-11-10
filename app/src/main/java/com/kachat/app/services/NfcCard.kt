@@ -238,7 +238,7 @@ data class NfcCardBackupPayload(
     val alias: String,
     val version: Int = 2,
 ) {
-    /** Null for a family this app doesn't have (iOS's Chainge). */
+    /** Null for a family this app doesn't know. */
     val walletFamily: WalletSourceFamily?
         get() = NfcCardBackupFormat.familyFromCard(family)
 }
@@ -263,12 +263,14 @@ object NfcCardBackupFormat {
     fun familyToCard(family: WalletSourceFamily): String = when (family) {
         WalletSourceFamily.KASPA_STANDARD -> "kaspaStandard"
         WalletSourceFamily.KASPA_LEGACY_972 -> "kaspaLegacy972"
+        WalletSourceFamily.CHAINGE -> "chainge"
         WalletSourceFamily.ONE_KEY -> "oneKey"
     }
 
     fun familyFromCard(raw: String): WalletSourceFamily? = when (raw) {
         "kaspaStandard" -> WalletSourceFamily.KASPA_STANDARD
         "kaspaLegacy972" -> WalletSourceFamily.KASPA_LEGACY_972
+        "chainge" -> WalletSourceFamily.CHAINGE
         "oneKey" -> WalletSourceFamily.ONE_KEY
         else -> null
     }

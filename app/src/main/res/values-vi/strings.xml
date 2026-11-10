@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">Không thể bỏ theo dõi</string>
     <string name="kaposts_couldnt_post_vote">Không thể đăng phiếu bình chọn của bạn</string>
     <string name="kaposts_scheduled_sending_soon">Sẽ gửi ngay khi mạng phản hồi</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">Ví Kaspa tiêu chuẩn</string>
+    <string name="import_has_history">Có lịch sử</string>
+    <string name="import_see_every_wallet_type">Xem mọi loại ví</string>
+    <string name="import_checks_every_wallet_type">KaPost đối chiếu các từ của bạn với mọi loại ví Kaspa, nên bạn không cần biết chúng đến từ ví nào.</string>
+    <string name="import_address_has_history">Địa chỉ này có lịch sử, nên có vẻ đây là tài khoản đúng.</string>
+    <string name="import_no_funds_or_history">Địa chỉ này không có tiền hoặc lịch sử.</string>
+    <string name="import_picked_most_likely_account">Chúng tôi đã chọn tài khoản có khả năng nhất. Hãy chạm vào tài khoản khác nếu đây không phải tài khoản bạn dùng.</string>
+    <string name="import_your_account">Tài khoản của bạn</string>
 </resources>

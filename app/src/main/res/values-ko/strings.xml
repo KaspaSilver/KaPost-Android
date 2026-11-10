@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">언팔로우할 수 없습니다</string>
     <string name="kaposts_couldnt_post_vote">투표를 게시할 수 없습니다</string>
     <string name="kaposts_scheduled_sending_soon">네트워크가 응답하는 대로 보냅니다</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">표준 Kaspa 지갑</string>
+    <string name="import_has_history">기록 있음</string>
+    <string name="import_see_every_wallet_type">모든 지갑 유형 보기</string>
+    <string name="import_checks_every_wallet_type">KaPost이 모든 종류의 Kaspa 지갑과 단어를 대조하므로 어느 지갑의 단어인지 몰라도 됩니다.</string>
+    <string name="import_address_has_history">이 주소에 기록이 있어 올바른 계정으로 보입니다.</string>
+    <string name="import_no_funds_or_history">이 주소에는 자금이나 기록이 없습니다.</string>
+    <string name="import_picked_most_likely_account">가장 가능성이 높은 계정을 선택했습니다. 사용하는 계정이 아니면 다른 계정을 탭하세요.</string>
+    <string name="import_your_account">내 계정</string>
 </resources>

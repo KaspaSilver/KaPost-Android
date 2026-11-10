@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">フォローを解除できませんでした</string>
     <string name="kaposts_couldnt_post_vote">投票を送信できませんでした</string>
     <string name="kaposts_scheduled_sending_soon">ネットワークが応答し次第送信します</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">標準のKaspaウォレット</string>
+    <string name="import_has_history">履歴あり</string>
+    <string name="import_see_every_wallet_type">すべてのウォレットの種類を表示</string>
+    <string name="import_checks_every_wallet_type">KaPostがあらゆる種類のKaspaウォレットと照合するため、どのウォレットの単語かを知らなくても大丈夫です。</string>
+    <string name="import_address_has_history">このアドレスには履歴があるため、正しいアカウントのようです。</string>
+    <string name="import_no_funds_or_history">このアドレスには資金も履歴もありません。</string>
+    <string name="import_picked_most_likely_account">最も可能性の高いアカウントを選びました。使っているものと違う場合は、別のアカウントをタップしてください。</string>
+    <string name="import_your_account">あなたのアカウント</string>
 </resources>

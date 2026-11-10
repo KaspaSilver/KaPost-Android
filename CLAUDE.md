@@ -110,10 +110,18 @@ or "recovery phrase" (iOS e5a9b11). Creating never shows the words: an account m
 is owed a backup (`AccountBackupStatus`), and until the backup steps (`AccountBackupScreen`) are
 finished `AccountBackupBanner` sits above every tab's title (Feed, Public Chats, Profile,
 Notifications, Settings, the Wallet; red once the chatting or spending addresses hold funds) and
-the Delete Account warning leads with Back Up Account; deleting is never blocked. Imported and older accounts are never owed one. An import that answers Yes to the
-passphrase question checks the first 50 addresses, picks the first with funds and lets you pick
-another (Import waits for that search at most 12 s, with Skip and Search Again, iOS 33095ac); one
-without a passphrase opens address #0.
+the Delete Account warning leads with Back Up Account; deleting is never blocked. Imported and older accounts are never owed one. Import has no "which
+wallet" list (KaChat's change, 2026-11-10, kept in unison; iOS 1ab014f): name (`ImportNameScreen`), 12
+or 24, the words, then the passphrase question (`PassphraseSetupScreen`). No opens "Your Account"
+(`PassphraseFoundStep`), Yes searches live as the passphrase is typed. Both run
+`WalletViewModel.findImportAccounts`: every `WalletSourceFamily` (Standard 50 addresses, KDX and OneKey
+20, Chainge 1: its one address at m/44'/111111'/0'/0') in one batched balance call
+(`WalletService.balancesOrNull`), plus each type's address #0 on Kaspa REST's transactions-count
+(`WalletService.addressesWithHistory`), so an emptied wallet still counts. The type holding the most
+comes first (ties go to Standard) and its first address is picked; several found are listed, and See
+Every Wallet Type adds each type's #0. Nothing found, a failure or the 12 s timeout means Standard #0
+(the last two with Search Again; Skip while it runs, iOS 33095ac). With or without a passphrase the
+import opens the picked type and address.
 "Advanced: Create with a Passphrase" opens straight on the passphrase field. Importing or finishing the steps starts a
 six-month timer; when it runs out the same place shows `BackupHygieneCard`, and `BackupHygieneScreen` asks for
 five random words, then the passphrase if there is one. A cold start goes back into the active
@@ -175,8 +183,9 @@ older saved "on" is switched off once per install (`KEY_ACCOUNT_LOGIN_BIOMETRICS
 payload version 2 (the doc still shows version 1). In every build, Play too (iOS e5a9b11).
 Settings > Back Up Account > Back Up to NFC Card only exists for an account with a BIP39 passphrase,
 which is never written to the card. A new PIN is typed twice (iOS 33095ac), and PIN and passphrase
-fields are hidden unless their eye is tapped (iOS ee5ec98). Import Account > Restore
-from NFC Card; an account already saved here keeps its name. Android has no system
+fields are hidden unless their eye is tapped (iOS ee5ec98). Restore from NFC Card
+(`NfcCardRestoreScreen`) sits at the bottom of Import Account's name screen (`ImportNameScreen`, iOS
+1ab014f); an account already saved here keeps its name. Android has no system
 scan sheet, so the app draws `NfcScanSheet` while reader mode runs.
 
 ## Rooms during an indexer outage (iOS ee5ec98)

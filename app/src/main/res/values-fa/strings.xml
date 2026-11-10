@@ -1521,4 +1521,13 @@
     <string name="kaposts_couldnt_unfollow">لغو دنبال کردن انجام نشد</string>
     <string name="kaposts_couldnt_post_vote">ثبت رأی شما انجام نشد</string>
     <string name="kaposts_scheduled_sending_soon">به‌محض پاسخ شبکه ارسال می‌شود</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">کیف پول استاندارد Kaspa</string>
+    <string name="import_has_history">دارای سابقه</string>
+    <string name="import_see_every_wallet_type">دیدن همهٔ انواع کیف پول</string>
+    <string name="import_checks_every_wallet_type">KaPost کلمات شما را با همهٔ انواع کیف پول Kaspa بررسی می‌کند، پس لازم نیست بدانید از کدام کیف پول آمده‌اند.</string>
+    <string name="import_address_has_history">این آدرس سابقه دارد، پس به نظر می‌رسد حساب درست همین است.</string>
+    <string name="import_no_funds_or_history">این آدرس موجودی یا سابقه‌ای ندارد.</string>
+    <string name="import_picked_most_likely_account">محتمل‌ترین حساب را انتخاب کردیم. اگر از این حساب استفاده نمی‌کنید، روی حساب دیگری بزنید.</string>
+    <string name="import_your_account">حساب شما</string>
 </resources>

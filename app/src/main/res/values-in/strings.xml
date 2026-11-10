@@ -257,7 +257,6 @@
     <string name="i_have_written_down_my_seed_phrase">Saya telah mencatat frasa pemulihan saya dan menyimpannya dengan aman</string>
     <string name="i_already_have_a_domain_somewhere">Saya sudah memiliki domain di tempat lain</string>
     <string name="transfer_your_domain_to_this_address">Transfer domain Anda ke alamat ini agar identitas Anda terhubung ke KaChat.</string>
-    <string name="default_label">Default</string>
     <string name="continue_label">Lanjutkan</string>
     <string name="user_info">Info Pengguna</string>
     <!-- Message actions: translation, share, read state (iOS 3eee9e4) -->
@@ -1365,4 +1364,13 @@
     <string name="kaposts_couldnt_unfollow">Tidak dapat berhenti mengikuti</string>
     <string name="kaposts_couldnt_post_vote">Tidak dapat memposting suara Anda</string>
     <string name="kaposts_scheduled_sending_soon">Dikirim begitu jaringan merespons</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">Dompet Kaspa Standar</string>
+    <string name="import_has_history">Ada riwayat</string>
+    <string name="import_see_every_wallet_type">Lihat Semua Jenis Dompet</string>
+    <string name="import_checks_every_wallet_type">KaPost memeriksa kata-kata Anda pada setiap jenis dompet Kaspa, jadi Anda tidak perlu tahu asalnya dari dompet mana.</string>
+    <string name="import_address_has_history">Alamat ini punya riwayat, jadi sepertinya ini akun yang benar.</string>
+    <string name="import_no_funds_or_history">Tidak ada dana atau riwayat di alamat ini.</string>
+    <string name="import_picked_most_likely_account">Kami memilih akun yang paling mungkin. Ketuk yang lain jika bukan ini yang Anda gunakan.</string>
+    <string name="import_your_account">Akun Anda</string>
 </resources>

@@ -1494,4 +1494,13 @@
     <string name="kaposts_couldnt_unfollow">अनफ़ॉलो नहीं किया जा सका</string>
     <string name="kaposts_couldnt_post_vote">आपका वोट पोस्ट नहीं हो सका</string>
     <string name="kaposts_scheduled_sending_soon">नेटवर्क के जवाब देते ही भेजा जाएगा</string>
+    <!-- Import Account: finding the wallet the words belong to (iOS 1ab014f) -->
+    <string name="import_standard_kaspa_wallet">स्टैंडर्ड Kaspa वॉलेट</string>
+    <string name="import_has_history">इतिहास है</string>
+    <string name="import_see_every_wallet_type">सभी वॉलेट प्रकार देखें</string>
+    <string name="import_checks_every_wallet_type">KaPost आपके शब्दों को हर तरह के Kaspa वॉलेट से जाँचता है, इसलिए आपको यह जानने की ज़रूरत नहीं कि वे किस वॉलेट से आए हैं।</string>
+    <string name="import_address_has_history">इस पते का इतिहास है, इसलिए यह सही खाता लगता है।</string>
+    <string name="import_no_funds_or_history">इस पते पर कोई राशि या इतिहास नहीं है।</string>
+    <string name="import_picked_most_likely_account">हमने सबसे संभावित खाता चुना है। अगर आप इसे इस्तेमाल नहीं करते, तो दूसरे पर टैप करें।</string>
+    <string name="import_your_account">आपका खाता</string>
 </resources>
