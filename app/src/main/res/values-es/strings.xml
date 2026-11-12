@@ -319,6 +319,8 @@
     <string name="send_photo_2">Enviar foto</string>
     <string name="setup_guide">Guia de configuracion</string>
     <string name="show_fee_estimate">Mostrar estimacion de comision</string>
+    <string name="show_kachat_endings">Mostrar terminación .kachat</string>
+    <string name="show_kachat_endings_footer">Desactívalo para ver nombres como alice en lugar de alice.kachat. Un nombre que tú le pusiste a alguien nunca lleva la terminación.</string>
     <string name="sound_vibration">Sonido y vibración</string>
     <string name="storage">Almacenamiento</string>
     <string name="submitting_commit_transaction">Enviando transaccion de confirmacion...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">No hay fondos ni historial en esta dirección.</string>
     <string name="import_picked_most_likely_account">Elegimos la cuenta más probable. Toca otra si no es la que usas.</string>
     <string name="import_your_account">Tu cuenta</string>
+    <string name="room_voice_recording">Grabación...</string>
+    <string name="room_voice_encoding">Codificando...</string>
+    <string name="room_voice_receiving">Recibiendo… %1$d de %2$d</string>
 </resources>

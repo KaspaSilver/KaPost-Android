@@ -450,6 +450,9 @@
     <string name="send_photo_2">Send Photo</string>
     <string name="setup_guide">Setup Guide</string>
     <string name="show_fee_estimate">Show Fee Estimate</string>
+    <!-- Settings > Customization (iOS 1b15521) -->
+    <string name="show_kachat_endings">Show .kachat Endings</string>
+    <string name="show_kachat_endings_footer">Turn off to show names like alice instead of alice.kachat. A name you gave someone yourself never has the ending.</string>
     <string name="sound_vibration">Sound &amp; Vibration</string>
     <string name="storage">Storage</string>
     <string name="on_this_device">On This Device</string>
@@ -1794,4 +1797,8 @@
     <string name="import_no_funds_or_history">No funds or history on this address.</string>
     <string name="import_picked_most_likely_account">We picked the most likely account. Tap another if that\'s not the one you use.</string>
     <string name="import_your_account">Your Account</string>
+    <!-- Long voice notes in rooms (iOS 1b15521): the recording bar and the note's bubble -->
+    <string name="room_voice_recording">Recording...</string>
+    <string name="room_voice_encoding">Encoding…</string>
+    <string name="room_voice_receiving">Receiving… %1$d of %2$d</string>
 </resources>

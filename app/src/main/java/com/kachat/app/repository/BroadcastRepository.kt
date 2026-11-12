@@ -188,8 +188,11 @@ class BroadcastRepository @Inject constructor(
                 it.senderAddress in hiddenHere || MessageReaction.parseOrNull(it.content) != null ||
                     com.kachat.app.util.MessageEdit.parseOrNull(it.content) != null
             }
+            // A long voice note's parts count once (iOS 1b15521 `unreadCount`).
+            val seenNotes = HashSet<String>()
             val unread = if (lastReadMs == null) 0 else readable.count {
-                it.blockTimestamp > lastReadMs && it.senderAddress != myAddress
+                it.blockTimestamp > lastReadMs && it.senderAddress != myAddress &&
+                    (com.kachat.app.util.BroadcastVoiceParts.noteKey(it)?.let { note -> seenNotes.add(note) } ?: true)
             }
             RoomSummary(lastMessage = readable.firstOrNull(), unreadCount = unread)
         }.flowOn(Dispatchers.Default)
@@ -197,7 +200,14 @@ class BroadcastRepository @Inject constructor(
 
     /** A room's newest [ROOM_WINDOW_SIZE] rows (widened by "Load earlier messages"), and whether
      *  the read filled the window — which is the only way to know there is more behind it. */
-    data class RoomWindow(val messages: List<BroadcastMessageEntity>, val hasMore: Boolean)
+    data class RoomWindow(
+        val messages: List<BroadcastMessageEntity>,
+        val hasMore: Boolean,
+        /** Long voice notes in the window by their first part's id (iOS 1b15521
+         *  `voiceNotesByChannel`): one bubble each, worked out with the window so the room doesn't
+         *  sniff every row on every pass. Their other parts are left out of [messages]. */
+        val voiceNotes: Map<String, com.kachat.app.util.BroadcastVoiceNote> = emptyMap(),
+    )
 
     /** Never includes messages from a sender hidden IN THIS ROOM (or via a legacy every-room hide) — including ones already cached from before the hide (see BroadcastScanningService for the future-side enforcement). Reaction messages (see [getReactions]) never render as a message row, so they're filtered out here too. */
     fun getMessages(channelName: String): Flow<List<BroadcastMessageEntity>> =
@@ -226,13 +236,17 @@ class BroadcastRepository @Inject constructor(
             // duplicate key crashes Compose (iOS d0b819f - there it left a blank gap). The table's
             // primary key is the id, so this is a guard, not a cleanup.
             val seen = HashSet<String>(messages.size)
+            val fresh = messages.filter {
+                seen.add(it.id) &&
+                    it.senderAddress !in hiddenHere && MessageReaction.parseOrNull(it.content) == null &&
+                    com.kachat.app.util.MessageEdit.parseOrNull(it.content) == null
+            }
+            // A long voice note is one bubble at its first part; its other parts aren't drawn.
+            val voiceNotes = com.kachat.app.util.BroadcastVoiceParts.group(fresh)
             RoomWindow(
-                messages = messages.filter {
-                    seen.add(it.id) &&
-                        it.senderAddress !in hiddenHere && MessageReaction.parseOrNull(it.content) == null &&
-                        com.kachat.app.util.MessageEdit.parseOrNull(it.content) == null
-                },
+                messages = if (voiceNotes.hiddenIds.isEmpty()) fresh else fresh.filter { it.id !in voiceNotes.hiddenIds },
                 hasMore = limit != null && messages.size >= limit,
+                voiceNotes = voiceNotes.notesByAnchorId,
             )
         // The reaction/edit sniff runs over every row on every change - through a room's first
         // backfill that is once per page. Collected from the screen it ran on the main thread
@@ -406,6 +420,10 @@ class BroadcastRepository @Inject constructor(
 
         /** How far before an outage a room's re-read starts (iOS ee5ec98: ten minutes). */
         private const val OUTAGE_REWIND_MS = 600_000L
+
+        /** What a long voice note's balance check leaves over, iOS's `dustThreshold` (0.2 KAS,
+         *  iOS 1b15521 `ensureSufficientBalanceForVoiceParts`). */
+        private const val VOICE_NOTE_DUST_THRESHOLD_SOMPI = 20_000_000L
 
         /** The indexer [channelName] reads from: its own override, or the app-wide one. Blank when
          *  neither is set (iOS `indexerBaseURL(forChannel:)`). An http:// override an older build
@@ -1143,4 +1161,169 @@ class BroadcastRepository @Inject constructor(
             database.broadcastDao().updateMessageStatus(message.id, "failed")
         }
     }
+
+    /**
+     * A long voice note (iOS 1b15521 `sendPublicChatVoiceParts`): each part a complete WebM-Opus
+     * file sent as its own ordinary voice message, one transaction each, tagged `voicePart` with
+     * one random id (KaChat's format, KaChat MESSAGING.md "Long voice notes (multi-part)"). Parts
+     * belong together by (room, sender, id, count).
+     *
+     * The balance for every part is checked first. Every part then shows at once, Sending, a
+     * millisecond apart so they keep their order, and they go out in index order, one after
+     * another, so each spends the change of the one before. When one fails the ones after it are
+     * marked Failed too, for one Retry to send them in order. Parts never carry a reply: the reply
+     * envelope would push a part past what one transaction holds. [onQueued] runs once the parts
+     * show (the caller drops its reply then). A note of one part goes as an ordinary voice
+     * message ([sendBroadcast]) instead.
+     */
+    suspend fun sendVoiceParts(channelName: String, parts: List<ByteArray>, onQueued: () -> Unit = {}) {
+        if (parts.size < 2 || parts.size > com.kachat.app.util.VoicePartTag.MAX_PARTS || parts.any { it.isEmpty() }) {
+            throw IllegalArgumentException("Audio file is empty")
+        }
+        val myAddress = walletManager.getAddress()
+        val mimeType = "audio/webm"
+        val noteId = com.kachat.app.util.VoicePartTag.newGroupId()
+        val contents = parts.mapIndexed { offset, data ->
+            val tag = com.kachat.app.util.VoicePartTag.of(noteId, offset + 1, parts.size)
+                ?: throw IllegalArgumentException("Audio file is empty")
+            com.kachat.app.util.MediaFileEnvelope.json(
+                name = tag.fileName,
+                size = data.size,
+                mimeType = mimeType,
+                dataUrlContent = "data:$mimeType;base64," + android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP),
+                voicePart = tag,
+            )
+        }
+
+        // The whole note first, before a single part goes out.
+        ensureSufficientBalanceForVoiceParts(channelName, contents, myAddress)
+
+        val dao = database.broadcastDao()
+        val start = System.currentTimeMillis()
+        val pending = contents.mapIndexed { offset, content ->
+            BroadcastMessageEntity(
+                id = "pending_${java.util.UUID.randomUUID()}",
+                channelName = channelName,
+                senderAddress = myAddress,
+                content = content,
+                blockTimestamp = start + offset,
+                deliveryStatus = "pending",
+            )
+        }
+        for (row in pending) {
+            pendingSendsThisRun.add(row.id)
+            dao.insertMessage(row)
+        }
+        onQueued()
+
+        for ((offset, row) in pending.withIndex()) {
+            try {
+                sendPendingVoicePart(row)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failRemainingParts(pending.drop(offset + 1))
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Retry on a long voice note's bubble (iOS 1b15521 `retryPublicChatVoiceParts`): only its
+     * failed parts, one after another in index order, so each spends the change of the one
+     * before. All of them show Sending at once; when one fails again, the ones after it go back to
+     * Failed for the next Retry. Says nothing on a failure, as [retryBroadcast].
+     */
+    suspend fun retryVoiceParts(failedParts: List<BroadcastMessageEntity>) {
+        val myAddress = walletManager.getAddress()
+        val dao = database.broadcastDao()
+        val claimed = ArrayList<BroadcastMessageEntity>()
+        for (part in failedParts) {
+            if (part.deliveryStatus != "failed" || part.senderAddress != myAddress) continue
+            pendingSendsThisRun.add(part.id)
+            // Only once: a second tap before the list re-emits would send it twice.
+            if (dao.claimFailedForRetry(part.id) > 0) claimed.add(part.copy(deliveryStatus = "pending"))
+        }
+        for ((offset, part) in claimed.withIndex()) {
+            try {
+                sendPendingVoicePart(part)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("BroadcastRepository", "Voice note part retry failed", e)
+                failRemainingParts(claimed.drop(offset + 1))
+                return
+            }
+        }
+    }
+
+    /** Sends a part whose row is already pending, under its own id; the sent row keeps the
+     *  pending row's time, so the note keeps its order. Throws when it failed (the row is then
+     *  Failed, or Not confirmed for an unknown outcome). */
+    private suspend fun sendPendingVoicePart(row: BroadcastMessageEntity) {
+        val dao = database.broadcastDao()
+        try {
+            val txId = walletService.sendBroadcast(row.channelName, row.content).txId
+            senderVerifier.rememberOwnBroadcast(txId, row.senderAddress)
+            dao.deleteMessage(row.id)
+            dao.insertMessage(row.copy(id = txId, deliveryStatus = "sent"))
+        } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
+            markMessageUnconfirmed(row.id, e.txId)
+            throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Left pending, never "failed" (see [sendBroadcast]).
+            throw e
+        } catch (e: Exception) {
+            dao.updateMessageStatus(row.id, "failed")
+            throw e
+        }
+    }
+
+    /** The parts after one that failed never went: Failed too, so one Retry sends them in order. */
+    private suspend fun failRemainingParts(parts: List<BroadcastMessageEntity>) {
+        val dao = database.broadcastDao()
+        for (part in parts) {
+            pendingSendsThisRun.remove(part.id)
+            dao.updateMessageStatus(part.id, "failed")
+        }
+    }
+
+    /**
+     * What all of a note's parts cost together, against the coins there are, leaving the dust
+     * threshold (0.2 KAS) over so the last part still has a change output to stand on (iOS
+     * 1b15521 `ensureSufficientBalanceForVoiceParts`). A check that can't be made (the node
+     * unreachable) lets the send go on and fail on its own.
+     */
+    private suspend fun ensureSufficientBalanceForVoiceParts(channelName: String, contents: List<String>, walletAddress: String) {
+        var totalFee = 0L
+        for (content in contents) {
+            val payload = MessageProtocol.buildBcastPayload(channelName, content)
+            val mass = com.kachat.app.util.KaspaMass.calculateMass(numInputs = 1, outputScriptLens = listOf(34), payloadSize = payload.size)
+            totalFee += com.kachat.app.util.KaspaMass.calculateFee(mass, null)
+        }
+        val utxos = try {
+            walletService.fetchMessageUtxosOrThrow(walletAddress)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w("BroadcastRepository", "Voice note balance precheck unavailable, continuing send", e)
+            return
+        }
+        val available = utxos.sumOf { it.utxoEntry.amount }
+        if (available <= 0L) throw com.kachat.app.services.NoCoinFreeYetException()
+        val required = totalFee + VOICE_NOTE_DUST_THRESHOLD_SOMPI
+        if (available < required) {
+            throw IllegalStateException(
+                String.format(
+                    java.util.Locale.US,
+                    com.kachat.app.util.SendFailureHint.INSUFFICIENT_BALANCE_TEMPLATE,
+                    kasAmount(required),
+                    kasAmount(available),
+                )
+            )
+        }
+    }
+
+    private fun kasAmount(sompi: Long): String =
+        java.math.BigDecimal.valueOf(sompi).movePointLeft(8).stripTrailingZeros().toPlainString()
 }

@@ -84,6 +84,16 @@ data class PushRegistrationRequest(
      *  which app it is sending to: the app's package, `kapost.kachat.app` (the iPhone app sends its
      *  bundle id, `com.kachat.kaposts`); FCM delivery itself doesn't use it. */
     @SerializedName("apns_topic") val apnsTopic: String? = null,
+    /**
+     * The notification channel Settings > Notifications > Sound & Vibration maps to
+     * ([NotificationHelper.channelFor]), so a push the system draws by itself (KaPosts and room
+     * pushes carry a `notification` block) plays and vibrates as chosen, through FCM's
+     * `android.notification.channel_id` (kachat-indexer docs/ANDROID_NOTIFICATION_CHANNEL.md §1).
+     * Outside the auth preimage. The server keeps only the four `kachat_messages_*` ids; null
+     * leaves the app's default channel. Also accepted on `/v1/push/update`, which this client
+     * doesn't call.
+     */
+    @SerializedName("android_channel_id") val androidChannelId: String? = null,
     @SerializedName("auth") val auth: PushAuthRequest? = null,
 )
 

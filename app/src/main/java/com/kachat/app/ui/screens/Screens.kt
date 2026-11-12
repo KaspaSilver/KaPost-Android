@@ -3316,9 +3316,12 @@ fun SettingsScreen(
             }
 
             if (sectionKey == "customization") {
-                // iOS KaPosts customizationPage: one section - the three pickers and Show Fee
-                // Estimate.
-                SettingsFormSection(title = stringResource(R.string.customization)) {
+                // iOS KaPosts customizationPage: one section - the three pickers, Show Fee
+                // Estimate and Show .kachat Endings, with its footer (iOS 1b15521).
+                SettingsFormSection(
+                    title = stringResource(R.string.customization),
+                    footer = stringResource(R.string.show_kachat_endings_footer),
+                ) {
                     // Appearance / Language / Currency are shared with the accounts screen's App
                     // Settings (iOS AppWideCustomizationPickers); the dock and the fee estimate
                     // belong to this account's Settings only.
@@ -3328,6 +3331,13 @@ fun SettingsScreen(
                     // which is a display preference, not a chat behaviour.
                     SettingsSwitchItem(stringResource(R.string.show_fee_estimate), showFeeEstimate) { enabled ->
                         settingsViewModel.setShowFeeEstimate(enabled)
+                    }
+                    SettingsDivider()
+                    // Off shows .kachat names bare ("alice"). On by default: the ending is how a
+                    // registered name tells itself apart from a name you gave someone yourself
+                    // (iOS 1b15521). Snapshot state, so every name on screen redraws at once.
+                    SettingsSwitchItem(stringResource(R.string.show_kachat_endings), com.kachat.app.models.KachatNameLabel.showsEnding) { enabled ->
+                        com.kachat.app.models.KachatNameLabel.setShowsEnding(enabled)
                     }
                 }
             }

@@ -282,7 +282,7 @@ fun KachatMarketScreen(onBack: (() -> Unit)?, onOpenChat: (String) -> Unit = {})
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("$typed.kachat", color = colors.textPrimary, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(com.kachat.app.models.KachatNameLabel.display(typed), color = colors.textPrimary, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(stringResource(R.string.km_registration_not_open), color = colors.textSecondary, fontSize = 12.sp)
                         }
                         Button(onClick = {}, enabled = false) { Text(stringResource(R.string.km_claim)) }

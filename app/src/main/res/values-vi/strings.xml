@@ -319,6 +319,8 @@
     <string name="send_photo_2">Gửi ảnh</string>
     <string name="setup_guide">Hướng dẫn thiết lập</string>
     <string name="show_fee_estimate">Hiển thị ước tính phí</string>
+    <string name="show_kachat_endings">Hiện đuôi .kachat</string>
+    <string name="show_kachat_endings_footer">Tắt để hiện tên như alice thay vì alice.kachat. Tên bạn tự đặt cho ai đó không bao giờ có đuôi này.</string>
     <string name="sound_vibration">Âm thanh &amp; Rung</string>
     <string name="storage">Lưu trữ</string>
     <string name="submitting_commit_transaction">Đang gửi giao dịch cam kết...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">Địa chỉ này không có tiền hoặc lịch sử.</string>
     <string name="import_picked_most_likely_account">Chúng tôi đã chọn tài khoản có khả năng nhất. Hãy chạm vào tài khoản khác nếu đây không phải tài khoản bạn dùng.</string>
     <string name="import_your_account">Tài khoản của bạn</string>
+    <string name="room_voice_recording">Đang ghi...</string>
+    <string name="room_voice_encoding">Đang mã hóa…</string>
+    <string name="room_voice_receiving">Đang nhận… %1$d/%2$d</string>
 </resources>

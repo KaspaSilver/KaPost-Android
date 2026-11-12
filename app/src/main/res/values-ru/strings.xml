@@ -319,6 +319,8 @@
     <string name="send_photo_2">Отправить фото</string>
     <string name="setup_guide">Руководство по настройке</string>
     <string name="show_fee_estimate">Показать оценку комиссии</string>
+    <string name="show_kachat_endings">Показывать окончание .kachat</string>
+    <string name="show_kachat_endings_footer">Выключите, чтобы имена показывались как alice вместо alice.kachat. У имени, которое вы дали кому-то сами, окончания никогда нет.</string>
     <string name="sound_vibration">Звук и вибрация</string>
     <string name="storage">Хранилище</string>
     <string name="submitting_commit_transaction">Отправка транзакции подтверждения...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">На этом адресе нет средств и истории.</string>
     <string name="import_picked_most_likely_account">Мы выбрали наиболее вероятный аккаунт. Нажмите на другой, если вы используете не этот.</string>
     <string name="import_your_account">Ваш аккаунт</string>
+    <string name="room_voice_recording">Запись...</string>
+    <string name="room_voice_encoding">Кодирование…</string>
+    <string name="room_voice_receiving">Получение… %1$d из %2$d</string>
 </resources>

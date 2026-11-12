@@ -165,7 +165,8 @@ object NameNormalization {
 /** What a typed name points to on one service. */
 data class NameResolution(
     val tld: NameServiceTLD,
-    /** The canonical name with its suffix, e.g. "bob.k". */
+    /** The name as shown, e.g. "bob.k". A .kachat name follows Show .kachat Endings
+     *  ([com.kachat.app.models.KachatNameLabel], iOS 1b15521), so it may be bare. */
     val display: String,
     /** Where it points; null when the name is not registered there (or has no address to pay). */
     val address: String?,
@@ -174,7 +175,13 @@ data class NameResolution(
     /** The service isn't live on this network yet (.kachat on mainnet before its launch): listed,
      *  first as always, but nothing can resolve there (iOS 6ac48a7). */
     val notLive: Boolean = false,
-)
+) {
+    /** The name with its ending always, for text other people read later (a post's @mention):
+     *  a bare name there wouldn't say which service it means, whatever this phone shows
+     *  (iOS 1b15521). */
+    val fullName: String
+        get() = if (tld == NameServiceTLD.KACHAT && !display.endsWith(tld.suffix)) display + tld.suffix else display
+}
 
 /** One name an address owns on a service other than KNS. */
 data class OwnedServiceName(
@@ -301,7 +308,7 @@ class NameServicesClient @Inject constructor(
             val key = KachatNamesRegistry.keyOf(address) ?: continue
             val held = runCatching { registry.heldNames(key) }.getOrNull().orEmpty()
             if (held.isEmpty()) continue
-            result[address] = held.map { OwnedServiceName(name = it.name, display = "${it.name}.kachat", tld = NameServiceTLD.KACHAT, isProvisional = false) }
+            result[address] = held.map { OwnedServiceName(name = it.name, display = com.kachat.app.models.KachatNameLabel.display(it.name), tld = NameServiceTLD.KACHAT, isProvisional = false) }
         }
         return result
     }
@@ -408,7 +415,7 @@ class NameServicesClient @Inject constructor(
     private suspend fun resolveKachat(label: String): NameResolution? {
         val canonical = KachatNames.Codec.normalize(label)
         if (!KachatNames.Codec.isValid(canonical)) return null
-        val display = "$canonical.kachat"
+        val display = com.kachat.app.models.KachatNameLabel.display(canonical)
         if (!NameServiceTLD.KACHAT.isLive) {
             return NameResolution(NameServiceTLD.KACHAT, display, null, failed = false, notLive = true)
         }

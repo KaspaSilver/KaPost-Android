@@ -466,7 +466,16 @@ class NotificationHelper @Inject constructor(
         } catch (_: SecurityException) {}
     }
 
-    suspend fun showBroadcast(channelName: String, title: String, text: String, dedupeTxId: String? = null) {
+    /** [pushSender] / [pushPreview]: a room push's sender (its `subtitle`) and the indexer's own
+     *  preview (its `body`), for [RoomVoicePushBursts]; null from the block scan. */
+    suspend fun showBroadcast(
+        channelName: String,
+        title: String,
+        text: String,
+        dedupeTxId: String? = null,
+        pushSender: String? = null,
+        pushPreview: String? = null,
+    ) {
         // Every broadcast notification funnels through here - the live block scan
         // (BroadcastScanningService) AND the remote push (KaChatFirebaseMessagingService, whose
         // `body` is whatever the indexer relayed, i.e. the raw on-chain content). Humanizing at
@@ -476,6 +485,10 @@ class NotificationHelper @Inject constructor(
         // Already looking at this channel - only while the app is in front (iOS KaPostsApp
         // willPresent): a room left open behind the home button notifies as usual.
         if (activeChannelName.value == channelName && appForeground.value) return
+        // A long voice note's later parts, while the app is open: listed, no banner or sound
+        // (iOS 1b15521 KaPostsApp willPresent).
+        val quietBurst = appForeground.value && pushSender != null && pushPreview != null &&
+            RoomVoicePushBursts.isLaterPart(channelName, pushSender, pushPreview)
         if (!settings.notificationsEnabled.first()) return
         // Child Mode removes Broadcasts entirely - no local banners for them either. Covers the
         // scan-driven path (BroadcastScanningService) AND the FCM receive handler in one place
@@ -496,6 +509,26 @@ class NotificationHelper @Inject constructor(
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+
+        if (quietBurst) {
+            // Listed only, in the silent channel and under its own id per (room, sender): the
+            // next later part replaces it, so the quiet one before it goes, and the first part's
+            // banner stays (iOS 1b15521 `RoomVoicePushBursts`).
+            val quiet = NotificationCompat.Builder(context, channelFor(soundEnabled = false, vibrationEnabled = false))
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title)
+                .setContentText(bodyText)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setSilent(true)
+                .setOnlyAlertOnce(true)
+                .build()
+            try {
+                NotificationManagerCompat.from(context).notify(RoomVoicePushBursts.quietNotificationId(channelName, pushSender.orEmpty()), quiet)
+            } catch (_: SecurityException) {}
+            return
+        }
 
         val soundEnabled = settings.notificationSoundEnabled.first()
         val vibrationEnabled = settings.notificationVibrationEnabled.first()
@@ -684,4 +717,51 @@ class NotificationHelper @Inject constructor(
         internal fun channelFor(soundEnabled: Boolean, vibrationEnabled: Boolean) =
             CHANNELS.first { it.second == soundEnabled && it.third == vibrationEnabled }.first
     }
+}
+
+/**
+ * KaChat's burst rule for parts of a long voice note or a multi-part photo, for room pushes (iOS
+ * 1b15521 `RoomVoicePushBursts`, KaChat CLAUDE.md "Parts arrive as bare txIds"). The indexer pushes
+ * every part of a long voice note as its own "Voice message", and the push carries no part tag.
+ * So a voice push from the same sender in the same room within 60 seconds of the last one is a
+ * later part: it is listed without a banner, sound or vibration, and the quiet entry before it is
+ * removed (replaced: [quietNotificationId]), leaving the first banner and one quiet entry per
+ * note. Two separate voice messages from one sender within a minute ring once; the room still
+ * shows both.
+ *
+ * This only runs while KaPost is open (FCM hands a push with a notification block to the app only
+ * then). With the app in the background or closed, the system shows every part's push as it
+ * arrives.
+ */
+object RoomVoicePushBursts {
+    /** Parts go out one after another, a few seconds apart. */
+    private const val WINDOW_MS = 60_000L
+
+    /** The indexer's previews for a media envelope: "Voice message" for any file or audio today
+     *  (a photo too), "Photo" once it tells photos apart (kachat-indexer
+     *  docs/ROOM_VOICE_PART_PUSHES.md). Multi-part photos (`mediaPart`) burst the same way. */
+    private val MEDIA_PREVIEWS = setOf("Voice message", "Photo")
+
+    /** The last push of each (room, sender) burst. */
+    private val bursts = HashMap<String, Long>()
+
+    /** True when this room push is a later part of a voice burst that already rang. Records the
+     *  push either way. */
+    @Synchronized
+    fun isLaterPart(channelName: String, sender: String, body: String): Boolean {
+        if (body.trim() !in MEDIA_PREVIEWS) return false
+        val now = System.currentTimeMillis()
+        bursts.entries.removeAll { now - it.value >= WINDOW_MS }
+        val owner = owner(channelName, sender)
+        val earlier = bursts[owner]
+        bursts[owner] = now
+        return earlier != null
+    }
+
+    /** The one quiet entry a (room, sender) burst keeps: each later part posts under this id, so
+     *  it takes the place of the one before. */
+    fun quietNotificationId(channelName: String, sender: String): Int =
+        "bcast-burst:${owner(channelName, sender)}".hashCode()
+
+    private fun owner(channelName: String, sender: String): String = "broadcast:$channelName|${sender.lowercase()}"
 }

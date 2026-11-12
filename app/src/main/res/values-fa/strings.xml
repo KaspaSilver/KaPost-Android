@@ -356,6 +356,8 @@
     <string name="send_photo_2">ارسال عکس</string>
     <string name="setup_guide">راهنمای راه‌اندازی</string>
     <string name="show_fee_estimate">نمایش برآورد کارمزد</string>
+    <string name="show_kachat_endings">نمایش پسوند ‎.kachat</string>
+    <string name="show_kachat_endings_footer">خاموشش کنید تا نام‌ها به‌صورت alice به‌جای alice.kachat نمایش داده شوند. نامی که خودتان به کسی داده‌اید هرگز این پسوند را ندارد.</string>
     <string name="sound_vibration">صدا و لرزش</string>
     <string name="storage">فضای ذخیره‌سازی</string>
     <string name="submitting_commit_transaction">در حال ارسال تراکنش تعهد...</string>
@@ -1530,4 +1532,7 @@
     <string name="import_no_funds_or_history">این آدرس موجودی یا سابقه‌ای ندارد.</string>
     <string name="import_picked_most_likely_account">محتمل‌ترین حساب را انتخاب کردیم. اگر از این حساب استفاده نمی‌کنید، روی حساب دیگری بزنید.</string>
     <string name="import_your_account">حساب شما</string>
+    <string name="room_voice_recording">در حال ضبط ...</string>
+    <string name="room_voice_encoding">در حال رمزگذاری…</string>
+    <string name="room_voice_receiving">در حال دریافت… %1$d از %2$d</string>
 </resources>

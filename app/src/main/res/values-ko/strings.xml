@@ -319,6 +319,8 @@
     <string name="send_photo_2">사진 보내기</string>
     <string name="setup_guide">설정 가이드</string>
     <string name="show_fee_estimate">수수료 예상 표시</string>
+    <string name="show_kachat_endings">.kachat 끝부분 표시</string>
+    <string name="show_kachat_endings_footer">끄면 이름이 alice.kachat 대신 alice로 표시됩니다. 내가 직접 붙인 이름에는 끝부분이 붙지 않습니다.</string>
     <string name="sound_vibration">소리 및 진동</string>
     <string name="storage">저장 공간</string>
     <string name="submitting_commit_transaction">커밋 거래 전송 중...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">이 주소에는 자금이나 기록이 없습니다.</string>
     <string name="import_picked_most_likely_account">가장 가능성이 높은 계정을 선택했습니다. 사용하는 계정이 아니면 다른 계정을 탭하세요.</string>
     <string name="import_your_account">내 계정</string>
+    <string name="room_voice_recording">녹음...</string>
+    <string name="room_voice_encoding">인코딩 중…</string>
+    <string name="room_voice_receiving">수신 중… %2$d개 중 %1$d개</string>
 </resources>

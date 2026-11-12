@@ -198,8 +198,23 @@ are one). While down a room stays on the block stream on cellular too (`unreacha
 from ten minutes before the outage (`rewindRoomsAfterOutage`, `deepBackfillFloor`); a steady poll whose
 whole page is newer than anything seen pages back the same way (`indexerNewestSeen`). Older room history
 has no other source; saved rows stay. A failed room edit deletes its row, so the message reads as before,
-and keeps its text in memory for Retry (`failedEdits`); an unknown outcome shows "Not confirmed". iOS's
-crafted-voice-note fix has no counterpart: Android has no WebM parser, `MediaPlayer` plays the file.
+and keeps its text in memory for Retry (`failedEdits`); an unknown outcome shows "Not confirmed". A single
+voice note plays straight through `MediaPlayer`; a multi-part note is read by `WebMOpusPartsDecoder`, which
+has iOS's crafted-voice-note limit (`MAX_CONTAINER_DEPTH`, 16 levels).
+
+## Show .kachat Endings (iOS 1b15521)
+
+Settings > Customization > Show .kachat Endings, on by default, with iOS's footer. Off shows a
+.kachat name as `alice` instead of `alice.kachat`. Every shown name goes through
+`KachatNameLabel.display` (`models/Models.kt`, key `kachat_show_name_endings` in `kachat_prefs`, read
+in `KaChatApplication.attachBaseContext`; snapshot state, so names on screen redraw when it flips):
+`KachatNamesRegistry.kachatName` (the display-name rule, posters, `AddressResolutionCard`),
+`NameInfo.display`, `NameResolution.display` for .kachat, the owned names, the name screens, the
+registration messages and the name notifications. Display only: typing, copying and anything sent
+keep the full name. A post's @mention is written with `NameResolution.fullName`
+(`KaPostsViewModel.resolveMentionQuery`), and the @ suggestions list full names. The `.kachat`
+wordmark under a name tile and the one-page claim button ("Claim %1$s.kachat", no iOS counterpart)
+keep the ending.
 
 ## .kachat names with the indexer down (iOS ee5ec98)
 
@@ -248,6 +263,34 @@ can't, and recovers by itself (`services/KaPostsChainFallback.kt`).
   the phone. A Cancel the indexer didn't answer stays scheduled and says so.
 - Posts not on chain yet (`KaPostsHeldPostStore`): their words are kept until they land, and what a kill
   leaves comes back as a draft.
+
+## Voice notes in rooms (iOS 1b15521)
+
+Since 2026-11-11 rooms record KaChat's long voice notes (KaChat MESSAGING.md, "Long voice notes
+(multi-part)"): 16 kbps CBR Opus in 60 ms frames, up to 2:50, as long as 1 KAS of fees allows
+(`VoiceNotePolicy.PUBLIC_CHAT` in `util/VoiceNoteParts.kt`, where the math is). A room message is plain
+base64 JSON, which costs what KaChat's 1:1 ECIES + base64 does, so the numbers match 1:1: parts of at
+most 14.5 s / 31,000 bytes (0.083 KAS each), 12 parts and 0.976 KAS at 2:50. The mic records PCM
+(`VoiceRecorderService.startVoiceNoteRecording`, `OpusWebMPartsRecorder`) and Stop encodes it into its
+parts ("Encoding…"): the platform encoder only makes 20 ms frames, so each three are joined into one
+60 ms code 3 packet (`OpusPacket.joinThree`; a part whose frames can't be joined keeps 20 ms packets),
+and each part is fed the next one's look-ahead. Without the platform Opus encoder MediaRecorder records
+one 14.5 s part. A note of one part or less is one ordinary voice message; a longer one goes as
+`voicePart`-tagged parts (`MediaFileEnvelope.json`, iOS's bytes), one transaction each
+(`BroadcastRepository.sendVoiceParts`: the balance for all parts first, then in order, never a reply).
+Parts belong together by (room, sender, id, count) (`BroadcastVoiceParts`, worked out in
+`getMessageWindow` into `RoomWindow.voiceNotes`, the other parts left out of the window): one bubble
+at the first part (`RoomVoiceNoteBubble`) with gapless playback and one scrubber (the parts decoded one
+by one, pre-skip cut and trimmed to their Info Duration, joined into one WAV for `MediaPlayer`:
+`WebMOpusPartsDecoder`), "Receiving… N of M" until all are in, one status, Retry resends only the failed
+parts (`retryVoiceParts`), and unread counts the note once (`roomSummary`). The recording bar is
+KaChat's 1:1 one: a ring toward the limit, "Recording... 00:10 / 02:50", the trash on the right. Room
+pushes come from the indexer, one per part ("Voice message"), with no part tag. While the app is open,
+`RoomVoicePushBursts` (`NotificationHelper.kt`) applies KaChat's burst rule: a voice or photo push from
+the same sender in the same room within 60 s of the last is listed quietly (silent, its own id per room
+and sender, so the quiet one before it is replaced). In the background or closed, the system shows every
+part's push. A failed part waiting for a confirmed coin isn't retried by itself: Android's room sends
+have no deferred retry, so it shows Failed and Retry sends the rest.
 
 ## KaPost links in rooms (as iOS 23920c8)
 
@@ -395,7 +438,11 @@ Push needs the Firebase Android apps `kapost.kachat.app` and `kapost.kachat.app.
 `kachat-fc22a` (`app/google-services.json`, gitignored) and the push service accepting them; without
 it KaPosts notifies through its in-app poller only. Registration sends `apns_topic` =
 `kapost.kachat.app`, the app's package (the iPhone app sends `com.kachat.kaposts`), so the shared push
-service knows which app the token is for. It watches no chat address (`watched_addresses`
+service knows which app the token is for. It also sends `android_channel_id`, the channel Settings >
+Notifications > Sound & Vibration maps to (`NotificationHelper.channelFor`, one of the four
+`kachat_messages_*`), so the KaPosts and room pushes the system draws by itself play and vibrate as
+chosen (kachat-indexer `docs/ANDROID_NOTIFICATION_CHANNEL.md`). The channel is in
+`PushRegistrationManager`'s snapshot and fingerprint, so changing Sound & Vibration re-registers. It watches no chat address (`watched_addresses`
 empty, main address only), so the push service sends it no chat messages; any chat push that
 comes anyway is ignored (`KaChatFirebaseMessagingService`). Only KaPosts and public chat pushes
 are shown: KaPost has no notifications about domains. `.kachat` name pushes (`name_event`, routed

@@ -319,6 +319,8 @@
     <string name="send_photo_2">إرسال صورة</string>
     <string name="setup_guide">دليل الإعداد</string>
     <string name="show_fee_estimate">إظهار تقدير الرسوم</string>
+    <string name="show_kachat_endings">إظهار لاحقة ‎.kachat</string>
+    <string name="show_kachat_endings_footer">أوقفه لعرض الأسماء مثل alice بدلاً من alice.kachat. الاسم الذي أعطيته أنت لشخص ما لا يحمل اللاحقة أبداً.</string>
     <string name="sound_vibration">الصوت والاهتزاز</string>
     <string name="storage">التخزين</string>
     <string name="submitting_commit_transaction">جارٍ إرسال معاملة الالتزام...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">لا توجد أموال أو سجل على هذا العنوان.</string>
     <string name="import_picked_most_likely_account">اخترنا الحساب الأرجح. اضغط على حساب آخر إذا لم يكن هذا هو الذي تستخدمه.</string>
     <string name="import_your_account">حسابك</string>
+    <string name="room_voice_recording">تسجيل...</string>
+    <string name="room_voice_encoding">جاري الترميز…</string>
+    <string name="room_voice_receiving">جارٍ الاستلام… %1$d من %2$d</string>
 </resources>

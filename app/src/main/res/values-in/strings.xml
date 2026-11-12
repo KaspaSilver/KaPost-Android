@@ -1373,4 +1373,9 @@
     <string name="import_no_funds_or_history">Tidak ada dana atau riwayat di alamat ini.</string>
     <string name="import_picked_most_likely_account">Kami memilih akun yang paling mungkin. Ketuk yang lain jika bukan ini yang Anda gunakan.</string>
     <string name="import_your_account">Akun Anda</string>
+    <string name="show_kachat_endings">Tampilkan Akhiran .kachat</string>
+    <string name="show_kachat_endings_footer">Matikan untuk menampilkan nama seperti alice, bukan alice.kachat. Nama yang Anda berikan sendiri kepada seseorang tidak pernah memakai akhiran ini.</string>
+    <string name="room_voice_recording">Merekam...</string>
+    <string name="room_voice_encoding">Mengenkode…</string>
+    <string name="room_voice_receiving">Menerima… %1$d dari %2$d</string>
 </resources>

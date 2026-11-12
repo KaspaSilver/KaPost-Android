@@ -208,8 +208,15 @@ class BroadcastViewModel @Inject constructor(
     // "Voice messages" section further down — combine()'s flow arguments are evaluated
     // immediately when the enclosing val initializes, in textual property-declaration order, so
     // voiceRecordingState must already exist by the time previewPayloadSize is constructed.
-    enum class VoiceRecordingStatus { IDLE, RECORDING }
-    data class VoiceRecordingState(val status: VoiceRecordingStatus = VoiceRecordingStatus.IDLE, val elapsedMs: Long = 0L)
+    /** ENCODING: a room voice note stopped and being encoded into its parts (iOS 1b15521
+     *  `PublicChatAudioRecorder.State.encoding`, "Encoding…" in the recording bar). */
+    enum class VoiceRecordingStatus { IDLE, RECORDING, ENCODING }
+    /** [maxMs]: the recording's ceiling, the bar's "/ 02:50" and its ring's full turn (iOS 1b15521). */
+    data class VoiceRecordingState(
+        val status: VoiceRecordingStatus = VoiceRecordingStatus.IDLE,
+        val elapsedMs: Long = 0L,
+        val maxMs: Long = 0L,
+    )
 
     private val _voiceRecordingState = MutableStateFlow(VoiceRecordingState())
     val voiceRecordingState: StateFlow<VoiceRecordingState> = _voiceRecordingState.asStateFlow()
@@ -261,11 +268,19 @@ class BroadcastViewModel @Inject constructor(
     val isEstimatingFee: StateFlow<Boolean> = com.kachat.app.util.TypingFeeGate.estimating(typedTextPreview)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
 
+    /** The room a voice note is being recorded in - its name is in every part's payload. */
+    @Volatile
+    private var recordingChannelName: String = ""
+
+    /** One payload size per transaction the composer would send: the text's one, or while
+     *  recording on chain each part's (iOS 1b15521 `updateRecordingFeeEstimate`: the parts a
+     *  recording this long goes as, 16 kbps CBR making their sizes exact to a few bytes). */
     private val previewPayloadSize = combine(typedTextPreviewBytes, voiceRecordingState, _nextcloudVoiceRequested) { textBytes, recording, voiceNextcloud ->
-        if (recording.status == VoiceRecordingStatus.RECORDING) {
-            if (voiceNextcloud && nextcloudService.isConnected) NEXTCLOUD_LINK_PREVIEW_BYTES else VoiceMessage.estimatedWirePayloadSize(recording.elapsedMs)
+        if (recording.status != VoiceRecordingStatus.IDLE) {
+            if (voiceNextcloud && nextcloudService.isConnected) listOf(NEXTCLOUD_LINK_PREVIEW_BYTES)
+            else voiceNotePayloadSizes(recordingChannelName, maxOf(1.0, recording.elapsedMs / 1000.0))
         } else {
-            textBytes
+            if (textBytes == 0) emptyList() else listOf(textBytes)
         }
     }
 
@@ -277,9 +292,9 @@ class BroadcastViewModel @Inject constructor(
      * estimateContextualMessageFee, which also prices off one output); the actual send path
      * computes this precisely against the real scriptPublicKey length.
      */
-    val estimatedFeeSompi: StateFlow<Long?> = combine(previewPayloadSize, _currentUtxos, _networkFeeRate, _feeRateOverride) { payloadSize, utxos, networkRate, overrideRate ->
+    val estimatedFeeSompi: StateFlow<Long?> = combine(previewPayloadSize, _currentUtxos, _networkFeeRate, _feeRateOverride) { payloadSizes, utxos, networkRate, overrideRate ->
         val rate = overrideRate?.toDouble() ?: networkRate
-        if (payloadSize == 0) return@combine null
+        if (payloadSizes.isEmpty()) return@combine null
 
         var total = 0L
         var count = 0
@@ -289,13 +304,44 @@ class BroadcastViewModel @Inject constructor(
             if (total >= 1000) break
         }
 
-        val mass = KaspaMass.calculateMass(
-            numInputs = count.coerceAtLeast(1),
-            outputScriptLens = listOf(34),
-            payloadSize = payloadSize
-        )
-        KaspaMass.calculateFee(mass, rate.toLong())
+        // A long voice note is one transaction per part: their fees added up (iOS 1b15521
+        // `estimatePublicChatVoiceFee`).
+        payloadSizes.sumOf { payloadSize ->
+            val mass = KaspaMass.calculateMass(
+                numInputs = count.coerceAtLeast(1),
+                outputScriptLens = listOf(34),
+                payloadSize = payloadSize
+            )
+            KaspaMass.calculateFee(mass, rate.toLong())
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+    /** Each part's payload bytes for a room voice note of [seconds]: one part is an untagged
+     *  message, more are tagged parts (iOS 1b15521 `estimatePublicChatVoiceFee`). */
+    private fun voiceNotePayloadSizes(channelName: String, seconds: Double): List<Int> {
+        val policy = com.kachat.app.util.VoiceNotePolicy.PUBLIC_CHAT
+        val partSizes = com.kachat.app.util.VoiceNoteLayout.partSizes(
+            duration = minOf(seconds, policy.maxSeconds),
+            partSeconds = policy.partSeconds,
+            bitrate = com.kachat.app.util.VoiceNotePolicy.BITRATE,
+            frameMs = com.kachat.app.util.VoiceNotePolicy.FRAME_MS,
+            maxBytes = policy.maxBytes,
+        )
+        val prefixBytes = MessageProtocol.buildBcastPayload(channelName, "").size
+        return partSizes.mapIndexed { offset, size ->
+            val tag = if (partSizes.size > 1) com.kachat.app.util.VoicePartTag.of("0".repeat(32), offset + 1, partSizes.size) else null
+            val base64Length = 4 * ((maxOf(0, size) + 2) / 3)
+            // The JSON with an empty file, plus the file's base64: every character of it one byte.
+            val envelope = com.kachat.app.util.MediaFileEnvelope.json(
+                name = tag?.fileName ?: "voice.webm",
+                size = size,
+                mimeType = "audio/webm",
+                dataUrlContent = "data:audio/webm;base64,",
+                voicePart = tag,
+            )
+            prefixBytes + envelope.toByteArray(Charsets.UTF_8).size + base64Length
+        }
+    }
 
     fun refreshUtxos() {
         viewModelScope.launch {
@@ -351,6 +397,7 @@ class BroadcastViewModel @Inject constructor(
         roomClosed = true
         stopLiveViewing()
         // Avoid leaking a live MediaRecorder if the screen/ViewModel is torn down mid-recording.
+        // (One being encoded finishes and sends: it was already sent from the bar.)
         if (_voiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) {
             voiceRecorderService.cancelRecording()
         }
@@ -1148,25 +1195,26 @@ class BroadcastViewModel @Inject constructor(
     val voiceRecordingSupported: Boolean get() = voiceRecorderService.isSupported
 
     fun startVoiceRecording(channelName: String, viaNextcloud: Boolean = false) {
-        if (_voiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) return
+        if (_voiceRecordingState.value.status != VoiceRecordingStatus.IDLE) return
         _nextcloudVoiceRequested.value = viaNextcloud
-        // Same dynamic ceiling as 1:1/group chats: on-chain broadcast notes are payload-capped
-        // at 10s (iOS PublicChatAudioRecorder: 10 s / 13 KB), but a "Record via Nextcloud" note
-        // only needs to fit the server, so it runs to the app-wide Nextcloud ceiling.
+        recordingChannelName = channelName
+        // On chain, KaChat's long voice notes (iOS 1b15521 `VoiceNotePolicy.publicChat`): 16 kbps
+        // CBR Opus in 60 ms frames, up to 2:50, sent as parts of at most 14.5 s. A "Record via
+        // Nextcloud" note only needs to fit the server, so it runs to the app-wide Nextcloud ceiling.
         try {
             if (voiceViaNextcloud) {
                 voiceRecorderService.startRecording(VoiceRecorderService.MAX_NEXTCLOUD_RECORDING_DURATION_MS)
             } else {
-                voiceRecorderService.startRecording(
-                    maxDurationMs = VoiceRecorderService.MAX_RECORDING_DURATION_MS,
-                    maxBytes = VoiceRecorderService.GROUP_ON_CHAIN_VOICE_BYTES
-                )
+                voiceRecorderService.startVoiceNoteRecording(com.kachat.app.util.VoiceNotePolicy.PUBLIC_CHAT)
             }
         } catch (e: Exception) {
             Log.e("BroadcastViewModel", "Could not start voice recording", e)
             return
         }
-        _voiceRecordingState.value = VoiceRecordingState(status = VoiceRecordingStatus.RECORDING)
+        _voiceRecordingState.value = VoiceRecordingState(
+            status = VoiceRecordingStatus.RECORDING,
+            maxMs = voiceRecorderService.activeMaxDurationMs,
+        )
         val startedAt = System.currentTimeMillis()
         recordingTickerJob = viewModelScope.launch {
             while (isActive && _voiceRecordingState.value.status == VoiceRecordingStatus.RECORDING) {
@@ -1191,6 +1239,26 @@ class BroadcastViewModel @Inject constructor(
         val elapsed = _voiceRecordingState.value.elapsedMs
         recordingTickerJob?.cancel()
         recordingTickerJob = null
+
+        if (!viaNextcloud) {
+            // A room voice note: "Encoding…" while it becomes its parts, then the send (iOS
+            // 1b15521 `stopAndSendRecording`). The encode and the send outlive the room (see
+            // [BroadcastRepository.sendScope]).
+            _voiceRecordingState.value = _voiceRecordingState.value.copy(status = VoiceRecordingStatus.ENCODING)
+            broadcastRepository.sendScope.launch {
+                val files = try {
+                    voiceRecorderService.stopVoiceNoteParts()
+                } finally {
+                    _voiceRecordingState.value = VoiceRecordingState()
+                }
+                if (files.isEmpty() || elapsed < VoiceRecorderService.MIN_RECORDING_DURATION_MS) {
+                    files.forEach { it.delete() }
+                    return@launch
+                }
+                sendVoiceNote(channelName, files)
+            }
+            return
+        }
         _voiceRecordingState.value = VoiceRecordingState()
 
         val file = voiceRecorderService.stopRecording()
@@ -1201,7 +1269,50 @@ class BroadcastViewModel @Inject constructor(
         sendVoiceMessage(channelName, file, viaNextcloud)
     }
 
+    /**
+     * A room voice note's parts (iOS 1b15521 `stopAndSendRecording`): longer than one part, tagged
+     * parts, one transaction each (2:50 at most) - no reply, and the reply being written is
+     * dropped once they show; one part, an ordinary voice message as before.
+     */
+    private suspend fun sendVoiceNote(channelName: String, files: List<java.io.File>) {
+        if (files.size == 1) {
+            sendVoiceMessage(channelName, files[0], viaNextcloud = false)
+            return
+        }
+        try {
+            val parts = withContext(Dispatchers.IO) { files.map { it.readBytes() } }
+            broadcastRepository.sendVoiceParts(channelName, parts) {
+                // A part is never a reply, and the next message isn't one either.
+                _replyingTo.value = null
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("BroadcastViewModel", "Error sending voice note parts", e)
+            showFailureToast("Failed to send voice message", e)
+        } finally {
+            files.forEach { it.delete() }
+        }
+    }
+
+    /** Retry on a long voice note's bubble: only its failed parts, in order (iOS 1b15521
+     *  `retryPublicChatVoiceParts`). Not cancelled by Back (see [BroadcastRepository.sendScope]). */
+    fun retryVoiceParts(failedParts: List<BroadcastMessageEntity>) {
+        if (failedParts.isEmpty()) return
+        broadcastRepository.sendScope.launch {
+            try {
+                broadcastRepository.retryVoiceParts(failedParts)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("BroadcastViewModel", "Error retrying voice note parts", e)
+            }
+        }
+    }
+
     fun cancelVoiceRecording() {
+        // Being encoded, it is already on its way.
+        if (_voiceRecordingState.value.status == VoiceRecordingStatus.ENCODING) return
         _nextcloudVoiceRequested.value = false
         recordingTickerJob?.cancel()
         recordingTickerJob = null

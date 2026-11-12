@@ -48,6 +48,8 @@ class KaChatApplication : Application(), Configuration.Provider {
         // The rooms the indexer tracks beyond the curated ones (iOS 21c480d): read by the
         // scanner's prune and metered gate as soon as they start, so known before Hilt does.
         com.kachat.app.services.IndexerTrackedRooms.init(base)
+        // Show .kachat Endings (iOS 1b15521), read before the first name is drawn or notified.
+        com.kachat.app.models.KachatNameLabel.init(base)
     }
 
     // @Singleton instances are otherwise only created lazily the first time something actually

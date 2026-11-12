@@ -51,8 +51,8 @@ import javax.inject.Singleton
  *
  * Beyond the explicit [registerAsync]/[onTokenRefreshed] entry points, the init block observes
  * everything the registration payload is built from — active account, active-contact set,
- * bell-enabled broadcast channels, hidden broadcast senders, the Push Indexer URL, and the
- * notifications setting — and
+ * bell-enabled broadcast channels, hidden broadcast senders, the Push Indexer URL, Sound &
+ * Vibration's notification channel, and the notifications setting — and
  * re-registers (debounced 2s, so an edit burst is one round-trip) whenever any of it changes,
  * mirroring iOS's updateWatchedAddresses triggers (PUSH_NOTIFICATIONS.md) and the "bell toggles
  * re-send registration immediately" contract (the iOS repo's PUSH_EXTENSIONS.md §1). The same observer
@@ -119,6 +119,10 @@ class PushRegistrationManager @Inject constructor(
         /** The Push Indexer URL: a new one (Settings > Connection, or the network switch)
          *  registers with that service, and a blank one leaves the old service. */
         val pushIndexerUrl: String,
+        /** Sound & Vibration's notification channel (kachat-indexer
+         *  docs/ANDROID_NOTIFICATION_CHANNEL.md): a change re-registers, so the push service names
+         *  the new channel on pushes the system draws by itself. */
+        val androidChannelId: String,
     )
 
     /** The five per-kind KaPosts switches as one flow, so a flip of any of them is one input. */
@@ -131,6 +135,17 @@ class PushRegistrationManager @Inject constructor(
     ) { likes, dislikes, comments, reposts, follows ->
         KaPostsNotifyKinds(likes = likes, dislikes = dislikes, comments = comments, reposts = reposts, follows = follows)
     }
+
+    /**
+     * Settings > Notifications > Sound & Vibration as the channel the app's own banners use
+     * ([NotificationHelper.channelFor]), sent as `android_channel_id` so the system-drawn KaPosts
+     * and room pushes follow it too (kachat-indexer docs/ANDROID_NOTIFICATION_CHANNEL.md, "The
+     * Android side"). Part of the snapshot and the fingerprint.
+     */
+    private val androidChannelFlow: Flow<String> = combine(
+        settings.notificationSoundEnabled,
+        settings.notificationVibrationEnabled,
+    ) { sound, vibration -> NotificationHelper.channelFor(sound, vibration) }
 
     init {
         scope.launch {
@@ -151,6 +166,7 @@ class PushRegistrationManager @Inject constructor(
                 settings.groupSilent,
                 kaPostsWatchStore.watching,
                 settings.pushIndexerUrl,
+                androidChannelFlow,
             ) { values ->
                 @Suppress("UNCHECKED_CAST")
                 Snapshot(
@@ -164,6 +180,7 @@ class PushRegistrationManager @Inject constructor(
                     silentGroups = values[7] as Set<String>,
                     kaPostsWatchAuthors = values[8] as Set<String>,
                     pushIndexerUrl = values[9] as String,
+                    androidChannelId = values[10] as String,
                 )
             }
                 .distinctUntilChanged()
@@ -474,6 +491,9 @@ class PushRegistrationManager @Inject constructor(
         // The authors this account asked to hear about when they post (KaPosts' bell). Empty in
         // Child Mode, like the KaPosts identity itself (iOS collectKaPostsWatchAuthors).
         val kaPostsWatchAuthors = if (childMode) emptyList() else kaPostsWatchStore.watchedPubkeys()
+        // Sound & Vibration's channel, for the pushes the system draws (kachat-indexer
+        // docs/ANDROID_NOTIFICATION_CHANNEL.md). In the fingerprint, so a change re-registers.
+        val androidChannelId = androidChannelFlow.first()
 
         // KaPost has no 1:1 chats, so it watches no chat address: watching one made the push
         // service send that chat's messages here, as bare "New message" banners. It registers on
@@ -492,7 +512,7 @@ class PushRegistrationManager @Inject constructor(
         // one actual registration.
         val fingerprint = registrationFingerprint(
             token, walletAddress, watchedAddresses, aliases, broadcastChannels, hiddenSenders, kaPostsPubkey,
-            watchedGroupIds, kaPostsKinds, kaPostsWatchAuthors, pushBase,
+            watchedGroupIds, kaPostsKinds, kaPostsWatchAuthors, pushBase, androidChannelId,
         )
         if (fingerprint == lastRegisteredFingerprint) return@withLock RegisterOutcome.Unchanged
 
@@ -500,7 +520,7 @@ class PushRegistrationManager @Inject constructor(
             submitRegistration(
                 api, token, privateKey, walletAddress, kaPostsPubkey,
                 watchedAddresses, aliases, broadcastChannels, hiddenSenders, watchedGroupIds, kaPostsKinds,
-                kaPostsWatchAuthors,
+                kaPostsWatchAuthors, androidChannelId,
             )
         } catch (e: HttpException) {
             // Wallet-binding conflict: this token is still bound to a previously active wallet
@@ -513,7 +533,7 @@ class PushRegistrationManager @Inject constructor(
             submitRegistration(
                 api, token, privateKey, walletAddress, kaPostsPubkey,
                 watchedAddresses, aliases, broadcastChannels, hiddenSenders, watchedGroupIds, kaPostsKinds,
-                kaPostsWatchAuthors,
+                kaPostsWatchAuthors, androidChannelId,
             )
         }
 
@@ -547,6 +567,7 @@ class PushRegistrationManager @Inject constructor(
         watchedGroupIds: List<String>,
         kaPostsKinds: KaPostsNotifyKinds,
         kaPostsWatchAuthors: List<String>,
+        androidChannelId: String,
     ) {
         try {
             val auth = buildAuth(
@@ -581,6 +602,8 @@ class PushRegistrationManager @Inject constructor(
                     // The app's own package (kapost.kachat.app, debug builds included), so the
                     // push service knows the token is KaPost's.
                     apnsTopic = context.packageName.removeSuffix(".debug"),
+                    // kachat-indexer docs/ANDROID_NOTIFICATION_CHANNEL.md §1.
+                    androidChannelId = androidChannelId,
                     auth = auth,
                 )
             )
@@ -671,6 +694,8 @@ class PushRegistrationManager @Inject constructor(
         kaPostsWatchAuthors: List<String>,
         /** The service it went to: the same payload at a new Push Indexer URL is a new registration. */
         pushBase: String,
+        /** Sound & Vibration's channel (kachat-indexer docs/ANDROID_NOTIFICATION_CHANNEL.md). */
+        androidChannelId: String,
     ): String = sha256Hex(
         listOf(
             token,
@@ -684,6 +709,7 @@ class PushRegistrationManager @Inject constructor(
             kaPostsKinds.fingerprint(),
             kaPostsWatchAuthors.sorted().joinToString("+"),
             pushBase.trim().trimEnd('/').lowercase(),
+            androidChannelId,
         ).joinToString("\n")
     )
 

@@ -319,6 +319,8 @@
     <string name="send_photo_2">שלח תמונה</string>
     <string name="setup_guide">מדריך הגדרה</string>
     <string name="show_fee_estimate">הצג הערכת עמלה</string>
+    <string name="show_kachat_endings">הצגת הסיומת ‎.kachat</string>
+    <string name="show_kachat_endings_footer">כבו כדי להציג שמות כמו alice במקום alice.kachat. לשם שנתתם בעצמכם למישהו אף פעם אין את הסיומת.</string>
     <string name="sound_vibration">צליל ורטט</string>
     <string name="storage">אחסון</string>
     <string name="submitting_commit_transaction">שולח עסקת התחייבות...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">אין כספים או היסטוריה בכתובת הזו.</string>
     <string name="import_picked_most_likely_account">בחרנו את החשבון הסביר ביותר. אם זה לא החשבון שבו משתמשים, אפשר להקיש על אחר.</string>
     <string name="import_your_account">החשבון שלך</string>
+    <string name="room_voice_recording">הַקלָטָה...</string>
+    <string name="room_voice_encoding">מקודד…</string>
+    <string name="room_voice_receiving">מתקבל… %1$d מתוך %2$d</string>
 </resources>

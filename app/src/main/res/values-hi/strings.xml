@@ -319,6 +319,8 @@
     <string name="send_photo_2">फ़ोटो भेजें</string>
     <string name="setup_guide">सेटअप गाइड</string>
     <string name="show_fee_estimate">शुल्क अनुमान दिखाएं</string>
+    <string name="show_kachat_endings">.kachat अंत दिखाएँ</string>
+    <string name="show_kachat_endings_footer">बंद करने पर नाम alice.kachat की जगह alice दिखेंगे। जो नाम आपने खुद किसी को दिया है, उसमें यह अंत कभी नहीं होता।</string>
     <string name="sound_vibration">ध्वनि और कंपन</string>
     <string name="storage">स्टोरेज</string>
     <string name="submitting_commit_transaction">कमिट लेन-देन भेजा जा रहा है...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">इस पते पर कोई राशि या इतिहास नहीं है।</string>
     <string name="import_picked_most_likely_account">हमने सबसे संभावित खाता चुना है। अगर आप इसे इस्तेमाल नहीं करते, तो दूसरे पर टैप करें।</string>
     <string name="import_your_account">आपका खाता</string>
+    <string name="room_voice_recording">रिकॉर्डिंग...</string>
+    <string name="room_voice_encoding">एन्कोडिंग…</string>
+    <string name="room_voice_receiving">प्राप्त हो रहा है… %2$d में से %1$d</string>
 </resources>

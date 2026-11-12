@@ -1284,7 +1284,7 @@ class KachatNamesActions @Inject constructor(
         // both go out now; the driver registers once the commit has aged (iOS eea52b2, beb9c45).
         val lookup = registry.lookupForCommit(name)
         if (!isRegisterable(lookup, registry.graceMs)) {
-            throw ActionError.NotRegisterable("$name.kachat is already registered.")
+            throw ActionError.NotRegisterable("${com.kachat.app.models.KachatNameLabel.display(name)} is already registered.")
         }
         val lapsed = (lookup as? Lookup.Registered)?.info
         val c = context(s, feerate(feeTier))
@@ -1950,7 +1950,7 @@ class KachatNamesActions @Inject constructor(
 
         /** The driver's note while it frees an expired old record of the name; English like the
          *  driver's other messages, localized by the screens (`kachatPendingError`, iOS eea52b2). */
-        fun freeingName(name: String): String = "Freeing $name.kachat for you..."
+        fun freeingName(name: String): String = "Freeing ${com.kachat.app.models.KachatNameLabel.display(name)} for you..."
 
         /** Why a claim waits on registry v5 before its migration deadline (English; the screens
          *  localize it, with the time, from [opensMs]; iOS dd836cb). */

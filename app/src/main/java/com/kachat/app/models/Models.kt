@@ -384,3 +384,41 @@ data class SavedNodeAddress(
     val label: String,
     val address: String
 )
+
+/**
+ * How a .kachat name is shown: "alice.kachat" by default, or "alice" when Settings >
+ * Customization > Show .kachat Endings is off (iOS 1b15521 `KachatNameLabel`). Display only:
+ * typing, copying and anything sent keep the full name (the codec strips the ending), as KaChat
+ * does; a post's @mention is written with [com.kachat.app.services.NameResolution.fullName].
+ *
+ * Snapshot state, so every composable that shows a name through [display] redraws the moment the
+ * switch flips (iOS posts `.settingsDidChange`), and plain code (the name services, the notifier)
+ * reads it synchronously. [init] runs from KaChatApplication.attachBaseContext, before any screen;
+ * before it the default (on) applies.
+ */
+object KachatNameLabel {
+    /** iOS's UserDefaults key, kept the same. */
+    const val SHOW_ENDINGS_KEY = "kachat_show_name_endings"
+    private const val PREFS = "kachat_prefs"
+
+    @Volatile private var prefs: android.content.SharedPreferences? = null
+    private val showsEndingState = androidx.compose.runtime.mutableStateOf(true)
+
+    /** On by default: the ending is how a registered name tells itself apart from a name you
+     *  gave someone yourself. */
+    val showsEnding: Boolean get() = showsEndingState.value
+
+    fun init(context: android.content.Context) {
+        if (prefs != null) return
+        val p = (context.applicationContext ?: context).getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+        prefs = p
+        showsEndingState.value = p.getBoolean(SHOW_ENDINGS_KEY, true)
+    }
+
+    fun setShowsEnding(value: Boolean) {
+        showsEndingState.value = value
+        prefs?.edit()?.putBoolean(SHOW_ENDINGS_KEY, value)?.apply()
+    }
+
+    fun display(name: String): String = if (showsEnding) "$name.kachat" else name
+}

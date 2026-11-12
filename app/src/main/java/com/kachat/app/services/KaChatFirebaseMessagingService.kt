@@ -92,6 +92,11 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
                             // Collapses with the live block scan's banner when the app is
                             // foregrounded and both paths see the same message.
                             dedupeTxId = data["tx_id"]?.takeIf { it.isNotBlank() },
+                            // A long voice note's later parts are listed quietly while the app is
+                            // open (iOS 1b15521 `RoomVoicePushBursts`): the sender and the
+                            // indexer's own preview tell a burst.
+                            pushSender = data["subtitle"].orEmpty(),
+                            pushPreview = body,
                         )
                     }
 

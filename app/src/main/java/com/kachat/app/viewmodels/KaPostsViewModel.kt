@@ -2232,7 +2232,9 @@ class KaPostsViewModel @Inject constructor(
         val results = nameServices.resolveEverywhere(query)
         val resolution = com.kachat.app.services.NameServicesClient.primary(results, query)
             ?: results.firstOrNull { it.tld == com.kachat.app.services.NameServiceTLD.KAS && it.address != null }
-        return resolution?.display
+        // Always with its ending, whatever Show .kachat Endings shows: the name goes into the
+        // post (iOS 1b15521 `fullName`).
+        return resolution?.fullName
     }
 
     /** Tapped @mention: resolve the token by the mention rule - the owner the post's author

@@ -68,6 +68,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kachat.app.R
 import com.kachat.app.models.ContactEntity
+import com.kachat.app.models.KachatNameLabel
 import com.kachat.app.repository.ChatRepository
 import com.kachat.app.services.AddressBookManager
 import com.kachat.app.services.WalletManager
@@ -1188,7 +1189,7 @@ fun KachatLiveSearchResult(
     @Composable
     fun row(subtitle: String) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("$name.kachat", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(KachatNameLabel.display(name), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(subtitle, color = colors.textSecondary, fontSize = 12.sp)
         }
     }
@@ -1220,7 +1221,7 @@ fun KachatLiveSearchResult(
             is KachatLiveViewModel.Search.Free -> if (s.name == name) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("${s.name}.kachat", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(KachatNameLabel.display(s.name), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val params = vm.service.manifest.collectAsState().value?.params
                         vm.pricePerYear(s.name)?.let { price ->
                             val text = if (KachatLive.yearlyPeriods(params)) {
@@ -1248,7 +1249,7 @@ fun KachatLiveSearchResult(
 @Composable
 private fun SearchChecking(name: String) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("$name.kachat", color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Text(KachatNameLabel.display(name), color = LocalAppColors.current.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         IosActivityIndicator(color = KaspaTeal, modifier = Modifier.size(20.dp))
     }
 }
@@ -1453,7 +1454,7 @@ private fun KachatRegistrationProgressContent(registration: PendingRegistration,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text(
-            stringResource(R.string.kn_claiming_name, "${registration.name}.kachat"),
+            stringResource(R.string.kn_claiming_name, KachatNameLabel.display(registration.name)),
             color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, textAlign = TextAlign.Center,
             // 22 from the sheet's top edge, the grabber's 10 included
             modifier = Modifier.padding(top = 12.dp, start = 24.dp, end = 24.dp)
@@ -1687,7 +1688,7 @@ fun KachatRegistrationCard(registration: PendingRegistration, vm: KachatLiveView
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("${registration.name}.kachat", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+            Text(KachatNameLabel.display(registration.name), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.weight(1f))
             when {
                 registration.needsDriving -> IosActivityIndicator(color = KaspaTeal, modifier = Modifier.size(20.dp))
                 registration.stage == PendingRegistration.Stage.REGISTERED -> Icon(Icons.Default.Verified, null, tint = colors.success)
@@ -1924,7 +1925,7 @@ private fun KachatEventRow(event: Event, showName: Boolean = false) {
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            val title = stringResource(KachatLive.eventTitle(event.op)) + (event.name?.takeIf { showName }?.let { " $it.kachat" } ?: "")
+            val title = stringResource(KachatLive.eventTitle(event.op)) + (event.name?.takeIf { showName }?.let { " " + KachatNameLabel.display(it) } ?: "")
             Text(title, color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val line = listOfNotNull(
                 KachatLive.party(event.to)?.takeIf { event.op != "offer" }?.let { "→ $it" },
@@ -2048,7 +2049,7 @@ fun KachatOfferTile(state: KachatOfferState, showsName: Boolean = false, onTap: 
         val offerName = state.offer.name
         if (showsName && offerName != null) {
             Text(
-                "$offerName.kachat", color = KaspaTeal, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                KachatNameLabel.display(offerName), color = KaspaTeal, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center
             )
         }
@@ -2165,7 +2166,7 @@ fun KachatOfferDetailSheet(state: KachatOfferState, onClose: () -> Unit, vm: Kac
                                     fontWeight = FontWeight.Bold, minScale = 0.5f, textAlign = TextAlign.Center
                                 )
                                 (state.offer.name ?: state.name?.name)?.let { n ->
-                                    Text("$n.kachat", color = KaspaTeal, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(KachatNameLabel.display(n), color = KaspaTeal, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                                 }
                             }
 
@@ -2812,7 +2813,7 @@ fun KachatClaimSheet(target: KachatClaimTarget, onClose: () -> Unit, onStarted: 
                                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                     Text(stringResource(R.string.kl_name), color = colors.textPrimary)
                                     Spacer(Modifier.weight(1f))
-                                    Text("${target.name}.kachat", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(KachatNameLabel.display(target.name), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                                 val count = maxOf(1, maxYears.toInt())
                                 KachatSegmented((1..count).map { yearsText(it, manifest?.params) }, (years - 1).toInt(), inset = false) { years = (it + 1).toLong() }
@@ -3329,7 +3330,7 @@ fun KachatLiveNameDetailScreen(
                                         stringResource(R.string.kn_your_kassigner_address, held.account, held.index),
                                         color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp
                                     )
-                                    else -> ownerLabel?.let { Text("$it.kachat", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp) }
+                                    else -> ownerLabel?.let { Text(KachatNameLabel.display(it), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp) }
                                 }
                                 ownerAddress?.let { address ->
                                     // The whole address doesn't fit on two lines: show its network
@@ -3574,7 +3575,7 @@ fun KachatLiveOfferSheet(info: NameInfo, onClose: () -> Unit, vm: KachatLiveView
     val belowListing = info.isListed && amount != null && info.price < amount
 
     val rows = buildList {
-        add(KachatTxRow(stringResource(R.string.kl_name), "${info.name}.kachat"))
+        add(KachatTxRow(stringResource(R.string.kl_name), KachatNameLabel.display(info.name)))
         if (info.isListed) add(KachatTxRow(stringResource(R.string.kl_listed_at), KaspaUnit.amount(info.price)))
         add(KachatTxRow(stringResource(R.string.kn_expires), KachatLive.day(info.expiresAt)))
         if (amount != null) add(KachatTxRow(stringResource(R.string.kl_offer), KaspaUnit.amount(amount)))
@@ -4292,7 +4293,7 @@ fun KachatNameLookupScreen(name: String, onBack: () -> Unit, onRetry: (() -> Uni
             } else {
                 val colors = LocalAppColors.current
                 Column(Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("$name.kachat", color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, textAlign = TextAlign.Center)
+                    Text(KachatNameLabel.display(name), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, textAlign = TextAlign.Center)
                     Text(stringResource(R.string.kn_err_lookup), color = colors.textSecondary, fontSize = 15.sp, textAlign = TextAlign.Center)
                     KachatButton(stringResource(R.string.try_again), onClick = onRetry)
                 }
@@ -4317,7 +4318,7 @@ fun KachatFreeNameScreen(name: String, gap: GapInfo?, onBack: () -> Unit, onClai
             Column(Modifier.fillMaxWidth().kachatGlass(colors).padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Box(Modifier.fillMaxWidth().height(110.dp).clip(RoundedCornerShape(18.dp)).background(KaspaTeal), contentAlignment = Alignment.Center) {
                     KachatFitText(
-                        "$name.kachat", color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Black, minScale = 0.5f,
+                        KachatNameLabel.display(name), color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Black, minScale = 0.5f,
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
                 }
@@ -4755,13 +4756,13 @@ fun KachatLiveProfileEditorScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(stringResource(R.string.kn_primary_name), color = colors.textPrimary, modifier = Modifier.weight(1f))
-                    Text(if (primary.isEmpty()) stringResource(R.string.kn_none) else "$primary.kachat", color = colors.textSecondary)
+                    Text(if (primary.isEmpty()) stringResource(R.string.kn_none) else KachatNameLabel.display(primary), color = colors.textSecondary)
                     Icon(Icons.Default.UnfoldMore, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
                 }
                 DropdownMenu(expanded = pickPrimary, onDismissRequest = { pickPrimary = false }) {
                     DropdownMenuItem(text = { Text(stringResource(R.string.kn_none)) }, onClick = { primary = ""; pickPrimary = false })
                     activeNames.forEach { n ->
-                        DropdownMenuItem(text = { Text("$n.kachat") }, onClick = { primary = n; pickPrimary = false })
+                        DropdownMenuItem(text = { Text(KachatNameLabel.display(n)) }, onClick = { primary = n; pickPrimary = false })
                     }
                 }
             }
@@ -4901,7 +4902,7 @@ fun KachatProfileSaveSheet(
                 LabeledRow(stringResource(R.string.banner), source(p.banner, SocialSource.Kind.BANNER)); SettingsDivider()
                 LabeledRow(stringResource(R.string.bio), source(p.bio, SocialSource.Kind.BIO)); SettingsDivider()
                 LabeledRow(stringResource(R.string.kn_linktree), p.linktree?.replace("https://", "") ?: none); SettingsDivider()
-                LabeledRow(stringResource(R.string.kn_primary_name), p.primaryName?.let { "$it.kachat" } ?: none)
+                LabeledRow(stringResource(R.string.kn_primary_name), p.primaryName?.let { KachatNameLabel.display(it) } ?: none)
             }
         }
         val f = fee

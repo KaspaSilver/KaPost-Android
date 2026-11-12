@@ -32,6 +32,8 @@ class VoiceRecorderService @Inject constructor(
 ) {
     private var recorder: MediaRecorder? = null
     private var opusRecorder: OpusWebMRecorder? = null
+    /** A room voice note being captured for [stopVoiceNoteParts] (iOS 1b15521). */
+    private var partsRecorder: OpusWebMPartsRecorder? = null
     private var outputFile: File? = null
     private var maxDurationMs = MAX_NEXTCLOUD_RECORDING_DURATION_MS
     private var maxBytes: Long? = null
@@ -42,6 +44,51 @@ class VoiceRecorderService @Inject constructor(
     /** The active recording is iOS's own WebM layout ([OpusWebMRecorder]), not MediaRecorder's -
      *  the fee preview sizes it by [VoiceMessage.estimatedRecordingBytes]'s matching rate. */
     val writesOwnWebM: Boolean get() = opusRecorder != null
+
+    /** The active recording's ceiling - the recording bar's "/ 02:50" (iOS 1b15521). */
+    val activeMaxDurationMs: Long get() = maxDurationMs
+
+    /**
+     * Starts a room voice note (iOS 1b15521 `PublicChatAudioRecorder`, [VoiceNotePolicy.PUBLIC_CHAT]):
+     * up to [VoiceNotePolicy.Path.maxSeconds], encoded by [stopVoiceNoteParts] as 16 kbps CBR Opus in
+     * 60 ms frames, in parts of at most [VoiceNotePolicy.Path.partSeconds]. Without the platform Opus
+     * encoder, MediaRecorder's note at 16 kbps, one part long, stopped by its bytes before the part
+     * ceiling. Throws if unsupported or already recording.
+     */
+    fun startVoiceNoteRecording(policy: com.kachat.app.util.VoiceNotePolicy.Path) {
+        check(isSupported) { "Voice message recording requires Android 10 or newer" }
+        check(recorder == null && opusRecorder == null && partsRecorder == null) { "A recording is already in progress" }
+        OpusWebMPartsRecorder.start(policy)?.let { started ->
+            partsRecorder = started
+            maxDurationMs = (policy.maxSeconds * 1000).toLong()
+            maxBytes = null
+            fallbackStopsAtBytes = false
+            return
+        }
+        startRecording(
+            maxDurationMs = (policy.partSeconds * 1000).toLong(),
+            maxBytes = policy.maxBytes.toLong(),
+            fallbackStopsAtBytes = true,
+            bitRateBps = com.kachat.app.util.VoiceNotePolicy.BITRATE,
+        )
+    }
+
+    /**
+     * Stops a room voice note and returns its parts in order, every part a complete WebM-Opus file
+     * (one when it is a part's length or shorter); empty when nothing usable was captured. A
+     * MediaRecorder note (no platform Opus encoder) is its one file.
+     */
+    suspend fun stopVoiceNoteParts(): List<File> {
+        partsRecorder?.let { parts ->
+            partsRecorder = null
+            return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                runCatching { parts.finishParts(context.cacheDir) }
+                    .onFailure { Log.w("VoiceRecorderService", "Could not encode the recorded voice note", it) }
+                    .getOrDefault(emptyList())
+            }
+        }
+        return listOfNotNull(stopRecording())
+    }
 
     /**
      * Starts recording to a fresh temp file in app cache. Throws if unsupported or already recording.
@@ -54,10 +101,12 @@ class VoiceRecorderService @Inject constructor(
     fun startRecording(
         maxDurationMs: Long = MAX_NEXTCLOUD_RECORDING_DURATION_MS,
         maxBytes: Long? = null,
-        fallbackStopsAtBytes: Boolean = false
+        fallbackStopsAtBytes: Boolean = false,
+        /** MediaRecorder's bitrate: a room voice note's 16 kbps when it falls back (iOS 1b15521). */
+        bitRateBps: Int = BIT_RATE_BPS,
     ): File {
         check(isSupported) { "Voice message recording requires Android 10 or newer" }
-        check(recorder == null && opusRecorder == null) { "A recording is already in progress" }
+        check(recorder == null && opusRecorder == null && partsRecorder == null) { "A recording is already in progress" }
 
         val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.webm")
         this.maxDurationMs = maxDurationMs
@@ -79,7 +128,7 @@ class VoiceRecorderService @Inject constructor(
                 setOutputFormat(MediaRecorder.OutputFormat.WEBM)
                 setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
                 setAudioSamplingRate(SAMPLE_RATE_HZ)
-                setAudioEncodingBitRate(BIT_RATE_BPS)
+                setAudioEncodingBitRate(bitRateBps)
                 setOutputFile(file.absolutePath)
                 prepare()
                 start()
@@ -106,6 +155,7 @@ class VoiceRecorderService @Inject constructor(
      * the wall clock, and by its written bytes or its measured rate when asked to.
      */
     fun reachedLimit(elapsedMs: Long): Boolean {
+        partsRecorder?.let { return it.limitReached || elapsedMs >= maxDurationMs + OWN_WEBM_WALL_CLOCK_GRACE_MS }
         opusRecorder?.let { return it.limitReached || elapsedMs >= maxDurationMs + OWN_WEBM_WALL_CLOCK_GRACE_MS }
         if (elapsedMs >= maxDurationMs) return true
         val cap = maxBytes ?: return false
@@ -145,6 +195,11 @@ class VoiceRecorderService @Inject constructor(
 
     /** Stops (if needed) and discards the in-progress recording — no message should ever come out of this. */
     fun cancelRecording() {
+        partsRecorder?.let { parts ->
+            partsRecorder = null
+            parts.cancel()
+            return
+        }
         opusRecorder?.let { opus ->
             opusRecorder = null
             opus.cancel()
@@ -168,7 +223,8 @@ class VoiceRecorderService @Inject constructor(
     companion object {
         private const val SAMPLE_RATE_HZ = 48_000
         private const val BIT_RATE_BPS = 6_000
-        /** On-chain voice notes in groups and public chats (payload-bound, unchanged). */
+        /** On-chain voice notes in groups (payload-bound, unchanged). Public chat rooms record
+         *  long voice notes instead (iOS 1b15521, [startVoiceNoteRecording]). */
         const val MAX_RECORDING_DURATION_MS = 10_000L
         /** On-chain 1:1 voice notes, which travel in the binary media frame (iOS f5f6a11): up to
          *  25 s or [MAX_DIRECT_ON_CHAIN_VOICE_BYTES], whichever comes first - as long as one

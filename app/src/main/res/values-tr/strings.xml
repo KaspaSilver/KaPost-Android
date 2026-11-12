@@ -319,6 +319,8 @@
     <string name="send_photo_2">Fotograf Gonder</string>
     <string name="setup_guide">Kurulum Rehberi</string>
     <string name="show_fee_estimate">Ucret Tahminini Goster</string>
+    <string name="show_kachat_endings">.kachat Uzantısını Göster</string>
+    <string name="show_kachat_endings_footer">Kapatırsanız adlar alice.kachat yerine alice olarak görünür. Birine kendi verdiğiniz adda bu uzantı hiçbir zaman olmaz.</string>
     <string name="sound_vibration">Ses ve Titreşim</string>
     <string name="storage">Depolama</string>
     <string name="submitting_commit_transaction">Taahhut islemi gonderiliyor...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">Bu adreste bakiye veya geçmiş yok.</string>
     <string name="import_picked_most_likely_account">En olası hesabı seçtik. Kullandığınız bu değilse başka birine dokunun.</string>
     <string name="import_your_account">Hesabınız</string>
+    <string name="room_voice_recording">Kayıt...</string>
+    <string name="room_voice_encoding">Kodlanıyor…</string>
+    <string name="room_voice_receiving">Alınıyor… %2$d parçadan %1$d</string>
 </resources>

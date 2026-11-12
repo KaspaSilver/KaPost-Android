@@ -752,6 +752,11 @@ class WalletService @Inject constructor(
         return SendResult(txId, payloadBytes.toHexString())
     }
 
+    /** The coins a room message at [address] can spend (what [sendBroadcast] picks from): a long
+     *  voice note checks its whole fee against them first (iOS 1b15521). Throws when the node
+     *  can't be asked. */
+    suspend fun fetchMessageUtxosOrThrow(address: String): List<UtxoEntry> = walletEngine.fetchUtxosOrThrow(address)
+
     /**
      * Sends a "handshake" transaction (0.2 KAS to the recipient) carrying our alias
      * and encrypted for their address-derived public key.

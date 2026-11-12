@@ -319,6 +319,8 @@
     <string name="send_photo_2">إرسال صورة</string>
     <string name="setup_guide">دليل الإعداد</string>
     <string name="show_fee_estimate">إظهار تقدير الرسوم</string>
+    <string name="show_kachat_endings">إظهار نهاية ‎.kachat</string>
+    <string name="show_kachat_endings_footer">اقفله عشان الأسماء تظهر زي alice بدل alice.kachat. الاسم اللي إنت اديته لحد عمره ما بيبقى فيه النهاية.</string>
     <string name="sound_vibration">الصوت والاهتزاز</string>
     <string name="storage">التخزين</string>
     <string name="submitting_commit_transaction">جارٍ إرسال معاملة الالتزام...</string>
@@ -1503,4 +1505,7 @@
     <string name="import_no_funds_or_history">مفيش أموال ولا سجل على العنوان ده.</string>
     <string name="import_picked_most_likely_account">اخترنا الحساب الأقرب. دوس على حساب تاني لو ده مش اللي بتستخدمه.</string>
     <string name="import_your_account">حسابك</string>
+    <string name="room_voice_recording">تسجيل...</string>
+    <string name="room_voice_encoding">جاري الترميز…</string>
+    <string name="room_voice_receiving">جارٍ الاستلام… %1$d من %2$d</string>
 </resources>

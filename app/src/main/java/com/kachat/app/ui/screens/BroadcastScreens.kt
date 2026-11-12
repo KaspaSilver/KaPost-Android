@@ -50,6 +50,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -84,6 +86,8 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Person
@@ -1483,7 +1487,8 @@ fun BroadcastChannelScreen(
                         onCancel = { broadcastViewModel.cancelReply() },
                     )
                 }
-                if (voiceRecordingState.status == BroadcastViewModel.VoiceRecordingStatus.RECORDING) {
+                if (voiceRecordingState.status != BroadcastViewModel.VoiceRecordingStatus.IDLE) {
+                    val encoding = voiceRecordingState.status == BroadcastViewModel.VoiceRecordingStatus.ENCODING
                     if (showFeeEstimate && estimatedFee != null) {
                         ComposerFeePill(
                             feeSompi = estimatedFee,
@@ -1492,8 +1497,10 @@ fun BroadcastChannelScreen(
                             modifier = Modifier.align(Alignment.CenterHorizontally),
                         )
                     }
-                    // iOS recordingBar: trash, a small red mic and "Recording..." on the field's
-                    // glass, and the send glyph on its own 36 glass square, 12 apart.
+                    // iOS 1b15521 recordingBar, laid out as KaChat's 1:1 recording bar: a ring
+                    // filling toward the limit, the time against it ("Recording... 00:10 / 02:50"),
+                    // the trash at the end, all on the field's glass; "Encoding…" while the note
+                    // becomes its parts; the send glyph on its own 36 glass square, 12 apart.
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1508,29 +1515,49 @@ fun BroadcastChannelScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            if (encoding) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = LocalAppColors.current.textSecondary,
+                                )
+                                Text(
+                                    text = stringResource(R.string.room_voice_encoding),
+                                    color = LocalAppColors.current.textPrimary,
+                                    fontSize = 17.sp,
+                                    maxLines = 1,
+                                )
+                            } else {
+                                RoomRecordingRing(
+                                    fraction = if (voiceRecordingState.maxMs > 0) {
+                                        voiceRecordingState.elapsedMs.toFloat() / maxOf(1_000L, voiceRecordingState.maxMs)
+                                    } else 0f,
+                                )
+                                Text(
+                                    text = "${stringResource(R.string.room_voice_recording)} " +
+                                        "${formatRecordingTime(voiceRecordingState.elapsedMs)} / ${formatRecordingTime(voiceRecordingState.maxMs)}",
+                                    color = LocalAppColors.current.textPrimary,
+                                    fontSize = 17.sp,
+                                    maxLines = 1,
+                                    style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
                             Icon(
-                                Icons.Default.Delete,
+                                Icons.Outlined.Delete,
                                 contentDescription = stringResource(R.string.cancel_recording),
                                 tint = LocalAppColors.current.danger,
                                 modifier = Modifier
                                     .size(22.dp)
-                                    .clickable { broadcastViewModel.cancelVoiceRecording() },
-                            )
-                            Icon(Icons.Default.Mic, contentDescription = null, tint = LocalAppColors.current.danger, modifier = Modifier.size(14.dp))
-                            Text(
-                                // iOS recordingBar: whole seconds, "Recording... 3s".
-                                text = "Recording... ${voiceRecordingState.elapsedMs / 1000}s",
-                                color = LocalAppColors.current.textSecondary,
-                                fontSize = 17.sp,
-                                maxLines = 1,
-                                modifier = Modifier.weight(1f)
+                                    .clickable(enabled = !encoding) { broadcastViewModel.cancelVoiceRecording() },
                             )
                         }
                         RoomComposerSquareButton(
                             contentDescription = stringResource(R.string.send),
+                            enabled = !encoding,
                             onClick = { broadcastViewModel.stopAndSendVoiceRecording(channelName) },
                         ) {
-                            RoomSendGlyph(enabled = true)
+                            RoomSendGlyph(enabled = !encoding)
                         }
                     }
                 } else {
@@ -1808,16 +1835,24 @@ fun BroadcastChannelScreen(
                         else message.copy(content = com.kachat.app.util.MessageEdit.apply(editForRow.text, message.content))
                     }
                     val isMine = message.senderAddress == myAddress
-                    // The status under the bubble carries the edit's send state; `message` keeps
-                    // the row's own for the actions (iOS ee5ec98).
+                    // The long voice note this row stands for (it is the note's first part), or
+                    // null for any other message (iOS 1b15521).
+                    val voiceNote = messageWindow.voiceNotes[message.id]
+                    // The status under the bubble carries the edit's send state, or a long voice
+                    // note's one status for all its parts; `message` keeps the row's own for the
+                    // actions (iOS ee5ec98, 1b15521 `shownStatusMessage`).
                     val failedEditText = failedEdits[channelName]?.get(message.id)
                     val shownDeliveryStatus = when {
+                        voiceNote != null -> voiceNote.deliveryStatus
                         failedEditText != null -> "failed"
                         editForRow?.deliveryStatus == "unconfirmed" -> "unconfirmed"
                         else -> message.deliveryStatus
                     }
+                    // Retry on a long voice note resends only its failed parts, in order (iOS
+                    // 1b15521 `makeRetryAction`).
                     val retryMessage: () -> Unit = {
-                        if (failedEditText != null) broadcastViewModel.retryFailedEdit(channelName, message.id)
+                        if (voiceNote != null) broadcastViewModel.retryVoiceParts(voiceNote.failedParts)
+                        else if (failedEditText != null) broadcastViewModel.retryFailedEdit(channelName, message.id)
                         else broadcastViewModel.retryBroadcast(message)
                     }
                     val replyContent = remember(message.content) { MessageReply.parseOrNull(message.content) }
@@ -1977,7 +2012,16 @@ fun BroadcastChannelScreen(
                                 }
                             }
                             Box {
-                                if (voiceContent != null) {
+                                if (voiceNote != null) {
+                                    // One bubble for the whole note: gapless across its parts,
+                                    // one scrubber, "Receiving… N of M" (iOS 1b15521).
+                                    RoomVoiceNoteBubble(
+                                        note = voiceNote,
+                                        isMine = isMine,
+                                        onLongPress = { showMenu = true },
+                                        onDoubleClick = { QuickReactionBarState.activeId = message.id },
+                                    )
+                                } else if (voiceContent != null) {
                                     AudioBubble(
                                         voiceContent,
                                         isSent = isMine,
@@ -2741,4 +2785,334 @@ private fun linkAt(layout: TextLayoutResult, text: AnnotatedString, position: Of
     if (position.x < layout.getLineLeft(line) || position.x > layout.getLineRight(line)) return null
     val offset = layout.getOffsetForPosition(position)
     return text.getStringAnnotations("URL", offset, offset).firstOrNull()?.item
+}
+
+/** "02:50", as KaChat's recording bar shows it (iOS 1b15521 `formatRecordingTime`). */
+private fun formatRecordingTime(durationMs: Long): String {
+    val totalSeconds = Math.round(durationMs.coerceAtLeast(0L) / 1000.0)
+    return "%02d:%02d".format(java.util.Locale.US, totalSeconds / 60, totalSeconds % 60)
+}
+
+/** The recording bar's ring (iOS 1b15521): a faint track and a red arc filling toward the limit
+ *  from the top, 20 across with a 3 stroke, easing a second at a time. */
+@Composable
+private fun RoomRecordingRing(fraction: Float) {
+    val track = LocalAppColors.current.textSecondary.copy(alpha = 0.25f)
+    val red = Color.Red
+    val shown by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = fraction.coerceIn(0f, 1f),
+        animationSpec = androidx.compose.animation.core.tween(durationMillis = 1000, easing = androidx.compose.animation.core.LinearEasing),
+        label = "recordingRing",
+    )
+    androidx.compose.foundation.Canvas(modifier = Modifier.size(20.dp)) {
+        val stroke = 3.dp.toPx()
+        val inset = stroke / 2
+        val arcSize = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)
+        val topLeft = androidx.compose.ui.geometry.Offset(inset, inset)
+        drawArc(track, 0f, 360f, useCenter = false, topLeft = topLeft, size = arcSize,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke))
+        drawArc(red, -90f, 360f * shown, useCenter = false, topLeft = topLeft, size = arcSize,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+    }
+}
+
+/**
+ * Plays a long voice note as one recording (iOS 1b15521 `PublicChatMultipartAudioPlayer`): every
+ * part present is decoded and joined with no gap ([com.kachat.app.util.WebMOpusPartsDecoder]), so
+ * the length is the total and seeking crosses parts. Parts that arrive later are picked up on the
+ * next Play. Main thread only.
+ */
+private class RoomVoiceNotePlayer {
+    var isPlaying by mutableStateOf(false)
+    var isLoading by mutableStateOf(false)
+    var progress by mutableStateOf(0f)
+    /** The length of the parts present (iOS `duration`). */
+    var durationMs by mutableStateOf<Long?>(null)
+    /** What the time under the scrubber says: where playback is, else the length. */
+    var shownMs by mutableStateOf<Long?>(null)
+
+    var player: android.media.MediaPlayer? = null
+    var file: java.io.File? = null
+    var playbackSignature: String? = null
+    var loadedSignature: String? = null
+    /** A seek made before playback started: where the next Play begins. */
+    var pendingSeekFraction: Float? = null
+
+    fun start(media: android.media.MediaPlayer) {
+        runCatching { media.start() }.onFailure { stop(); return }
+        isPlaying = true
+    }
+
+    fun pause() {
+        runCatching { player?.pause() }
+        isPlaying = false
+    }
+
+    fun stop() {
+        runCatching { player?.stop() }
+        runCatching { player?.release() }
+        player = null
+        playbackSignature = null
+        file?.delete()
+        file = null
+        isPlaying = false
+        progress = 0f
+        pendingSeekFraction = null
+        shownMs = durationMs
+    }
+
+    /** The scrubber: 0...1 across the whole note. */
+    fun seek(fraction: Float) {
+        val clamped = fraction.coerceIn(0f, 1f)
+        progress = clamped
+        val media = player
+        if (media != null) {
+            val target = (clamped * media.duration).toInt()
+            runCatching { media.seekTo(target) }
+            shownMs = target.toLong()
+        } else {
+            pendingSeekFraction = clamped
+            durationMs?.let { shownMs = (clamped * it).toLong() }
+        }
+    }
+}
+
+/**
+ * The one bubble of a long voice note in a room (iOS 1b15521 `PublicChatVoiceNoteBubble`): play,
+ * one scrubber across every part, the total length, and while parts are still on their way,
+ * "Receiving… 7 of 12". A note still playing when its bubble scrolls out plays on
+ * ([VoicePlayback]), as a single voice note's does.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RoomVoiceNoteBubble(
+    note: com.kachat.app.util.BroadcastVoiceNote,
+    isMine: Boolean,
+    onLongPress: () -> Unit,
+    onDoubleClick: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Changes whenever a part arrives (iOS `PublicChatVoiceNoteInput.signature`); a part going
+    // from Sending to Sent keeps its content, so it doesn't.
+    val signature = remember(note.parts) { note.parts.joinToString(",") { it.content.length.toString() } }
+    // The parts present, in index order, as their WebM files.
+    val parts by produceState<List<ByteArray>?>(null, signature) {
+        val contents = note.parts.map { it.content }
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            contents.mapNotNull { content ->
+                com.kachat.app.util.VoiceMessage.parseOrNull(content)?.let { voice ->
+                    runCatching {
+                        android.util.Base64.decode(com.kachat.app.util.VoiceMessage.base64Payload(voice), android.util.Base64.DEFAULT)
+                    }.getOrNull()
+                }
+            }
+        }
+    }
+    val player = remember { RoomVoiceNotePlayer() }
+    val playbackKey = "voicenote:${note.key}"
+
+    // A note left playing when its bubble scrolled out is taken back; anything else is released
+    // when the bubble goes.
+    DisposableEffect(playbackKey) {
+        VoicePlayback.adopt(playbackKey)?.let { (media, file) ->
+            player.player = media
+            player.file = file
+            player.playbackSignature = signature
+            media.setOnCompletionListener { player.stop() }
+            player.isPlaying = runCatching { media.isPlaying }.getOrDefault(false)
+            player.durationMs = runCatching { media.duration.toLong() }.getOrNull()
+        }
+        onDispose {
+            val media = player.player
+            if (media != null && runCatching { media.isPlaying }.getOrDefault(false)) {
+                VoicePlayback.detach(playbackKey, media, player.file)
+                player.player = null
+                player.file = null
+            } else {
+                player.stop()
+            }
+        }
+    }
+
+    // The length of the parts present, again whenever a part arrives (unless playing).
+    LaunchedEffect(signature, parts) {
+        val present = parts ?: return@LaunchedEffect
+        if (player.loadedSignature == signature || player.isPlaying) return@LaunchedEffect
+        player.loadedSignature = signature
+        player.isLoading = player.durationMs == null
+        val length = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            com.kachat.app.util.WebMOpusPartsDecoder.durationMs(present)
+        }
+        if (player.loadedSignature == signature) {
+            if (length > 0) {
+                player.durationMs = length
+                if (player.player == null) player.shownMs = length
+            }
+            player.isLoading = false
+        }
+    }
+
+    // Where playback is, ten times a second.
+    LaunchedEffect(player.isPlaying) {
+        while (player.isPlaying) {
+            val media = player.player ?: break
+            runCatching {
+                val duration = media.duration
+                val position = media.currentPosition
+                if (duration > 0) player.progress = position.toFloat() / duration
+                player.shownMs = position.toLong()
+            }
+            delay(100)
+        }
+    }
+
+    val toggle: () -> Unit = toggle@{
+        if (player.isPlaying) {
+            player.pause()
+            return@toggle
+        }
+        // Paused on the same parts: carry on from there.
+        val existing = player.player
+        if (existing != null && player.playbackSignature == signature) {
+            player.pendingSeekFraction?.let { fraction ->
+                runCatching { existing.seekTo((fraction * existing.duration).toInt()) }
+                player.pendingSeekFraction = null
+            }
+            player.start(existing)
+            return@toggle
+        }
+        val present = parts ?: return@toggle
+        val seek = player.pendingSeekFraction
+        player.stop()
+        player.pendingSeekFraction = seek
+        player.isLoading = true
+        scope.launch {
+            val out = java.io.File(context.cacheDir, "voice_note_playback_${System.nanoTime()}.wav")
+            val decoded = try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    com.kachat.app.util.WebMOpusPartsDecoder.decodePartsToWav(present, out)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                out.delete()
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("RoomVoiceNoteBubble", "Could not decode the voice note", e)
+                null
+            }
+            player.isLoading = false
+            if (decoded == null) {
+                out.delete()
+                return@launch
+            }
+            try {
+                val media = android.media.MediaPlayer()
+                media.setDataSource(decoded.file.absolutePath)
+                media.prepare()
+                media.setOnCompletionListener { player.stop() }
+                player.player = media
+                player.file = decoded.file
+                player.playbackSignature = signature
+                player.durationMs = decoded.durationMs
+                player.pendingSeekFraction?.let { fraction ->
+                    media.seekTo((fraction * media.duration).toInt())
+                    player.pendingSeekFraction = null
+                }
+                player.start(media)
+            } catch (e: Exception) {
+                android.util.Log.w("RoomVoiceNoteBubble", "Could not play the voice note", e)
+                player.stop()
+                decoded.file.delete()
+            }
+        }
+    }
+
+    val foreground = if (isMine) LocalAppColors.current.onOutgoingBubble else LocalAppColors.current.textPrimary
+    Row(
+        modifier = Modifier
+            .widthIn(min = 180.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(roomBubbleColor(isMine))
+            .combinedClickable(onClick = {}, onLongClick = onLongPress, onDoubleClick = onDoubleClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(30.dp)
+                .clickable(enabled = !player.isLoading && parts != null, onClick = toggle),
+        ) {
+            if (player.isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = foreground)
+            } else {
+                Icon(
+                    if (player.isPlaying) Icons.Filled.PauseCircle else Icons.Filled.PlayCircle,
+                    contentDescription = if (player.isPlaying) "Pause" else "Play",
+                    tint = if (isMine) foreground else KaspaTeal,
+                    modifier = Modifier.size(30.dp),
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.widthIn(min = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            // One scrubber across every part: a tap or a drag seeks.
+            val trackColor = (if (isMine) foreground else LocalAppColors.current.textSecondary).copy(alpha = 0.3f)
+            val fillColor = if (isMine) foreground else KaspaTeal
+            Box(
+                contentAlignment = Alignment.CenterStart,
+                modifier = Modifier
+                    .widthIn(min = 120.dp)
+                    .height(16.dp)
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown()
+                            if (size.width <= 0) return@awaitEachGesture
+                            down.consume()
+                            player.seek(down.position.x / size.width)
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull() ?: break
+                                if (!change.pressed) break
+                                change.consume()
+                                player.seek(change.position.x / size.width)
+                            }
+                        }
+                    },
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(trackColor)
+                )
+                Box(
+                    Modifier
+                        .fillMaxWidth(player.progress.coerceIn(0f, 1f))
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(fillColor)
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    com.kachat.app.util.VoiceMessage.formatDuration((player.shownMs ?: player.durationMs ?: 0L).toInt()),
+                    color = foreground,
+                    fontSize = 12.sp,
+                    style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
+                )
+                if (!note.isComplete) {
+                    Text(
+                        stringResource(R.string.room_voice_receiving, note.parts.size, note.count),
+                        color = foreground,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+    }
 }

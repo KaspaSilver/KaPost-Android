@@ -74,7 +74,8 @@ class NameInfo(
     val periodStart: Long? = null
 ) {
     val id: String get() = name
-    val display: String get() = "$name.kachat"
+    /** Follows Settings > Customization > Show .kachat Endings ([com.kachat.app.models.KachatNameLabel], iOS 1b15521). */
+    val display: String get() = com.kachat.app.models.KachatNameLabel.display(name)
     val isListed: Boolean get() = price > 0
 
     /** The on-chain state, when the period start is known. */
