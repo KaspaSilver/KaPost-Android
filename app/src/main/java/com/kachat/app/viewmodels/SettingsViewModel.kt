@@ -40,16 +40,16 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettingsRepository.DEFAULT_KASPA_REST_URL)
 
     val notificationsEnabled = settings.notificationsEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val notificationSoundEnabled = settings.notificationSoundEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val notificationVibrationEnabled = settings.notificationVibrationEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val showFeeEstimate = settings.showFeeEstimate
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     /** Settings > Chats > Require approval for photos from new contacts (iOS, on by default). */
     val requirePhotoApprovalForNewContacts = settings.requirePhotoApprovalForNewContacts
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     /** Settings > Chats > Higher quality photos (iOS, off by default). */
     val higherQualityPhotos = settings.higherQualityPhotos
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
@@ -78,24 +78,24 @@ class SettingsViewModel @Inject constructor(
     // ------------------------------------------------------------------
 
     val addressActivityNotificationsEnabled = settings.addressActivityNotificationsEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val kaPostsNotifyLikes = settings.kaPostsNotifyLikes
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val kaPostsNotifyReposts = settings.kaPostsNotifyReposts
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val kaPostsNotifyFollows = settings.kaPostsNotifyFollows
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val kaPostsNotifyDislikes = settings.kaPostsNotifyDislikes
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val kaPostsNotifyComments = settings.kaPostsNotifyComments
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val kaPostsNotifyMentions = settings.kaPostsNotifyMentions
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /** Receive notifications for the wallet's own spending addresses - a cold-storage account
      *  has its own switch in its menu (iOS ba352a2). */
     val spendingReceiveNotifications = settings.spendingReceiveNotifications
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     fun setSpendingReceiveNotifications(enabled: Boolean) {
         viewModelScope.launch { settings.setSpendingReceiveNotifications(enabled) }
@@ -122,7 +122,7 @@ class SettingsViewModel @Inject constructor(
 
     /** KaPost Settings > Cool down before post. */
     val kaPostsCooldownEnabled = settings.kaPostsCooldownEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     fun setAddressActivityNotificationsEnabled(value: Boolean) = viewModelScope.launch { settings.setAddressActivityNotificationsEnabled(value) }
     fun setKaPostsNotifyLikes(value: Boolean) = viewModelScope.launch { settings.setKaPostsNotifyLikes(value) }

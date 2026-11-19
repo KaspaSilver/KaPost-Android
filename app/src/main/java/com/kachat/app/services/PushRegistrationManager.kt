@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -82,6 +83,23 @@ class PushRegistrationManager @Inject constructor(
     // Serialize registrations so an account switch + a token refresh can't race.
     private val mutex = Mutex()
 
+    // Sign-out unregister state (iOS 369794e)
+    private val unregisterLock = Any()
+    /** The unregister on its way, shared by every caller; a register waits for it. */
+    @Volatile
+    private var unregisterJob: kotlinx.coroutines.Deferred<Boolean>? = null
+    /** Bumped by every accepted register, so an unregister started before it can't mark the newer
+     *  registration gone. */
+    @Volatile
+    private var registrationGeneration = 0
+    @Volatile
+    private var pendingUnregisterJob: kotlinx.coroutines.Job? = null
+    @Volatile
+    private var pendingUnregisterAttempt = 0
+    /** The key captured at sign-out, for retries while the app stays up. */
+    @Volatile
+    private var signOutMaterial: SigningMaterial? = null
+
     /**
      * SHA-256 of the last payload the server ACCEPTED (token + wallet + watched sets). A register
      * whose snapshot hashes identically is skipped entirely — this is what lets the startup
@@ -107,8 +125,9 @@ class PushRegistrationManager @Inject constructor(
         val notifyChannels: Set<String>,
         val hiddenSenderRows: Set<Pair<String, String>>, // (channelName, senderAddress)
         val childModeEnabled: Boolean,
-        /** The five KaPosts switches. A flip re-registers at once: the server reads them from
-         *  the registration, and nothing on the device can stop a background KaPosts push. */
+        /** The six KaPosts switches (Mentions since iOS 369794e). A flip re-registers at once:
+         *  the server reads them from the registration, and nothing on the device can stop a
+         *  background KaPosts push. */
         val kaPostsKinds: KaPostsNotifyKinds,
         /** Groups silenced on this device. They are dropped from the watched ids, so silencing
          *  one has to reach the service the moment the switch flips. */
@@ -125,16 +144,19 @@ class PushRegistrationManager @Inject constructor(
         val androidChannelId: String,
     )
 
-    /** The five per-kind KaPosts switches as one flow, so a flip of any of them is one input. */
+    /** The six per-kind KaPosts switches as one flow, so a flip of any of them is one input. */
     private val kaPostsKindsFlow: Flow<KaPostsNotifyKinds> = combine(
-        settings.kaPostsNotifyLikes,
-        settings.kaPostsNotifyDislikes,
-        settings.kaPostsNotifyComments,
-        settings.kaPostsNotifyReposts,
-        settings.kaPostsNotifyFollows,
-    ) { likes, dislikes, comments, reposts, follows ->
-        KaPostsNotifyKinds(likes = likes, dislikes = dislikes, comments = comments, reposts = reposts, follows = follows)
-    }
+        combine(
+            settings.kaPostsNotifyLikes,
+            settings.kaPostsNotifyDislikes,
+            settings.kaPostsNotifyComments,
+            settings.kaPostsNotifyReposts,
+            settings.kaPostsNotifyFollows,
+        ) { likes, dislikes, comments, reposts, follows ->
+            KaPostsNotifyKinds(likes = likes, dislikes = dislikes, comments = comments, reposts = reposts, follows = follows)
+        },
+        settings.kaPostsNotifyMentions,
+    ) { kinds, mentions -> kinds.copy(mentions = mentions) }
 
     /**
      * Settings > Notifications > Sound & Vibration as the channel the app's own banners use
@@ -194,26 +216,63 @@ class PushRegistrationManager @Inject constructor(
         }
     }
 
+    /** The notifications setting the previous snapshot carried, so an on -> off flip is seen. */
+    @Volatile
+    private var lastSnapshotNotificationsEnabled: Boolean? = null
+
     private suspend fun onSnapshot(snapshot: Snapshot) {
+        val wasEnabled = lastSnapshotNotificationsEnabled
+        lastSnapshotNotificationsEnabled = snapshot.notificationsEnabled
+        // iOS unregisters only when push is switched off with a known token: here an on -> off
+        // flip, or a registration this install recorded. Not on every launch while push is off,
+        // where the DELETE (unsigned with no wallet) fetched an FCM token nobody asked for.
+        val switchedOff = wasEnabled == true && !snapshot.notificationsEnabled
+        val shouldUnregister = switchedOff || hasRecordedRegistration()
         when {
             // Last account deleted/wiped: the signing key is already gone, so the best we can do
             // is an unsigned unregister (the same fallback iOS uses when auth can't be built).
             // The signed path for a deliberate deletion is WalletViewModel calling
             // [unregisterAsync] BEFORE the wallet is removed.
-            snapshot.activeAddress == null -> unregister(signed = false)
+            snapshot.activeAddress == null -> if (shouldUnregister) unregister(signed = false) else markNotRegistered()
             // Notifications switched off in Settings: mirror iOS's disablePushNotifications(),
             // which unregisters the device outright rather than letting the server keep pushing.
-            !snapshot.notificationsEnabled -> unregister(signed = true)
+            !snapshot.notificationsEnabled -> if (shouldUnregister) unregister(signed = true) else markNotRegistered()
             else -> register(null)
         }
     }
 
+    /** Nothing to withdraw: the pollers notify, and the next register isn't fingerprint-skipped. */
+    private fun markNotRegistered() {
+        pushState.setActive(false)
+        lastRegisteredFingerprint = null
+    }
+
+    /**
+     * True once a registration succeeded on this install, until an unregister goes through.
+     * Seeded once from [KEY_REGISTERED_BASE_URL], which builds before this flag already wrote on
+     * every successful registration, so a device they registered is still withdrawn.
+     */
+    private fun hasRecordedRegistration(): Boolean {
+        if (!pushPrefs.contains(KEY_HAS_REGISTRATION)) {
+            val seeded = !pushPrefs.getString(KEY_REGISTERED_BASE_URL, null).isNullOrBlank()
+            pushPrefs.edit().putBoolean(KEY_HAS_REGISTRATION, seeded).apply()
+            return seeded
+        }
+        return pushPrefs.getBoolean(KEY_HAS_REGISTRATION, false)
+    }
+
+    private fun clearRecordedRegistration() {
+        pushPrefs.edit().putBoolean(KEY_HAS_REGISTRATION, false).apply()
+    }
+
     /**
      * Fire-and-forget (re)registration. Call on wallet unlock, account switch, app foreground, or
-     * when the watched set changes. No-ops when there's no wallet, notifications are off, or FCM
-     * is unavailable (e.g. no google-services.json / no Play services).
+     * when the watched set changes. No-ops when there's no wallet, notifications are off, Android
+     * isn't letting KaPost notify (withdrawing a recorded registration then), or FCM is
+     * unavailable (e.g. no google-services.json / no Play services).
      */
     fun registerAsync() {
+        retryPendingUnregisterOnForeground()
         scope.launch {
             runCatching { register(null) }
                 .onFailure { Log.w(TAG, "push registration failed: ${it.message}") }
@@ -314,16 +373,85 @@ class PushRegistrationManager @Inject constructor(
     }
 
     /**
-     * Fire-and-forget unregister that snapshots the signing material SYNCHRONOUSLY, so callers
-     * about to destroy the wallet (account deletion, logout) can invoke it first and the
-     * challenge/sign round-trip still has the key even though the wallet is gone by the time the
-     * coroutine runs — the same ordering iOS uses (unregister BEFORE clearing the wallet).
+     * Log Out and account removal (iOS 369794e `unregisterForSignOut`): a fire-and-forget
+     * unregister that snapshots the signing material SYNCHRONOUSLY, so callers about to destroy
+     * the wallet can invoke it first and the challenge/sign round-trip still has the key even
+     * though the wallet is gone by the time the coroutine runs - the same ordering iOS uses
+     * (unregister BEFORE clearing the wallet). If the service gives no answer (offline, 5xx) it
+     * keeps trying with backoff until it does, and a relaunch finishes it
+     * ([retryPendingUnregisterIfNeeded]): without this the service kept sending the logged-out
+     * account's KaPost and room pushes.
      */
     fun unregisterAsync() {
         val material = try { signingMaterial() } catch (_: Exception) { null }
         scope.launch {
-            runCatching { unregisterInternal(material) }
+            runCatching { unregisterForSignOut(material) }
                 .onFailure { Log.w(TAG, "push unregister failed: ${it.message}") }
+        }
+    }
+
+    private suspend fun unregisterForSignOut(material: SigningMaterial?) {
+        if (pushApiOrNull() == null) {
+            unregisterNow(material)
+            return
+        }
+        signOutMaterial = material
+        pushPrefs.edit().putBoolean(KEY_PENDING_SIGNOUT_UNREGISTER, true).apply()
+        pendingUnregisterAttempt = 0
+        pendingUnregisterJob?.cancel()
+        pendingUnregisterJob = null
+        if (unregisterNow(material)) clearPendingUnregister() else schedulePendingUnregisterRetry()
+    }
+
+    /**
+     * Runs a sign-out unregister that hasn't reached the service yet (iOS 369794e). Only while no
+     * account is signed in: once one is, its own registration replaces this device's record on
+     * the service, and unregistering then would remove the new account's pushes.
+     */
+    private suspend fun retryPendingUnregisterIfNeeded() {
+        if (!pushPrefs.getBoolean(KEY_PENDING_SIGNOUT_UNREGISTER, false)) return
+        if (!walletManager.isLoggedOut && walletManager.hasWallet()) {
+            clearPendingUnregister()
+            return
+        }
+        if (mutex.isLocked) {
+            schedulePendingUnregisterRetry()
+            return
+        }
+        // the key captured at sign-out, else the saved account's own (still on the phone after a
+        // Log Out); a deleted account's is gone, and the request goes unsigned
+        val material = signOutMaterial ?: try { signingMaterial() } catch (_: Exception) { null }
+        if (unregisterNow(material)) clearPendingUnregister() else schedulePendingUnregisterRetry()
+    }
+
+    private fun schedulePendingUnregisterRetry() {
+        if (!pushPrefs.getBoolean(KEY_PENDING_SIGNOUT_UNREGISTER, false)) return
+        pendingUnregisterJob?.cancel()
+        pendingUnregisterAttempt += 1
+        // 15 s, 30 s, 1 min, ... up to 10 min between tries.
+        val exponent = minOf(pendingUnregisterAttempt - 1, 6)
+        val delayMs = minOf(15_000L shl exponent, 600_000L)
+        Log.i(TAG, "Sign-out unregister not answered - retrying in ${delayMs / 1000}s")
+        pendingUnregisterJob = scope.launch {
+            kotlinx.coroutines.delay(delayMs)
+            pendingUnregisterJob = null
+            retryPendingUnregisterIfNeeded()
+        }
+    }
+
+    private fun clearPendingUnregister() {
+        pushPrefs.edit().remove(KEY_PENDING_SIGNOUT_UNREGISTER).apply()
+        pendingUnregisterAttempt = 0
+        pendingUnregisterJob?.cancel()
+        pendingUnregisterJob = null
+        signOutMaterial = null
+    }
+
+    /** A sign-out unregister that got no answer is retried on every foreground too, whatever the
+     *  notification settings: the service is still pushing to this device (iOS 369794e). */
+    private fun retryPendingUnregisterOnForeground() {
+        if (pendingUnregisterJob == null && pushPrefs.getBoolean(KEY_PENDING_SIGNOUT_UNREGISTER, false)) {
+            scope.launch { retryPendingUnregisterIfNeeded() }
         }
     }
 
@@ -331,26 +459,57 @@ class PushRegistrationManager @Inject constructor(
         val material = if (signed) {
             try { signingMaterial() } catch (_: Exception) { null }
         } else null
-        unregisterInternal(material)
+        unregisterNow(material)
+    }
+
+    /**
+     * Starts the unregister, or joins the one under way, and waits for it (iOS 369794e
+     * `startUnregister`). A register waits for it too: its DELETE landing after the register would
+     * remove the next account's registration. True once there is nothing left to retry.
+     */
+    private suspend fun unregisterNow(material: SigningMaterial?): Boolean {
+        val job = synchronized(unregisterLock) {
+            unregisterJob?.takeIf { it.isActive } ?: run {
+                val generation = registrationGeneration
+                scope.async { unregisterInternal(material, generation) }.also { unregisterJob = it }
+            }
+        }
+        return try {
+            job.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "push unregister failed: ${e.message}")
+            false
+        }
     }
 
     private data class SigningMaterial(val privateKey: ByteArray, val walletAddress: String)
 
     private fun signingMaterial(): SigningMaterial =
-        SigningMaterial(walletManager.getPrivateKeyBytes(), walletManager.getAddress().trim())
+        SigningMaterial(walletManager.storedPrivateKeyBytes(), walletManager.getAddress().trim())
 
-    private suspend fun unregisterInternal(material: SigningMaterial?) = mutex.withLock {
+    /**
+     * True once there is nothing left to retry: the service answered 200 or a 4xx (the record is
+     * gone or this request can never succeed), there is no service to tell, or a register accepted
+     * meanwhile owns the device's record ([generation] behind [registrationGeneration]). False when
+     * it gave no answer or a 5xx (iOS 369794e `performUnregister`).
+     */
+    private suspend fun unregisterInternal(material: SigningMaterial?, generation: Int): Boolean = mutex.withLock {
+        // A register accepted meanwhile owns the device's record: this answer can't undo it,
+        // and there is nothing left to retry.
+        fun superseded() = registrationGeneration != generation
         // Whatever happens below, this device is no longer in remote-push mode: the pollers must
         // resume posting notifications, and the next register must not be fingerprint-skipped.
         pushState.setActive(false)
         lastRegisteredFingerprint = null
 
-        val api = pushApiOrNull() ?: return@withLock
+        val api = pushApiOrNull() ?: return@withLock true
         val token = try { FirebaseMessaging.getInstance().token.await().trim() } catch (e: Exception) {
             pushState.recordAttempt("unregister", succeeded = false, error = "FCM token unavailable: ${e.message}", fcmTokenPresent = false)
-            return@withLock
+            return@withLock true
         }
-        if (token.isEmpty()) return@withLock
+        if (token.isEmpty()) return@withLock true
 
         val auth = material?.let {
             runCatching { buildAuth(it, "DELETE", "/v1/push/unregister", token, watchedAddresses = emptyList(), primaryAddress = "") }
@@ -359,21 +518,40 @@ class PushRegistrationManager @Inject constructor(
         }
         try {
             api.unregister(PushUnregisterRequest(deviceToken = token, auth = auth))
+            if (superseded()) return@withLock true
+            clearRecordedRegistration()
             pushState.recordAttempt("unregister", succeeded = true, error = null, fcmTokenPresent = true)
             Log.i(TAG, "push unregistered")
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: HttpException) {
+            Log.w(TAG, "push unregister rejected: ${describeError(e)}")
+            if (superseded()) return@withLock true
             // A signed attempt the server rejects (e.g. token bound to a wallet we no longer
             // hold the key for) still deserves the unsigned best-effort try before giving up.
             val recovered = auth != null && runCatching {
                 api.unregister(PushUnregisterRequest(deviceToken = token, auth = null))
             }.isSuccess
             if (recovered) {
+                clearRecordedRegistration()
                 pushState.recordAttempt("unregister", succeeded = true, error = null, fcmTokenPresent = true)
                 Log.i(TAG, "push unregistered (unsigned fallback)")
+                true
             } else {
                 pushState.recordAttempt("unregister", succeeded = false, error = describeError(e), fcmTokenPresent = true)
-                Log.w(TAG, "push unregister rejected: ${describeError(e)}")
+                if (e.code() in 400..499) {
+                    // Local token/state is stale or invalid for this backend; stop retry loops.
+                    clearRecordedRegistration()
+                    true
+                } else {
+                    false
+                }
             }
+        } catch (e: Exception) {
+            pushState.recordAttempt("unregister", succeeded = false, error = describeError(e), fcmTokenPresent = true)
+            Log.w(TAG, "push unregister failed: ${describeError(e)}")
+            superseded()
         }
     }
 
@@ -407,6 +585,7 @@ class PushRegistrationManager @Inject constructor(
         val token = try { FirebaseMessaging.getInstance().token.await().trim() } catch (e: Exception) { return }
         if (token.isEmpty()) return
         if (sendUnsignedUnregister(registeredBase, token)) {
+            clearRecordedRegistration()
             Log.i(TAG, "No push service on this network; sent unregister to $registeredBase")
         }
     }
@@ -449,7 +628,23 @@ class PushRegistrationManager @Inject constructor(
         okhttp3.OkHttpClient.Builder().callTimeout(20, java.util.concurrent.TimeUnit.SECONDS).build()
     }
 
-    private suspend fun register(tokenOverride: String?): RegisterOutcome = mutex.withLock {
+    private suspend fun register(tokenOverride: String?): RegisterOutcome {
+        // an unregister under way finishes first: its DELETE landing after this register would
+        // remove the registration (iOS 369794e)
+        unregisterJob?.let { runCatching { it.await() } }
+        // iOS registers only while notifications are authorized (refreshRegistrationIfNeeded's
+        // permissionStatus guard). Without this a fresh install, whose setting starts on,
+        // registered its token, address and rooms at first sign-in before Android was asked.
+        // Permission taken away (or never given) after a registration: withdraw it. The
+        // foreground registerAsync runs this again on every return to the front.
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            if (hasRecordedRegistration()) unregister(signed = true) else markNotRegistered()
+            return RegisterOutcome.NotRun("notification permission not granted")
+        }
+        return registerLocked(tokenOverride)
+    }
+
+    private suspend fun registerLocked(tokenOverride: String?): RegisterOutcome = mutex.withLock {
         if (!walletManager.hasWallet()) return@withLock RegisterOutcome.NotRun("no wallet")
         // Signed out: nothing registers until someone signs in (iOS sets every service to nil
         // while logged out). Without this a relaunch after Log Out registered push again.
@@ -475,7 +670,7 @@ class PushRegistrationManager @Inject constructor(
         }
         withContext(Dispatchers.IO) { unregisterFromSupersededServiceIfNeeded(token, pushBase) }
 
-        val privateKey = walletManager.getPrivateKeyBytes()
+        val privateKey = walletManager.storedPrivateKeyBytes()
         // Kaspa addresses are canonical lowercase bech32, so this already matches the server's
         // RpcAddress round-trip (normalize_wallet_address / derive_wallet_address).
         val walletAddress = walletManager.getAddress().trim()
@@ -538,13 +733,21 @@ class PushRegistrationManager @Inject constructor(
         }
 
         lastRegisteredFingerprint = fingerprint
+        registrationGeneration += 1
+        // This registration replaced the logged-out account's record for the device token, so
+        // a sign-out unregister still waiting must not run: it would remove this one (iOS 369794e).
+        clearPendingUnregister()
         // Remote-push mode is only real if the system will actually show what FCM delivers;
         // with POST_NOTIFICATIONS denied the pollers' (equally invisible) banners are moot
         // anyway, but keeping the flag honest costs nothing.
         pushState.setActive(NotificationManagerCompat.from(context).areNotificationsEnabled())
         pushState.recordAttempt("register", succeeded = true, error = null, fcmTokenPresent = true)
         // The service this device is registered with - withdrawn from on a network without one.
-        pushPrefs.edit().putString(KEY_REGISTERED_BASE_URL, pushBase).putBoolean(KEY_LEFT, false).apply()
+        pushPrefs.edit()
+            .putString(KEY_REGISTERED_BASE_URL, pushBase)
+            .putBoolean(KEY_LEFT, false)
+            .putBoolean(KEY_HAS_REGISTRATION, true)
+            .apply()
         Log.i(
             TAG,
             "push registered (watched=${watchedAddresses.size}, aliases=${aliases.size}, groups=${watchedGroupIds.size}, " +
@@ -598,6 +801,7 @@ class PushRegistrationManager @Inject constructor(
                     kaPostsNotifyComments = kaPostsKinds.comments,
                     kaPostsNotifyReposts = kaPostsKinds.reposts,
                     kaPostsNotifyFollows = kaPostsKinds.follows,
+                    kaPostsNotifyMentions = kaPostsKinds.mentions,
                     kaPostsWatchAuthors = kaPostsWatchAuthors,
                     // The app's own package (kapost.kachat.app, debug builds included), so the
                     // push service knows the token is KaPost's.
@@ -859,6 +1063,11 @@ class PushRegistrationManager @Inject constructor(
 
         private const val KEY_REGISTERED_BASE_URL = "registered_base_url"
         private const val KEY_LEFT = "left_push_service"
+        /** A registration succeeded on this install and hasn't been withdrawn (see hasRecordedRegistration). */
+        private const val KEY_HAS_REGISTRATION = "has_registration"
+        /** Set while a Log Out / account-removal unregister hasn't reached the service; kept on
+         *  disk so a relaunch still finishes it (iOS 369794e `push_pending_signout_unregister`). */
+        private const val KEY_PENDING_SIGNOUT_UNREGISTER = "pending_signout_unregister"
         // Shared with KaChatFirebaseMessagingService so `adb logcat -s KaChatPush` shows the
         // whole story: registration attempts, their outcomes, token rotations, and every
         // received push.

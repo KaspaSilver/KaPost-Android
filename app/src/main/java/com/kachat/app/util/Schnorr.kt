@@ -43,9 +43,10 @@ object Schnorr {
     }
 
     /**
-     * BIP-340 verification. Simplified for internal use (test fixtures, self-consistency
-     * checks) — does not enforce r < field-prime, only r/s < curve order, since inputs
-     * here are always our own freshly-generated signatures rather than untrusted wire data.
+     * BIP-340 verification, complete for untrusted input (posts read from chain data): it rejects
+     * s ≥ n, a public key x that isn't on the curve (or isn't below the field prime), an R at
+     * infinity and an R with odd Y. An r at or above the field prime can never equal R's x, so it
+     * fails the final compare.
      */
     fun verify(message: ByteArray, signature: ByteArray, pubKeyXOnly: ByteArray): Boolean {
         if (signature.size != 64 || pubKeyXOnly.size != 32) return false

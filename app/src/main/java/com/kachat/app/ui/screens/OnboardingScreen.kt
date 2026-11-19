@@ -164,11 +164,13 @@ fun OnboardingScreen(viewModel: WalletViewModel) {
                 onBack = leaveWords,
                 // Seed validated + stashed by prepareImport(); the actual import happens on the
                 // passphrase screen (which arms the Welcome Guide + logs in on success).
-                onProceed = { navController.navigate("passphrase_import") }
+                // Single top: a second tap on Continue doesn't stack a second passphrase step.
+                onProceed = { navController.navigate("passphrase_import") { launchSingleTop = true } }
             )
         }
         composable("passphrase_create") {
             val createError by viewModel.createWalletError.collectAsState()
+            val creating by viewModel.creatingWithPassphrase.collectAsState()
             // Nothing is shown or saved before the passphrase: leaving forgets the words, and a
             // step restored after the process was recreated starts from new ones.
             LaunchedEffect(Unit) { viewModel.ensureCreateWithPassphrase() }
@@ -179,6 +181,8 @@ fun OnboardingScreen(viewModel: WalletViewModel) {
             BackHandler(onBack = abandon)
             PassphraseSetupScreen(
                 mode = PassphraseMode.CREATE,
+                // The account is being made: Continue spins and nothing changes it (iOS `isBusy`).
+                isBusy = creating,
                 errorMessage = createError,
                 onDismissError = { viewModel.clearCreateWalletError() },
                 onBack = abandon,
@@ -575,7 +579,7 @@ fun SavedAccountCard(
             .clickable(enabled = enabled) {
                 if (requireBiometricLogin) {
                     context.authenticateWithDeviceCredential(
-                        title = "Unlock to sign in to ${account.name.trim().ifEmpty { "Saved Account" }}",
+                        title = context.getString(R.string.kn53_unlock_to_sign_in_to, account.name.trim().ifEmpty { "Saved Account" }),
                         onSuccess = onLogin,
                         // With no screen lock the Screen Lock Required dialog has said why.
                         onFailure = { if (context.hasDeviceCredential()) showSignInFailed = true }
@@ -675,7 +679,7 @@ fun SavedAccountCard(
             onDismissRequest = { showSignInFailed = false },
             containerColor = LocalAppColors.current.surface,
             title = { Text("Sign In Failed", color = LocalAppColors.current.textPrimary) },
-            text = { Text("Authentication failed.", color = LocalAppColors.current.textSecondary) },
+            text = { Text(stringResource(R.string.kn53_authentication_failed), color = LocalAppColors.current.textSecondary) },
             confirmButton = {
                 TextButton(onClick = { showSignInFailed = false }) {
                     Text(stringResource(R.string.ok), color = KaspaTeal, fontWeight = FontWeight.Bold)
@@ -1161,7 +1165,7 @@ fun ImportWalletScreen(
                         // A clip with no text (an image, a blank copy) is nothing to paste either,
                         // and the clipboard is left alone (iOS: no string on the pasteboard).
                         if (raw.isNullOrBlank()) {
-                            pasteError = "Nothing to paste."
+                            pasteError = pasteContext.getString(R.string.kn53_nothing_to_paste)
                             return@OutlinedButton
                         }
                         // Cleared as soon as it is read, whether or not the words are accepted:
@@ -1177,15 +1181,15 @@ fun ImportWalletScreen(
                             .filter { it.isNotEmpty() && !it.all { c -> c.isDigit() } }
                         when {
                             pasted.size != 12 && pasted.size != 24 ->
-                                pasteError = "You need 12 or 24 words - the clipboard holds ${pasted.size}."
+                                pasteError = pasteContext.getString(R.string.kn53_clipboard_holds_words, pasted.size)
                             else -> {
                                 val unknown = pasted.filterNot { wordList.contains(it) }
                                 if (unknown.isNotEmpty()) {
                                     // never repeats what was pasted
                                     pasteError = if (unknown.size == 1)
-                                        "One of the pasted words isn't a valid word. Check your copy and try again."
+                                        pasteContext.getString(R.string.kn53_one_pasted_word_invalid)
                                     else
-                                        "${unknown.size} of the pasted words aren't valid words. Check your copy and try again."
+                                        pasteContext.getString(R.string.kn53_pasted_words_invalid, unknown.size)
                                 } else {
                                     wordCount = pasted.size
                                     words = List(24) { index -> pasted.getOrElse(index) { "" } }
@@ -1307,6 +1311,7 @@ fun PassphraseSetupScreen(
     var confirm by remember { mutableStateOf("") }
     var reveal by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
+    val passphraseContext = LocalContext.current
     // Where the explainer's Back returns: the question (import) or the entry screen, which links
     // it too (iOS d816404).
     var explainerReturnStep by remember { mutableStateOf(PassphraseStep.QUESTION) }
@@ -1323,9 +1328,9 @@ fun PassphraseSetupScreen(
         when {
             // Empty, not blank: spaces are a valid passphrase (iOS `isEmpty`).
             passphrase.isEmpty() ->
-                localError = "Enter a passphrase, or go back and choose No."
+                localError = passphraseContext.getString(R.string.kn53_enter_passphrase_or_no)
             mode == PassphraseMode.CREATE && passphrase != confirm ->
-                localError = "The passphrases do not match. Please re-enter them."
+                localError = passphraseContext.getString(R.string.kn53_passphrases_dont_match)
             else -> {
                 if (skippingSearch) onSelectImportChoice(ImportAccountChoice())
                 onProceed(passphrase)
@@ -1343,7 +1348,9 @@ fun PassphraseSetupScreen(
     }
     BackHandler(enabled = step != PassphraseStep.QUESTION) {
         when (step) {
-            PassphraseStep.ENTRY -> backFromEntry()
+            // Consumed while busy, as the disabled Back button (iOS `.disabled(isBusy)`): the
+            // account is being made or imported.
+            PassphraseStep.ENTRY -> if (!isBusy) backFromEntry()
             PassphraseStep.FOUND -> if (!isBusy) step = PassphraseStep.QUESTION
             else -> step = explainerReturnStep
         }
@@ -1475,7 +1482,7 @@ private fun PassphraseQuestionStep(
             }
             Spacer(Modifier.height(20.dp))
             Text(
-                "Did you create these words with a passphrase?",
+                stringResource(R.string.kn53_created_with_passphrase_question),
                 color = colors.textPrimary,
                 style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                 textAlign = TextAlign.Center,
@@ -1486,7 +1493,7 @@ private fun PassphraseQuestionStep(
             if (mode == PassphraseMode.IMPORT) {
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "If you are not sure, the answer is almost certainly no. A passphrase is something you would have typed in on purpose.",
+                    stringResource(R.string.l53_passphrase_not_sure),
                     color = colors.textSecondary,
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
@@ -1501,7 +1508,7 @@ private fun PassphraseQuestionStep(
                 // iOS: .headline, white on the accent.
                 colors = ButtonDefaults.buttonColors(containerColor = KaspaTeal, contentColor = Color.White),
                 shape = RoundedCornerShape(14.dp),
-            ) { Text("Yes", fontWeight = FontWeight.SemiBold, fontSize = 17.sp) }
+            ) { Text(stringResource(R.string.l53_yes), fontWeight = FontWeight.SemiBold, fontSize = 17.sp) }
 
             Spacer(Modifier.height(12.dp))
 
@@ -1516,7 +1523,7 @@ private fun PassphraseQuestionStep(
                 shape = RoundedCornerShape(14.dp),
             ) {
                 // No longer imports from here (iOS 1ab014f), so no spinner: it opens Your Account.
-                Text("No", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(stringResource(R.string.l53_no), fontWeight = FontWeight.Bold, fontSize = 16.sp)
             }
 
             Spacer(Modifier.height(8.dp))

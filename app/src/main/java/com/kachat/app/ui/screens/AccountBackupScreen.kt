@@ -57,7 +57,7 @@ internal fun unlockAccountBackup(context: Context, biometricEnabled: Boolean, sh
  *  restored route through. */
 internal fun unlockAccountBackupInline(context: Context, biometricEnabled: Boolean, show: () -> Unit) {
     if (biometricEnabled) {
-        context.authenticateWithDeviceCredential(title = "Unlock to view your 12 or 24 words", onSuccess = show)
+        context.authenticateWithDeviceCredential(title = context.getString(com.kachat.app.R.string.kn53_unlock_view_words), onSuccess = show)
     } else {
         show()
     }

@@ -25,6 +25,7 @@ import com.kachat.app.services.TransactionResponse
 import com.kachat.app.services.WalletManager
 import com.kachat.app.services.database.KaChatDatabase
 import com.kachat.app.util.KaspaAddress
+import com.kachat.app.util.txIdForLog
 import com.kachat.app.util.KasiaCipher
 import com.kachat.app.util.KaspaUnit
 import com.kachat.app.util.MessageProtocol
@@ -96,6 +97,9 @@ class ChatRepository @Inject constructor(
     /** The node a received payment the REST answer can't settle is confirmed with
      *  ([nodeConfirmsIncomingPayment]). Lazy like the services above. */
     private val nodePoolManagerLazy: dagger.Lazy<com.kachat.app.services.NodePoolManager>,
+    /** For the stores Delete Account clears that live in their own prefs file
+     *  ([com.kachat.app.services.KaPostsFollowSyncStore.removeAllData]). */
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val gson = Gson()
@@ -1321,6 +1325,8 @@ class ChatRepository @Inject constructor(
         database.broadcastDao().deleteMessagesOfUnjoinedChannels()
         // Its follows, mutes and blocks are its own too (iOS ee5ec98 `removeAllData`).
         settingsRepository.removeKaPostsAccountData(address)
+        // and its follow sync state (iOS 369794e `KaPostsFollowSync.removeAllData`)
+        com.kachat.app.services.KaPostsFollowSyncStore.removeAllData(appContext, address)
         // The DataStore sync cursors MUST reset with the data: they survived account deletion,
         // so re-importing an account previously held on this device resumed the handshake scan
         // at the old cursor — ZERO historical handshakes came back and no contacts were
@@ -1698,7 +1704,7 @@ class ChatRepository @Inject constructor(
                     )
                 }
             } catch (e: Exception) {
-                Log.w("ChatRepository", "Failed to process outgoing handshake ${handshake.txId}", e)
+                Log.w("ChatRepository", "Failed to process outgoing handshake ${handshake.txId.txIdForLog()}", e)
             }
         }
 
@@ -1737,7 +1743,7 @@ class ChatRepository @Inject constructor(
                     unresolvedFloor = minOf(unresolvedFloor ?: Long.MAX_VALUE, handshake.blockTime)
                 }
             } catch (e: Exception) {
-                Log.w("ChatRepository", "Failed to process handshake ${handshake.txId}", e)
+                Log.w("ChatRepository", "Failed to process handshake ${handshake.txId.txIdForLog()}", e)
             }
         }
 
@@ -2077,7 +2083,7 @@ class ChatRepository @Inject constructor(
                             if (isTombstoned(deleted, message.txId, message.blockTime)) continue
                             processContextualMessage(myAddress, contact, message, privateKey)
                         } catch (e: Exception) {
-                            Log.w("ChatRepository", "Failed to process message ${message.txId}", e)
+                            Log.w("ChatRepository", "Failed to process message ${message.txId.txIdForLog()}", e)
                         }
                     }
 
@@ -2752,7 +2758,7 @@ class ChatRepository @Inject constructor(
                     requestPaymentCatchUp(lookBackMs = 10 * 60 * 1000L)
                 }
             } catch (e: Exception) {
-                Log.w("ChatRepository", "Failed to process transaction ${tx.transactionId}", e)
+                Log.w("ChatRepository", "Failed to process transaction ${tx.transactionId.txIdForLog()}", e)
             }
         }
         if (since != null) Log.i("ChatRepository", "Payment catch-up: ${transactions.size} transaction(s), complete=$complete")
@@ -2798,7 +2804,7 @@ class ChatRepository @Inject constructor(
         val receivedSompi: Long
         when (direction) {
             PaymentTxDirection.Unresolved -> {
-                Log.w("ChatRepository", "Dropping payment ${tx.transactionId}: no input address resolved")
+                Log.w("ChatRepository", "Dropping payment ${tx.transactionId.txIdForLog()}: no input address resolved")
                 return false // transient — the next poll retries this tx
             }
             PaymentTxDirection.None -> return true

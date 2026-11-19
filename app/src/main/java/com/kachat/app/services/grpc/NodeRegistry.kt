@@ -23,10 +23,17 @@ class NodeRegistry {
 
     fun update(address: String, type: String, result: NodeProbeResult) {
         val prior = records[address]
+        // A failed GetBlockDagInfo leaves the network name it reported before: null would make an
+        // unknown node of a known one (iOS 369794e `NodeProfiler.probe`).
+        val kept = if (result.reachable && result.networkName.isNullOrBlank()) {
+            result.copy(networkName = prior?.lastProbe?.networkName?.takeIf { it.isNotBlank() })
+        } else {
+            result
+        }
         records[address] = NodeRecord(
             address = address,
             type = type,
-            lastProbe = result,
+            lastProbe = kept,
             consecutiveFailures = if (result.reachable) 0 else (prior?.consecutiveFailures ?: 0) + 1,
             lastSuccessAt = if (result.reachable) System.currentTimeMillis() else prior?.lastSuccessAt
         )
@@ -74,7 +81,63 @@ class NodeRegistry {
         return when {
             r.lastProbe?.reachable != true -> if (r.consecutiveFailures >= 3) "Quarantined" else "Suspect"
             r.lastProbe.isSynced == false -> "Suspect" // reachable but not synced — don't trust its data
+            // A node on another network, or lagging the others, serves no balances (iOS 369794e
+            // `NodeRegistry.isActiveEligible`); a node the user added is kept as it is.
+            r.type != "Manual" && !isActiveEligible(r, daaReference(System.currentTimeMillis()), System.currentTimeMillis()) -> "Suspect"
             else -> "Active"
         }
+    }
+
+    /** Reachable, synced, and a reported network name that is the running network's (iOS
+     *  `NodeRecord.isActiveEligible` + `NodeRegistry.belongs`). */
+    private fun fitsNetwork(r: NodeRecord): Boolean {
+        val probe = r.lastProbe ?: return false
+        if (!probe.reachable || probe.isSynced == false) return false
+        val name = probe.networkName
+        return !name.isNullOrBlank() && belongsToRunningNetwork(name)
+    }
+
+    /**
+     * Active eligibility in full (iOS 369794e `NodeRegistry.isActiveEligible`): [fitsNetwork], and a
+     * DAA score no more than [MAX_ACTIVE_DAA_LAG] behind [reference] (an unknown score isn't
+     * counted as lag).
+     */
+    private fun isActiveEligible(r: NodeRecord, reference: Long?, nowMs: Long): Boolean {
+        if (!fitsNetwork(r)) return false
+        val daa = projectedDaaScore(r, nowMs) ?: return true
+        if (reference == null || daa >= reference) return true
+        return reference - daa <= MAX_ACTIVE_DAA_LAG
+    }
+
+    /** The median projected DAA score of the nodes otherwise fit to be active: at least half of
+     *  them are never behind it, so the lag rule can't leave the pool empty (iOS 369794e
+     *  `NodeRegistry.daaReference`). */
+    private fun daaReference(nowMs: Long): Long? {
+        val scores = records.values
+            .filter { it.type != "Trusted" && fitsNetwork(it) }
+            .mapNotNull { projectedDaaScore(it, nowMs) }
+            .sorted()
+        return if (scores.isEmpty()) null else scores[scores.size / 2]
+    }
+
+    /** The node's reported DAA score carried forward to [nowMs] (10 a second), so nodes probed
+     *  apart compare fairly. Null when the report is missing or older than [PROFILE_TTL_MS] (iOS
+     *  `NodeRecord.projectedDaaScore`). */
+    private fun projectedDaaScore(r: NodeRecord, nowMs: Long): Long? {
+        val daa = r.lastProbe?.virtualDaaScore ?: return null
+        val probedAt = r.lastSuccessAt ?: return null
+        val ageMs = nowMs - probedAt
+        if (ageMs < 0 || ageMs > PROFILE_TTL_MS) return null
+        val projected = daa + ageMs / 100
+        return if (projected < daa) Long.MAX_VALUE else projected
+    }
+
+    companion object {
+        /** How far (in DAA score) an active node may trail the pool's median: about a minute at 10
+         *  blocks a second (iOS 369794e `NodeRecord.maxActiveDaaLag`). */
+        const val MAX_ACTIVE_DAA_LAG = 600L
+
+        /** How long a probe's DAA score is good for (iOS `NodeProfile.profileTTL`, 10 min). */
+        const val PROFILE_TTL_MS = 600_000L
     }
 }

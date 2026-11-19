@@ -370,13 +370,15 @@ fun CoinControlScreen(
                             if (!last) HorizontalDivider(color = colors.divider, thickness = 0.5.dp, modifier = Modifier.padding(start = 50.dp))
                         }
                     }
-                    // iOS's section footer, word for word (it is not translated there either).
+                    // iOS's section footer (localized there since 369794e).
                     if (selectedKeys.isNotEmpty()) {
                         item {
                             val count = selectedKeys.size
                             Text(
-                                "Selected: %.8f ${KaspaUnit.symbol} (%d UTXO%s)".format(
-                                    Locale.US, selectedTotalSompi / 100_000_000.0, count, if (count == 1) "" else "s"
+                                stringResource(
+                                    if (count == 1) R.string.wallet_53_coin_control_selected_one else R.string.wallet_53_coin_control_selected,
+                                    "%.8f ${KaspaUnit.symbol}".format(Locale.US, selectedTotalSompi / 100_000_000.0),
+                                    count,
                                 ),
                                 color = colors.textSecondary,
                                 fontSize = 13.sp,

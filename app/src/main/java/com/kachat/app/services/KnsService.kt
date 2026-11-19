@@ -33,13 +33,30 @@ class KnsService @Inject constructor(
     private suspend fun api() = networkService.knsApi.filterNotNull().first()
 
     /** "alice.kas" -> the Kaspa address that owns it, or null if unresolvable/not found. */
-    suspend fun resolve(domain: String): String? {
-        if (!IS_ENABLED) return null
+    suspend fun resolve(domain: String): String? = resolveLookup(domain).first
+
+    /**
+     * [resolve], telling a lookup that couldn't be made (second = true: KNS unreachable, an odd
+     * answer) from a domain with no owner (iOS 369794e `resolveDomainLookup`).
+     */
+    suspend fun resolveLookup(domain: String): Pair<String?, Boolean> {
+        if (!IS_ENABLED) return null to false
+        val fullDomain = domain.trim().lowercase().let { if (it.endsWith(".kas")) it else "$it.kas" }
         return try {
-            val response = api().resolveDomain(normalizeDomain(domain))
-            if (response.success) response.data?.owner else null
+            val response = api().resolveDomain(fullDomain)
+            val data = response.data
+            val owner = data?.owner
+            if (!response.success || data == null || owner == null) return null to false
+            // an answer for another domain is no answer
+            if (data.asset != fullDomain) return null to true
+            owner to false
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            // 404 means domain not found
+            null to (e.code() != 404)
         } catch (e: Exception) {
-            null // Includes the real API's 404 for "domain has no owner" — not an error.
+            null to true
         }
     }
 

@@ -1304,6 +1304,9 @@ class ChatViewModel @Inject constructor(
         val note = _paymentNote.value
         // only the chatting address's tip carries the tip payload (iOS 071e901 `postTip`)
         val tip = if (_paymentSourceIndex.value == null) _paymentTip.value else null
+        // From a spending address the payment goes without a payload (sendPayment), so Max prices
+        // none, as [previewPaymentFee] (iOS ee5ec98 `estimateMaxPaymentAmount`).
+        val fromSpending = _paymentSourceIndex.value != null
         return computePaymentMaxSompi(
             balanceSompi = balance,
             inputCount = inputs,
@@ -1311,13 +1314,13 @@ class ChatViewModel @Inject constructor(
             feeRate = _feeRateOverride.value?.toDouble() ?: _networkFeeRate.value,
             feeMultiplier = feeMultiplier,
             customExtraFeeSompi = customExtraFeeSompi,
-            payloadSize = tip?.let { estimatedPaymentPayloadSize(note.trim(), balance, it) },
+            payloadSize = if (fromSpending) 0 else tip?.let { estimatedPaymentPayloadSize(note.trim(), balance, it) },
             signatureScriptSize = com.kachat.app.services.WalletManager.signatureScriptSize(_paymentSourceIndex.value),
             // a fresh change slot from a spending address (iOS ee5ec98, as [previewPaymentFee])
             changeScriptLen = if (_paymentSourceIndex.value != null) com.kachat.app.util.SendFeeModel.FRESH_CHANGE_SCRIPT_LEN else com.kachat.app.util.SendFeeModel.STANDARD_SCRIPT_LEN,
             provisionalShape = { provisional ->
                 paymentFeeInputs(spending, manual, provisional).second to
-                    estimatedPaymentPayloadSize(note.trim(), provisional, tip)
+                    (if (fromSpending) 0 else estimatedPaymentPayloadSize(note.trim(), provisional, tip))
             },
         )
     }

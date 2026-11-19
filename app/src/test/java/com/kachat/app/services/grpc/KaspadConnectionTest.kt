@@ -132,17 +132,33 @@ class KaspadConnectionTest {
 
     @Test
     fun `hasMempoolEntry is true only for a transaction the node holds (audit IOS-014)`() = runBlocking {
-        val known = "aa".repeat(32)
+        // The entry must hash to the id asked about (iOS 369794e: nodes are unauthenticated), so
+        // the known id is the one worked out here from the transaction the node hands back.
+        val held = rpcTransaction { version = 0; subnetworkId = "0".repeat(40); lockTime = 7 }
+        val known = com.kachat.app.util.KaspaTransactionId.compute(held)!!
+        val orphanTx = rpcTransaction { version = 0; subnetworkId = "0".repeat(40); lockTime = 8 }
+        val orphan = com.kachat.app.util.KaspaTransactionId.compute(orphanTx)!!
+        val impostor = "cc".repeat(32)
         startServer(object : RPCGrpcKt.RPCCoroutineImplBase() {
             override fun messageStream(requests: Flow<Messages.KaspadRequest>): Flow<Messages.KaspadResponse> =
                 requests.map { req ->
                     val asked = req.getMempoolEntryRequest
                     kaspadResponse {
                         id = req.id
-                        getMempoolEntryResponse = if (asked.txId == known && asked.includeOrphanPool) {
-                            getMempoolEntryResponseMessage { entry = rpcMempoolEntry { transaction = rpcTransaction { version = 0 } } }
-                        } else {
-                            getMempoolEntryResponseMessage { error = rPCError { message = "transaction not found" } }
+                        getMempoolEntryResponse = when {
+                            // The orphan pool isn't asked for any more: an orphan can't land
+                            // until its parents do (iOS 369794e).
+                            asked.includeOrphanPool ->
+                                getMempoolEntryResponseMessage { error = rPCError { message = "orphan pool asked" } }
+                            asked.txId == known ->
+                                getMempoolEntryResponseMessage { entry = rpcMempoolEntry { transaction = held } }
+                            asked.txId == orphan ->
+                                getMempoolEntryResponseMessage { entry = rpcMempoolEntry { transaction = orphanTx; isOrphan = true } }
+                            // A node answering with some other transaction than the one asked about.
+                            asked.txId == impostor ->
+                                getMempoolEntryResponseMessage { entry = rpcMempoolEntry { transaction = held } }
+                            else ->
+                                getMempoolEntryResponseMessage { error = rPCError { message = "transaction not found" } }
                         }
                     }
                 }
@@ -152,6 +168,8 @@ class KaspadConnectionTest {
         conn.connect()
         assertTrue(conn.hasMempoolEntry(known))
         assertFalse(conn.hasMempoolEntry("bb".repeat(32)))
+        assertFalse(conn.hasMempoolEntry(orphan))
+        assertFalse(conn.hasMempoolEntry(impostor))
         conn.close()
     }
 

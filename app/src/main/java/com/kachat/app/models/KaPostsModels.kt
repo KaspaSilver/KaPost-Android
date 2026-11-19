@@ -126,8 +126,19 @@ data class KaPostDraft(
     )
 
     companion object {
-        /** X-matching post/reply length cap (matches iOS KaPostsView.postCharacterLimit). */
+        /** X-matching post/reply length cap (matches iOS KaPostsView.postCharacterLimit),
+         *  counted by [postLength]. */
         const val POST_CHARACTER_LIMIT = 25_000
+
+        /**
+         * How much of the limit [text] uses: its UTF-8 bytes. A post is paid for and capped by its
+         * bytes (base64 in the payload, 2 grams a byte against the node's 100,000-gram limit), and
+         * a character can be 2-4 bytes, so counting characters let through long Russian, Arabic or
+         * Chinese posts no node would take. English is one byte a character, so 25,000 still means
+         * 25,000 letters there; at the cap a post's transaction stays near 70,000 grams (iOS
+         * 369794e `postLength`).
+         */
+        fun postLength(text: String): Int = text.toByteArray(Charsets.UTF_8).size
 
         /** Deterministic id from a txid so re-fetches keep row identity stable. */
         fun stableId(txId: String): String {

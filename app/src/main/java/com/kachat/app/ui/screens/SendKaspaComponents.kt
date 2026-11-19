@@ -785,12 +785,13 @@ private fun SendFeeTierPicker(selected: ColdFeeTier, onSelect: (ColdFeeTier) -> 
     }
 }
 
-/** "Automatic" or "3 UTXOs selected", for the coin control row. The count stays English, as on
- *  iOS (`coinControlSummary`). */
+/** "Automatic" or "3 UTXOs selected", for the coin control row (iOS 369794e `coinControlSummary`,
+ *  localized). */
 @Composable
 fun coinControlSummary(manualUtxos: List<UtxoEntry>?): String {
     val automatic = stringResource(R.string.automatic)
-    return manualUtxos?.let { "${it.size} UTXO${if (it.size == 1) "" else "s"} selected" } ?: automatic
+    val count = manualUtxos?.size ?: return automatic
+    return stringResource(if (count == 1) R.string.wallet_53_utxo_selected_one else R.string.wallet_53_utxos_selected, count)
 }
 
 /** A small glass capsule for one line of context (available balance, fee). Text inside takes the
@@ -881,184 +882,9 @@ fun SelectablePill(
 }
 
 /**
- * The From section every send screen starts with (iOS 6333dd3 `SendFromSection`), so it is
- * always plain which address the Kaspa leaves from: Chatting Address (the default) or Choose an
- * Address (any of your addresses, each marked used or unused), and the chosen address with its
- * balance. The balance is loaded here ([onAvailableSompiChange], null while it loads) - the
- * screen's Available.
- */
-@Composable
-fun SendFromSection(
-    source: SendSource,
-    onSourceChange: (SendSource) -> Unit,
-    availableSompi: Long?,
-    onAvailableSompiChange: (Long?) -> Unit,
-    walletViewModel: WalletViewModel,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-    /** Opened from one address's own page (its history's Send, iOS 7a8102b): that address only,
-     *  no Chatting Address / Choose an Address choice. */
-    isLocked: Boolean = false,
-) {
-    val colors = LocalAppColors.current
-    val chattingAddress by walletViewModel.address.collectAsState()
-    var showPicker by remember { mutableStateOf(false) }
-    val sourceAddress = source.address(chattingAddress)
-    val currentOnAvailable by rememberUpdatedState(onAvailableSompiChange)
-    LaunchedEffect(source, chattingAddress) {
-        currentOnAvailable(null)
-        val address = sourceAddress ?: return@LaunchedEffect
-        // what a send can spend: not coins just spent, held or not yet usable; a failed read
-        // leaves it unknown rather than 0 (iOS 33095ac `withdrawalSpendable`)
-        currentOnAvailable(walletViewModel.withdrawalSpendableSompi(address))
-    }
-
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            stringResource(R.string.from).uppercase(),
-            color = colors.textSecondary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        if (!isLocked) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                // The From address is named "Chatting Address" (iOS 7d8b258).
-                SelectablePill(
-                    title = "Chatting Address",
-                    selected = source is SendSource.Chatting,
-                    modifier = Modifier.weight(1f),
-                ) { if (enabled) onSourceChange(SendSource.Chatting) }
-                SelectablePill(
-                    title = stringResource(R.string.pr_choose_an_address),
-                    selected = source !is SendSource.Chatting,
-                    modifier = Modifier.weight(1f),
-                ) { if (enabled) showPicker = true }
-            }
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .sendKaspaGlass(14.dp)
-                .padding(12.dp),
-        ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    when (source) {
-                        SendSource.Chatting -> "Chatting Address"
-                        is SendSource.Spending -> source.label
-                    },
-                    color = colors.textPrimary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (sourceAddress != null) {
-                    Text(
-                        "${sourceAddress.take(14)}...${sourceAddress.takeLast(6)}",
-                        color = colors.textSecondary,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1,
-                    )
-                }
-            }
-            if (availableSompi != null) {
-                Text(
-                    "${KaspaUnit.plain(availableSompi)} ${KaspaUnit.symbol}",
-                    color = colors.textPrimary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    style = TextStyle(fontFeatureSettings = "tnum"),
-                )
-            } else {
-                com.kachat.app.ui.theme.IosActivityIndicator(modifier = Modifier.size(18.dp), color = colors.textSecondary, strokeWidth = 2.dp)
-            }
-        }
-    }
-
-    if (showPicker) {
-        OwnAddressPicker(
-            title = stringResource(R.string.send_from),
-            selected = sourceAddress,
-            walletViewModel = walletViewModel,
-            onPick = onSourceChange,
-            onDismiss = { showPicker = false },
-        )
-    }
-}
-
-/**
- * Your addresses to pick from, as a sheet (iOS 6333dd3 `OwnAddressPicker`): [OwnAddressList] with
- * Cancel. A send's Choose an Address on the amount step, and Request Payment's.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun OwnAddressPicker(
-    title: String,
-    selected: String?,
-    walletViewModel: WalletViewModel,
-    onPick: (SendSource) -> Unit,
-    onDismiss: () -> Unit,
-    /** The .kachat market signs its funding inputs as plain P2PK, which a quantum-safe (KIP-22)
-     *  address can't be - its picker leaves them out (iOS `excludeQuantum`). */
-    excludeQuantum: Boolean = false,
-) {
-    val halfScreen = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp / 2).dp
-    com.kachat.app.ui.theme.IosSheetColors(grouped = true) {
-        val colors = LocalAppColors.current
-        // Floats on its height detent, as iOS 26's does, settling onto the edges as it grows.
-        var sheetFloat by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
-        ModalBottomSheet(
-            scrimColor = com.kachat.app.ui.theme.IosSheetScrim,
-            modifier = Modifier.iosFloatingSheet(sheetFloat),
-            shape = iosFloatingSheetShape(sheetFloat),
-            tonalElevation = com.kachat.app.ui.theme.IosSheetTonalElevation,
-            windowInsets = androidx.compose.foundation.layout.WindowInsets.statusBars,
-            onDismissRequest = onDismiss,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = colors.background,
-            dragHandle = null,
-        ) {
-            Column(Modifier.navigationBarsPadding()) {
-                IosSheetDetents(height = halfScreen, largeDetent = true, onFloat = { sheetFloat = it }) {
-                    Column(Modifier.fillMaxWidth().fillMaxHeight()) {
-                        SheetNavBar(
-                            title = title,
-                            leading = { SheetBarButton(stringResource(R.string.cancel), onClick = onDismiss) },
-                        )
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .fillMaxHeight()
-                                .verticalScroll(androidx.compose.foundation.rememberScrollState())
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                        ) {
-                            OwnAddressList(
-                                selected = selected,
-                                walletViewModel = walletViewModel,
-                                excludeQuantum = excludeQuantum,
-                                onPick = { picked ->
-                                    onPick(picked)
-                                    onDismiss()
-                                },
-                            )
-                        }
-                    }
-                    IosSheetGrabber(Modifier.align(Alignment.TopCenter))
-                }
-            }
-        }
-    }
-}
-
-/**
  * The address list itself, to sit on a screen (a send's "Where are you sending from?", Request
- * Payment's "Where do you want to be paid?") or in [OwnAddressPicker]'s sheet (iOS `OwnAddressList`):
- * your address, then the spending addresses (the ones Manage Addresses shows, plus hidden ones
+ * Payment's "Where do you want to be paid?"; iOS `OwnAddressList`; iOS b78fdb0 removed the
+ * `SendFromSection` and `OwnAddressPicker` sheet that also showed it): your address, then the spending addresses (the ones Manage Addresses shows, plus hidden ones
  * holding Kaspa), as tappable cards with Used / Unused and the balance; the picked one has a check.
  * Used: a balance means used, else the cached answer, else a history lookup, eight at a time;
  * "Checking" until answered, never a possibly-wrong "Unused".
@@ -1069,7 +895,6 @@ fun OwnAddressList(
     walletViewModel: WalletViewModel,
     onPick: (SendSource) -> Unit,
     modifier: Modifier = Modifier,
-    excludeQuantum: Boolean = false,
 ) {
     val colors = LocalAppColors.current
     val chattingAddress by walletViewModel.address.collectAsState()
@@ -1080,9 +905,8 @@ fun OwnAddressList(
         walletViewModel.loadManageAddressesAndAwait()
         loaded = true
     }
-    val entries = remember(allEntries, excludeQuantum) {
+    val entries = remember(allEntries) {
         allEntries.filter { !it.hidden || it.balanceSompi > 0 }
-            .filter { !excludeQuantum || !it.isQuantum }
             .sortedBy { it.index }
     }
     /** Used / unused per address; missing while its lookup is out (or failed). */
@@ -1337,15 +1161,24 @@ fun SendContinueButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onCancel: (() -> Unit)? = null,
+    /** An optional second action, full width under the main button (Request Payment's QR, iOS
+     *  b78fdb0 `SendContinueButton.secondaryTitle`). */
+    secondaryTitle: String? = null,
+    secondaryIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    onSecondary: (() -> Unit)? = null,
 ) {
     val colors = LocalAppColors.current
     val haptic = com.kachat.app.util.rememberHaptics()
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
         modifier = modifier
             .fillMaxWidth()
             .background(colors.background)
             .padding(horizontal = 20.dp, vertical = 8.dp),
+    ) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxWidth(),
     ) {
         if (onCancel != null) {
             Box(
@@ -1376,6 +1209,27 @@ fun SendContinueButton(
             Text(title, color = Color.Black, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1)
         }
     }
+    if (secondaryTitle != null && onSecondary != null) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .alpha(if (isEnabled) 1f else 0.4f)
+                .clip(CircleShape)
+                .background(colors.surface)
+                .border(1.dp, KaspaTeal.copy(alpha = 0.35f), CircleShape)
+                .clickable(enabled = isEnabled, role = Role.Button) {
+                    haptic(com.kachat.app.util.IosHaptic.IMPACT_LIGHT)
+                    onSecondary()
+                },
+        ) {
+            if (secondaryIcon != null) Icon(secondaryIcon, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(20.dp))
+            Text(secondaryTitle, color = KaspaTeal, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+    }
+    }
 }
 
 /**
@@ -1395,6 +1249,10 @@ fun SendStepScreen(
     onBack: (() -> Unit)? = null,
     continueTitle: String = stringResource(R.string.continue_label),
     insets: androidx.compose.foundation.layout.WindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+    /** An optional second button under Continue ([SendContinueButton]'s secondary action). */
+    secondaryTitle: String? = null,
+    secondaryIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    onSecondary: (() -> Unit)? = null,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
     androidx.activity.compose.BackHandler { (onBack ?: onCancel)() }
@@ -1416,6 +1274,9 @@ fun SendStepScreen(
             onClick = onContinue,
             onCancel = if (onBack == null) onCancel else null,
             modifier = Modifier.windowInsetsPadding(insets.only(WindowInsetsSides.Bottom).union(WindowInsets.ime)),
+            secondaryTitle = secondaryTitle,
+            secondaryIcon = secondaryIcon,
+            onSecondary = onSecondary,
         )
     }
 }
@@ -1694,75 +1555,6 @@ fun KaspaKeypadAmountEntry(
                 }
             },
             modifier = Modifier.padding(horizontal = 12.dp),
-        )
-    }
-}
-
-/**
- * The amount step's From (KaPay `SendFromCompactRow`): the two pills of [SendFromSection] - Chatting
- * Address and Choose an Address (any of your addresses; once picked, the pill shows its name) -
- * without the address card under them, so the keypad has room. The balance it loads
- * ([onAvailableSompiChange], null while it loads) is the amount's Available.
- */
-@Composable
-fun SendFromCompactRow(
-    source: SendSource,
-    onSourceChange: (SendSource) -> Unit,
-    onAvailableSompiChange: (Long?) -> Unit,
-    walletViewModel: WalletViewModel,
-    modifier: Modifier = Modifier,
-    /** Opened from one address's own page, or a tip: that address only, shown as the one pill. */
-    isLocked: Boolean = false,
-) {
-    val colors = LocalAppColors.current
-    val chattingAddress by walletViewModel.address.collectAsState()
-    var showPicker by remember { mutableStateOf(false) }
-    val sourceAddress = source.address(chattingAddress)
-    val currentOnAvailable by rememberUpdatedState(onAvailableSompiChange)
-    LaunchedEffect(source, chattingAddress) {
-        currentOnAvailable(null)
-        val address = sourceAddress ?: return@LaunchedEffect
-        // what a send can spend: not coins just spent, held or not yet usable; a failed read
-        // leaves it unknown rather than 0 (iOS 33095ac `withdrawalSpendable`)
-        currentOnAvailable(walletViewModel.withdrawalSpendableSompi(address))
-    }
-    val sourceTitle = when (source) {
-        SendSource.Chatting -> "Chatting Address"
-        is SendSource.Spending -> source.label
-    }
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text(
-            stringResource(R.string.from).uppercase(),
-            color = colors.textSecondary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        if (isLocked) {
-            SelectablePill(title = sourceTitle, selected = true, modifier = Modifier.weight(1f)) {}
-        } else {
-            SelectablePill(
-                title = "Chatting Address",
-                selected = source is SendSource.Chatting,
-                modifier = Modifier.weight(1f),
-            ) { onSourceChange(SendSource.Chatting) }
-            SelectablePill(
-                title = (source as? SendSource.Spending)?.label ?: stringResource(R.string.pr_choose_an_address),
-                selected = source !is SendSource.Chatting,
-                modifier = Modifier.weight(1f),
-            ) { showPicker = true }
-        }
-    }
-    if (showPicker) {
-        OwnAddressPicker(
-            title = stringResource(R.string.send_from),
-            selected = sourceAddress,
-            walletViewModel = walletViewModel,
-            onPick = onSourceChange,
-            onDismiss = { showPicker = false },
         )
     }
 }

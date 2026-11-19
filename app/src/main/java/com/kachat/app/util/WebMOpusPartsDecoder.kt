@@ -14,8 +14,10 @@ import java.nio.ByteOrder
  * its Info Duration (the encoder feeds each part a little of the next one to cover the codec's
  * look-ahead), so the joins are gapless and one player seeks across the whole note.
  *
- * Written at 24 kHz, as iOS decodes: the parts are narrowband-to-wideband SILK, so nothing
- * audible is lost, and 2:50 stays ~8 MB. A part that doesn't decode is left out; with none
+ * Written at 24 kHz, as iOS decodes (the 48 kHz decode low-passed first, [HALF_BAND]): the parts
+ * are narrowband-to-wideband SILK, so nothing audible is lost, and 2:50 stays ~8 MB. Packets of
+ * any length decode, each timed by its own (60 ms, and 20 ms where a run wasn't joined). A part
+ * that doesn't decode is left out; with none
  * decoding this returns null.
  *
  * The WebM reading is iOS's `parseWebM`: EBML containers nest at most 16 deep, SimpleBlock and
@@ -61,23 +63,35 @@ object WebMOpusPartsDecoder {
         val maxPartFrames = (OUTPUT_RATE * (VoicePartTag.MAX_PART_SECONDS + 1)).toInt()
         var totalFrames = 0L
         var decodedParts = 0
+        // The 48 kHz audio just before the next part: the filter runs across each join.
+        var history = ShortArray(0)
         RandomAccessFile(outFile, "rw").use { out ->
             out.setLength(0)
             out.write(ByteArray(44)) // the header, written once the length is known
             for (part in parts.take(VoicePartTag.MAX_PARTS)) {
-                val parsed = runCatching { parseWebM(part) }.getOrNull() ?: continue
-                if (parsed.packets.isEmpty()) continue
-                val head = parseOpusHead(parsed.opusHead) ?: continue
-                val mono48 = runCatching { decode(parsed, head) }.getOrNull() ?: continue
-                if (mono48.isEmpty()) continue
-                // 48 kHz to 24 kHz, two samples to one.
-                var frames = mono48.size / 2
-                val mono = ShortArray(frames) { i -> ((mono48[2 * i].toInt() + mono48[2 * i + 1].toInt()) / 2).toShort() }
-                frames = minOf(frames, maxPartFrames)
-                parsed.durationMs?.let { durationMs ->
-                    val wanted = Math.round(durationMs / 1000.0 * OUTPUT_RATE).toInt()
-                    if (wanted in 1 until frames) frames = wanted
+                val parsed = runCatching { parseWebM(part) }.getOrNull()?.takeIf { it.packets.isNotEmpty() }
+                val head = parsed?.let { parseOpusHead(it.opusHead) }
+                val mono48 = if (parsed != null && head != null) runCatching { decode(parsed, head) }.getOrNull() else null
+                if (parsed == null || mono48 == null || mono48.isEmpty()) {
+                    history = ShortArray(0) // the next part doesn't follow what came before
+                    continue
                 }
+                var frames = minOf(mono48.size / 2, maxPartFrames)
+                // Duration comes from the sender's file, so it can be anything (NaN, infinite,
+                // huge). Only trim when it is a sane, finite value shorter than what decoded; an
+                // out-of-range Double cast to Int would wrap (iOS 369794e crashed on it).
+                parsed.durationMs?.let { durationMs ->
+                    if (durationMs.isFinite() && durationMs > 0) {
+                        val wantedFrames = Math.floor(durationMs / 1000.0 * OUTPUT_RATE + 0.5)
+                        if (wantedFrames < frames.toDouble()) {
+                            val wanted = wantedFrames.toInt()
+                            if (wanted > 0) frames = wanted
+                        }
+                    }
+                }
+                val mono = downsampleTo24k(mono48, frames, history)
+                val keptEnd = 2 * frames
+                history = mono48.copyOfRange(maxOf(0, keptEnd - HALF_BAND_TAPS / 2), minOf(keptEnd, mono48.size))
                 val bytes = ByteArray(frames * 2)
                 for (i in 0 until frames) {
                     val sample = mono[i].toInt()
@@ -178,6 +192,55 @@ object WebMOpusPartsDecoder {
         val droppedByDecoder = (raw - count).coerceAtLeast(0L)
         val stillToSkip = (head.preSkip - droppedByDecoder).coerceIn(0L, count.toLong()).toInt()
         return out.copyOfRange(stillToSkip, count)
+    }
+
+    /** The half-band low-pass's length: a 31-tap windowed sinc. */
+    private const val HALF_BAND_TAPS = 31
+
+    /**
+     * A half-band low-pass at 48 kHz (cut at 12 kHz, the 24 kHz output's Nyquist): a sinc with
+     * every other tap zero, under a Blackman window, scaled to unity gain. Speech up to 8 kHz
+     * passes, and what would fold back above 12 kHz is held down - averaging sample pairs let it
+     * alias. iOS decodes at 24 kHz in libopus, which filters likewise.
+     */
+    private val HALF_BAND: DoubleArray by lazy {
+        val half = HALF_BAND_TAPS / 2
+        val taps = DoubleArray(HALF_BAND_TAPS) { i ->
+            val k = i - half
+            val sinc = if (k == 0) 0.5 else kotlin.math.sin(Math.PI * k / 2.0) / (Math.PI * k)
+            val window = 0.42 - 0.5 * kotlin.math.cos(2.0 * Math.PI * i / (HALF_BAND_TAPS - 1)) +
+                0.08 * kotlin.math.cos(4.0 * Math.PI * i / (HALF_BAND_TAPS - 1))
+            sinc * window
+        }
+        val sum = taps.sum()
+        DoubleArray(HALF_BAND_TAPS) { taps[it] / sum }
+    }
+
+    /**
+     * The first [frames] samples at 24 kHz of [mono48]: low-passed ([HALF_BAND]), then every other
+     * sample kept. [history] is the 48 kHz audio just before this part (the previous part's kept
+     * end), so the filter runs across the join; past either end the edge sample repeats.
+     */
+    private fun downsampleTo24k(mono48: ShortArray, frames: Int, history: ShortArray): ShortArray {
+        val taps = HALF_BAND
+        val half = HALF_BAND_TAPS / 2
+        val size = mono48.size
+        fun at(index: Int): Int = when {
+            index >= size -> mono48[size - 1].toInt()
+            index >= 0 -> mono48[index].toInt()
+            history.isEmpty() -> mono48[0].toInt()
+            else -> history[maxOf(0, history.size + index)].toInt()
+        }
+        return ShortArray(frames) { i ->
+            val center = 2 * i
+            var acc = 0.0
+            if (center - half >= 0 && center + half < size) {
+                for (t in 0 until HALF_BAND_TAPS) acc += taps[t] * mono48[center + half - t]
+            } else {
+                for (t in 0 until HALF_BAND_TAPS) acc += taps[t] * at(center + half - t)
+            }
+            Math.round(acc).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
     }
 
     private fun nanos(value: Long): ByteBuffer =

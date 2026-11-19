@@ -181,7 +181,7 @@ data class BroadcastVoiceNote(
     val count: Int,
     /** The parts present, one per index, in index order. */
     val parts: List<BroadcastMessageEntity>,
-    /** The earliest part in the room: where the one bubble sits, and whose time it shows. */
+    /** The lowest-index part present: where the one bubble sits, and whose time it shows. */
     val anchor: BroadcastMessageEntity,
 ) {
     val isComplete: Boolean get() = parts.size == count
@@ -215,6 +215,9 @@ object BroadcastVoiceParts {
         val notesByAnchorId: Map<String, BroadcastVoiceNote> = emptyMap(),
         /** Parts that aren't their note's anchor: not drawn. */
         val hiddenIds: Set<String> = emptySet(),
+        /** Each hidden part's anchor id, so a reply or reaction aimed at a hidden part (another
+         *  client that shows parts one by one) lands on the bubble. */
+        val anchorIdByPartId: Map<String, String> = emptyMap(),
     )
 
     /** Groups the voice-note parts of a room's [messages], which must be in room order. A note
@@ -230,8 +233,9 @@ object BroadcastVoiceParts {
         if (tagged.isEmpty()) return Result()
         val notes = HashMap<String, BroadcastVoiceNote>()
         val hidden = HashSet<String>()
+        val anchorIdByPartId = HashMap<String, String>()
         for ((key, members) in tagged) {
-            val anchor = members.firstOrNull()?.first ?: continue
+            if (members.isEmpty()) continue
             val byIndex = java.util.TreeMap<Int, BroadcastMessageEntity>()
             for ((message, tag) in members) {
                 val existing = byIndex[tag.index]
@@ -240,15 +244,25 @@ object BroadcastVoiceParts {
                     byIndex[tag.index] = message
                 }
             }
+            // The anchor is the lowest index present, not the earliest row: while a note sends,
+            // its parts swap places as each one's local time becomes the chain's, and an anchor
+            // that followed room order hopped from part to part (and stopped playback).
+            val parts = byIndex.values.toList()
+            val anchor = parts.firstOrNull() ?: continue
             notes[anchor.id] = BroadcastVoiceNote(
                 key = key,
                 count = members[0].second.count,
-                parts = byIndex.values.toList(),
+                parts = parts,
                 anchor = anchor,
             )
-            for ((message, _) in members) if (message.id != anchor.id) hidden.add(message.id)
+            for ((message, _) in members) {
+                if (message.id != anchor.id) {
+                    hidden.add(message.id)
+                    anchorIdByPartId[message.id] = anchor.id
+                }
+            }
         }
-        return Result(notes, hidden)
+        return Result(notes, hidden, anchorIdByPartId)
     }
 
     /** The note key of a message that is a part, else null. */

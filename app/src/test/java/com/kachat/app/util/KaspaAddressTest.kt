@@ -107,6 +107,19 @@ class KaspaAddressTest {
     }
 
     @Test
+    fun `a script is built only for a Kaspa network's prefix`() {
+        // iOS 369794e `KaspaAddress.init?(address:)`: kaspa, kaspatest, kaspasim, kaspadev.
+        val script = KaspaAddress.getScriptPublicKey(KaspaAddress.encode("kaspa", 0x00, bytes(32)))
+        for (prefix in listOf("kaspatest", "kaspasim", "kaspadev")) {
+            assertEquals(prefix, script, KaspaAddress.getScriptPublicKey(KaspaAddress.encode(prefix, 0x00, bytes(32))))
+        }
+        for (prefix in listOf("bitcoin", "kaspax", "KASPA")) {
+            val address = KaspaAddress.encode(prefix, 0x00, bytes(32))
+            assertThrows(prefix, IllegalArgumentException::class.java) { KaspaAddress.getScriptPublicKey(address) }
+        }
+    }
+
+    @Test
     fun `profile links open the same key on the running network`() {
         val mainnet = KaspaAddress.encode("kaspa", 0x00, bytes(32))
         val testnet = KaspaNetwork.reencode(mainnet, "kaspatest")

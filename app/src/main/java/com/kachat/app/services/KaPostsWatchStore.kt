@@ -8,6 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,6 +24,7 @@ import javax.inject.Singleton
 class KaPostsWatchStore @Inject constructor(
     @ApplicationContext context: Context,
     private val walletManager: WalletManager,
+    private val settings: com.kachat.app.repository.AppSettingsRepository,
 ) {
     private val prefs = context.getSharedPreferences("kaposts_watch", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -34,9 +36,22 @@ class KaPostsWatchStore @Inject constructor(
 
     private var loadedWallet: String? = null
 
+    /** The current account's blocked addresses (lowercased): never sent as watched. */
+    @Volatile
+    private var blocked: Set<String> = emptySet()
+
     init {
         scope.launch {
             walletManager.activeAddressFlow.collect { address -> reload(address) }
+        }
+        scope.launch {
+            walletManager.activeAddressFlow.collectLatest { address ->
+                if (address == null) {
+                    blocked = emptySet()
+                } else {
+                    settings.kapostsBlocked(address).collect { list -> blocked = list.mapTo(HashSet()) { it.lowercase() } }
+                }
+            }
         }
     }
 
@@ -71,8 +86,13 @@ class KaPostsWatchStore @Inject constructor(
 
     /**
      * The watched authors as KaPosts pubkeys (66-hex compressed; the push service compares the
-     * x-only part), for the push registration - in address order, as iOS sends them.
+     * x-only part), for the push registration - in address order, as iOS sends them. Never
+     * anyone blocked: a background push never passes the block list (iOS 369794e).
      */
-    fun watchedPubkeys(addresses: Set<String> = _watching.value): List<String> =
-        addresses.sorted().mapNotNull { KaPostsService.kapostPubkeyFromAddress(it) }
+    fun watchedPubkeys(addresses: Set<String> = _watching.value): List<String> {
+        val blocked = blocked
+        return addresses.sorted()
+            .filter { it !in blocked }
+            .mapNotNull { KaPostsService.kapostPubkeyFromAddress(it) }
+    }
 }

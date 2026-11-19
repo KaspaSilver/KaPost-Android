@@ -194,7 +194,10 @@ data class UtxoData(
     val amount: Long,
     val scriptPublicKey: ScriptPublicKey,
     val blockDaaScore: Long,
-    val isCoinbase: Boolean
+    val isCoinbase: Boolean,
+    /** A KIP-20 covenant's id when the coin carries one (from a node; the REST gateway leaves it
+     *  null, as iOS `UTXO.covenantId`). Plain sends never spend such a coin (iOS 369794e). */
+    val covenantId: String? = null,
 )
 
 // -------------------------------------------------------------------------

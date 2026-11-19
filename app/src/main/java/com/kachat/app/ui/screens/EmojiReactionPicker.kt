@@ -87,6 +87,18 @@ private val EmojiSections: List<Pair<String, List<String>>> = listOf(
     "Animals & Nature" to listOf("🐶","🐱","🦊","🐻","🐼","🐨","🦁","🐮","🐷","🐸","🐵","🐔","🐧","🦄","🐝","🦋","🌸","🌻","🌈","🌊","🌙","☀️")
 )
 
+/** A section's name in the app's language; one with no translation (Recents, as iOS) stays as is. */
+@Composable
+private fun emojiSectionTitle(title: String): String = when (title) {
+    "Smileys" -> androidx.compose.ui.res.stringResource(com.kachat.app.R.string.kn53_emoji_smileys)
+    "Gestures" -> androidx.compose.ui.res.stringResource(com.kachat.app.R.string.kn53_emoji_gestures)
+    "Hearts" -> androidx.compose.ui.res.stringResource(com.kachat.app.R.string.kn53_emoji_hearts)
+    "Celebration" -> androidx.compose.ui.res.stringResource(com.kachat.app.R.string.kn53_emoji_celebration)
+    "Objects" -> androidx.compose.ui.res.stringResource(com.kachat.app.R.string.kn53_emoji_objects)
+    "Animals & Nature" -> androidx.compose.ui.res.stringResource(com.kachat.app.R.string.kn53_emoji_animals_nature)
+    else -> title
+}
+
 /**
  * An emoji's Unicode name, lowercased ("fire", "heavy black heart", "grinning face"), so search
  * can match what an emoji IS rather than the character itself - typing "fire" only finds it if
@@ -189,7 +201,9 @@ fun EmojiReactionPickerSheet(
                         sections.forEach { (title, emojis) ->
                             item(span = { GridItemSpan(maxLineSpan) }) {
                                 Text(
-                                    title,
+                                    // Section names are English keys ("Smileys"): looked up, not
+                                    // verbatim (iOS 369794e).
+                                    emojiSectionTitle(title),
                                     color = colors.textSecondary,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 11.sp,

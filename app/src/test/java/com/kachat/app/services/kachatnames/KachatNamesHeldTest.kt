@@ -5,8 +5,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Your Domains and Available (iOS e26562e, eea52b2): a lapsed name is no longer yours - it leaves Your
- * Domains for the marketplace's Available tab; an expired name still in grace stays, to be renewed.
+ * Your Domains (iOS e26562e, eea52b2): a lapsed name is no longer yours - it leaves Your Domains;
+ * an expired name still in grace stays, to be renewed (in KaPay).
  */
 class KachatNamesHeldTest {
     private val grace = 864_000_000L
@@ -24,20 +24,6 @@ class KachatNamesHeldTest {
     fun yourDomainsHoldActiveAndGraceNamesOnly() {
         assertEquals(listOf("active", "grace"), KachatNamesRegistry.held(listOf(active, lapsedNew, inGrace, lapsedOld), grace, now).map { it.name })
         assertEquals(emptyList<String>(), KachatNamesRegistry.held(listOf(lapsedOld), grace, now).map { it.name })
-    }
-
-    @Test
-    fun reclaimableHoldsLapsedNamesOldestExpiryFirst() {
-        assertEquals(listOf("lapsedold", "lapsednew"), KachatNamesRegistry.reclaimable(listOf(active, lapsedNew, inGrace, lapsedOld), grace, now).map { it.name })
-    }
-
-    @Test
-    fun theTwoSetsSplitEveryName() {
-        val all = listOf(active, inGrace, lapsedOld, lapsedNew)
-        val held = KachatNamesRegistry.held(all, grace, now).map { it.name }.toSet()
-        val reclaimable = KachatNamesRegistry.reclaimable(all, grace, now).map { it.name }.toSet()
-        assertEquals(emptySet<String>(), held intersect reclaimable)
-        assertEquals(all.map { it.name }.toSet(), held + reclaimable)
     }
 
     /** iOS aa36d2a `dropLapsed`: the next lapse to wait for, among the names still held. */

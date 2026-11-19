@@ -8,6 +8,8 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.ui.res.stringResource
+import androidx.compose.animation.animateContentSize
+import androidx.compose.ui.res.painterResource
 import com.kachat.app.R
 import kotlinx.coroutines.flow.first
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -82,11 +84,12 @@ import com.kachat.app.util.MessageProtocol
 
 private val VIDEO_HOSTS = setOf("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com")
 
-/** Rich link-preview card shown below a chat bubble's text when the message contains a link -
- *  mirrors iMessage. Renders nothing while the fetch is in flight, rather than a placeholder that
- *  could flash or look broken. If no preview data is found (a bare/broken link, or a site with no
- *  Open Graph tags), falls back to [fallbackText] if given, else renders nothing. Used by
- *  [MessageBubble], `GroupMessageBubble`, and broadcast rooms' message rows.
+/** Rich link-preview card for a link in a post or a Public Chats message - mirrors iMessage. Made
+ *  only for a poster or sender with a `.kachat` name and a link to KaChat's site or an allowed site
+ *  ([com.kachat.app.services.KaPostLinkPreviewPolicy], iOS b78fdb0). Renders nothing while the
+ *  fetch is in flight (or [loadingHeight] of empty card), rather than a placeholder that could
+ *  flash or look broken. If no preview data is found (a broken link, or a site with no Open Graph
+ *  tags), falls back to [fallbackText] if given, else renders nothing.
  *
  *  [txId] is the owning message's transaction id, for the "View in Explorer" long-press action -
  *  matches every other bubble type's identical action ([MessageBubble]'s
@@ -112,13 +115,11 @@ fun LinkPreviewCard(
     /** Whether the owning message is ours - only the inline Nextcloud voice-note bubble cares
      *  (it takes the sent/received colours like an on-chain voice note); the cards are neutral. */
     isOutgoing: Boolean = false,
-    /** Privacy gate (2026-08 audit, decision 5A, matching iOS): rendering a preview fetches the
-     *  stranger-controlled URL from THIS device, revealing the reader's IP and that the message
-     *  was seen. True (the default) fetches on render — for accepted/handshaken 1:1 contacts,
-     *  group messages, and the user's own sent messages. False renders a "Tap to load preview"
-     *  placeholder instead and only fetches after an explicit tap — for non-accepted 1:1
-     *  senders and ALL broadcast messages (broadcast senders are always strangers). */
-    autoFetch: Boolean = true,
+    /** No longer read: iOS b78fdb0 removed the "Tap to load preview" card. The fetch starts on
+     *  render, since posts and rooms only make a card for an allowed link from a poster or sender
+     *  with a `.kachat` name; every other link stays plain text with no card at all (owner's
+     *  call, 2026-11-18). Kept so existing callers compile. */
+    @Suppress("UNUSED_PARAMETER") autoFetch: Boolean = true,
     /** Space held while the preview loads, so the card doesn't push the content below it down
      *  when it lands (iOS e5a9b11). Null draws nothing until then. */
     loadingHeight: androidx.compose.ui.unit.Dp? = null,
@@ -140,30 +141,57 @@ fun LinkPreviewCard(
         return
     }
 
-    var fetchApproved by remember(url, autoFetch) { mutableStateOf(autoFetch) }
     var preview by remember(url) { mutableStateOf<LinkPreviewData?>(null) }
     var hasFinishedLoading by remember(url) { mutableStateOf(false) }
 
-    if (!fetchApproved) {
-        TapToLoadPreviewBubble(
-            url = url,
-            txId = txId,
-            kaspaExplorer = kaspaExplorer,
-            onLoad = { fetchApproved = true },
-            onSelect = onSelect,
-            onDoubleTap = onDoubleTap
-        )
-        return
-    }
-
-    LaunchedEffect(url, fetchApproved) {
+    LaunchedEffect(url) {
         hasFinishedLoading = false
         preview = LinkPreviewService.fetchPreview(url)
         hasFinishedLoading = true
     }
 
+    // With space held while loading (posts), the swap to the card or the plain link eases instead
+    // of jumping from the placeholder's height (iOS b78fdb0, 0.2 s ease-in-out).
+    val body: @Composable () -> Unit = {
+        LinkPreviewCardBody(
+            preview = preview,
+            hasFinishedLoading = hasFinishedLoading,
+            url = url,
+            txId = txId,
+            kaspaExplorer = kaspaExplorer,
+            fallbackText = fallbackText,
+            onSelect = onSelect,
+            onDoubleTap = onDoubleTap,
+            isOutgoing = isOutgoing,
+            loadingHeight = loadingHeight,
+        )
+    }
+    if (loadingHeight != null) {
+        Box(
+            modifier = Modifier.animateContentSize(
+                androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+            )
+        ) { body() }
+    } else {
+        body()
+    }
+}
+
+@Composable
+private fun LinkPreviewCardBody(
+    preview: LinkPreviewData?,
+    hasFinishedLoading: Boolean,
+    url: String,
+    txId: String,
+    kaspaExplorer: KaspaExplorer,
+    fallbackText: String?,
+    onSelect: (() -> Unit)?,
+    onDoubleTap: (() -> Unit)?,
+    isOutgoing: Boolean,
+    loadingHeight: androidx.compose.ui.unit.Dp?,
+) {
     if (hasFinishedLoading && preview != null) {
-        val data = preview!!
+        val data = preview
         if (data.nextcloudShareRevoked) {
             // The server says this share is gone. Showing the dead URL would leave the sender's
             // server address in the transcript for a link nobody can open, which is the opposite
@@ -224,7 +252,7 @@ private fun NextcloudAudioBubble(
     LaunchedEffect(download, attempt) {
         if (file != null) return@LaunchedEffect
         failed = false
-        val fetched = LinkPreviewService.downloadToCacheFile(context, download, maxBytes = 30_000_000L)
+        val fetched = LinkPreviewService.downloadToCacheFile(context, download, maxBytes = 30_000_000L, referer = url)
         if (fetched != null && fetched.length() > 0) file = fetched else failed = true
     }
 
@@ -242,11 +270,11 @@ private fun NextcloudAudioBubble(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
                     .background(if (isOutgoing) LocalAppColors.current.surfaceVariant else LocalAppColors.current.surface)
-                    .pointerInput(failed) {
+                    .pointerInput(failed, onDoubleTap != null) {
                         detectTapGestures(
                             onTap = { if (failed) attempt++ },
                             onLongPress = { showMenu = true },
-                            onDoubleTap = { onDoubleTap?.invoke() },
+                            onDoubleTap = onDoubleTap.asDoubleTap(),
                         )
                     }
                     .padding(horizontal = 12.dp, vertical = 10.dp)
@@ -290,10 +318,10 @@ private fun RevokedShareTile(
             .clip(RoundedCornerShape(14.dp))
             // iOS: Color.primary at 5% - a faint tint of the text colour, not a card.
             .background(LocalAppColors.current.textPrimary.copy(alpha = 0.05f))
-            .pointerInput(Unit) {
+            .pointerInput(onDoubleTap != null) {
                 detectTapGestures(
                     onLongPress = { showMenu = true },
-                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onDoubleTap = onDoubleTap.asDoubleTap(),
                 )
             }
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -330,7 +358,7 @@ private fun RevokedShareTile(
  * share, revoked or not: the link is the address of someone's photo or file, and the preview
  * exists so the recipient can SEE it - a long-press that hands out the URL to forward defeats the
  * sender's choice to share it in one place. Decided here from the URL, with the classifier the
- * preview pipeline uses, so it holds in every card state - the tap-to-load placeholder included.
+ * preview pipeline uses, so it holds in every card state.
  * A null [url] is the revoked share's menu: no address shown, no Copy Link. Mirrors iOS's
  * `LinkPreviewCardView.menuActions` behind `.messageActions(title: "Link", preview:)`.
  */
@@ -377,67 +405,11 @@ private fun LinkMessageActions(
     }
 }
 
-/**
- * Placeholder shown instead of an auto-fetched preview when [LinkPreviewCard]'s `autoFetch` gate
- * is off (non-accepted 1:1 senders, all broadcast messages): iOS's neutral card - a link glyph,
- * "Tap to load preview" and the link's host - fetched only on tap. Until then no request of any
- * kind leaves the device for this URL. The long-press menu still offers Copy Link / View in
- * Explorer / Select, so the message stays fully usable. Mirrors iOS's `tapToLoadCard`.
- */
-@Composable
-private fun TapToLoadPreviewBubble(
-    url: String,
-    txId: String,
-    kaspaExplorer: KaspaExplorer,
-    onLoad: () -> Unit,
-    onSelect: (() -> Unit)? = null,
-    onDoubleTap: (() -> Unit)? = null
-) {
-    var showMenu by remember { mutableStateOf(false) }
-    val host = remember(url) { runCatching { android.net.Uri.parse(url).host }.getOrNull() }
-
-    Row(
-        modifier = Modifier
-            .widthIn(max = 260.dp)
-            .sendKaspaGlass(14.dp)
-            .pointerInput(url) {
-                detectTapGestures(
-                    onLongPress = { showMenu = true },
-                    onDoubleTap = { onDoubleTap?.invoke() },
-                    onTap = { onLoad() }
-                )
-            }
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Default.Link,
-            contentDescription = null,
-            tint = LocalAppColors.current.textSecondary,
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(Modifier.width(10.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                stringResource(R.string.tap_to_load_preview),
-                color = LocalAppColors.current.textPrimary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-            )
-            if (!host.isNullOrEmpty()) {
-                MiddleEllipsisText(
-                    host,
-                    color = LocalAppColors.current.textSecondary,
-                    fontSize = 12.sp,
-                )
-            }
-        }
-    }
-
-    if (showMenu) {
-        LinkMessageActions(url = url, txId = txId, kaspaExplorer = kaspaExplorer, onSelect = onSelect, onDismiss = { showMenu = false })
-    }
-}
+/** A double-tap only when there is something to do: a double-tap handler that does nothing still
+ *  makes every single tap wait to see whether a second one follows (iOS b78fdb0
+ *  `onDoubleTapIfSet`). */
+private fun (() -> Unit)?.asDoubleTap(): ((androidx.compose.ui.geometry.Offset) -> Unit)? =
+    this?.let { action -> { _: androidx.compose.ui.geometry.Offset -> action() } }
 
 @Composable
 private fun LinkPreviewFallbackBubble(text: String, url: String, txId: String, kaspaExplorer: KaspaExplorer, onSelect: (() -> Unit)? = null, onDoubleTap: (() -> Unit)? = null) {
@@ -453,10 +425,10 @@ private fun LinkPreviewFallbackBubble(text: String, url: String, txId: String, k
             .clip(RoundedCornerShape(16.dp))
             .background(LocalAppColors.current.incomingBubble) // iOS systemGray5
             .padding(horizontal = 12.dp, vertical = 8.dp)
-            .pointerInput(url) {
+            .pointerInput(url, onDoubleTap != null) {
                 detectTapGestures(
                     onLongPress = { showMenu = true },
-                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onDoubleTap = onDoubleTap.asDoubleTap(),
                     onTap = { uriHandler.openUri(url) }
                 )
             }
@@ -483,14 +455,17 @@ private fun NextcloudMediaBubble(data: LinkPreviewData, url: String, txId: Strin
 
     var showMenu by remember { mutableStateOf(false) }
     var showPhotoViewer by remember { mutableStateOf(false) }
+    // A photo whose /preview failed is drawn from /download instead (iOS LinkPreviewCardView,
+    // `case .image`): the same 5 MB cap, decoded at 640 px.
+    var posterFromDownload by remember(data.imageUrl, data.mediaDownloadUrl) { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(18.dp))
-            .pointerInput(url) {
+            .pointerInput(url, onDoubleTap != null) {
                 detectTapGestures(
                     onLongPress = { showMenu = true },
-                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onDoubleTap = onDoubleTap.asDoubleTap(),
                     onTap = {
                         val download = data.mediaDownloadUrl
                         when {
@@ -514,11 +489,15 @@ private fun NextcloudMediaBubble(data: LinkPreviewData, url: String, txId: Strin
     ) {
         SubcomposeAsyncImage(
             // the default cap: this runs by itself for any link shaped like a share (iOS ee5ec98)
-            model = remember(data.imageUrl, url) {
+            model = remember(data.imageUrl, data.mediaDownloadUrl, url, posterFromDownload) {
                 ImageRequest.Builder(context)
-                    .data(data.imageUrl)
-                    .fetcherFactory(com.kachat.app.services.BoundedImageFetcher.Factory(url))
+                    .data(if (posterFromDownload) data.mediaDownloadUrl else data.imageUrl)
+                    .fetcherFactory(com.kachat.app.services.BoundedImageFetcher.Factory(url, com.kachat.app.services.LinkPreviewService.MAX_IMAGE_BYTES))
+                    .size(640)
                     .build()
+            },
+            onError = {
+                if (!isVideo && !posterFromDownload && data.mediaDownloadUrl != null) posterFromDownload = true
             },
             contentDescription = data.title,
             contentScale = ContentScale.Fit,
@@ -610,10 +589,10 @@ private fun NextcloudAttachmentCard(data: LinkPreviewData, url: String, txId: St
             .widthIn(max = 260.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(LocalAppColors.current.surface)
-            .pointerInput(url) {
+            .pointerInput(url, onDoubleTap != null) {
                 detectTapGestures(
                     onLongPress = { showMenu = true },
-                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onDoubleTap = onDoubleTap.asDoubleTap(),
                     onTap = {
                         val download = data.mediaDownloadUrl
                         when {
@@ -686,24 +665,46 @@ private fun LinkPreviewCardContent(data: LinkPreviewData, url: String, txId: Str
             .widthIn(max = 260.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(LocalAppColors.current.surface)
-            .pointerInput(url) {
+            .pointerInput(url, onDoubleTap != null) {
                 detectTapGestures(
                     onLongPress = { showMenu = true },
-                    onDoubleTap = { onDoubleTap?.invoke() },
+                    onDoubleTap = onDoubleTap.asDoubleTap(),
                     onTap = { uriHandler.openUri(url) }
                 )
             }
     ) {
-        if (data.imageUrl != null) {
+        // A social network's link always shows the network's logo, not the post's image (owner's
+        // call, 2026-11-18, iOS b78fdb0).
+        val social = remember(url) { SocialLinkLogo.logo(url) }
+        val imageUrl = data.imageUrl
+        if (social != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(140.dp)
+                    .background(social.color),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(social.drawable),
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(56.dp)
+                )
+            }
+        } else if (imageUrl != null && com.kachat.app.services.KaPostLinkPreviewPolicy.allowsImage(imageUrl, url)) {
+            // Only from the site or one of its image servers; any other host draws the card
+            // without the image rather than contacting it.
             Box {
-                // Load the OG image with a real browser UA + Referer (the page it came from).
-                // Image CDNs like cdninstagram/fbcdn 403 the header-less request Coil sends by
-                // default, which is why Instagram previews showed no picture. Mirrors iOS's
-                // LinkPreviewService.imageData(referer:), with its 5 MB cap (iOS ee5ec98).
-                val imageRequest = remember(data.imageUrl, data.url) {
+                // Load the OG image with a real browser UA, and the page as Referer only on the
+                // page's own host. Image CDNs like cdninstagram/fbcdn 403 the header-less request
+                // Coil sends by default, which is why Instagram previews showed no picture.
+                // Mirrors iOS's LinkPreviewService.imageData(referer:), with its 5 MB cap (iOS
+                // ee5ec98).
+                val imageRequest = remember(imageUrl, url) {
                     ImageRequest.Builder(context)
-                        .data(data.imageUrl)
-                        .fetcherFactory(com.kachat.app.services.BoundedImageFetcher.Factory(data.url))
+                        .data(imageUrl)
+                        .fetcherFactory(com.kachat.app.services.BoundedImageFetcher.Factory(url))
                         .crossfade(true)
                         .build()
                 }
@@ -811,7 +812,8 @@ sealed class KaChatLinkRef {
 /**
  * A link to KaChat's own site (`home.kachat.app`, any page, iOS f81c467 `KaChatSiteLink`). Unlike a
  * stranger's link it previews by itself: fetching it tells nobody but us who is reading, so a post
- * draws it as a card, and a public chat room doesn't wait for a tap as it does for other links.
+ * draws it as a card, and a public chat room previews it for a sender with a `.kachat` name
+ * (iOS b78fdb0).
  */
 object KaChatSiteLink {
     const val HOST = "home.kachat.app"
@@ -923,7 +925,9 @@ object KaChatLink {
         // iOS LinkPreviewService.parse reads only the path: a query or fragment on a post, room
         // or profile link (a share's ?utm_..., a #) is ignored rather than sending it to the
         // browser. The payment request above keeps its query - it carries the amount.
-        val pathOnly = trimmed.substringBefore('?').substringBefore('#')
+        // One trailing '/' is dropped too, as iOS's pathComponents ignores it: kachat.app/post/<id>/
+        // used to fail here and go to the browser.
+        val pathOnly = trimmed.substringBefore('?').substringBefore('#').removeSuffix("/")
         val match = LINK_REGEX.matchEntire(pathOnly) ?: return null
         return refFor(match)
     }
@@ -1162,12 +1166,12 @@ fun KaChatInternalLinkCard(
         // A reply or a quote is still a KaPosts post, but saying which one it is explains why
         // the text may read as half a conversation.
         is KaChatLinkRef.KaPost -> when (post?.action) {
-            "reply" -> "KaPost reply"
-            "quote" -> "KaPost quote"
+            "reply" -> stringResource(R.string.l53_link_kapost_reply)
+            "quote" -> stringResource(R.string.l53_link_kapost_quote)
             else -> "KaPost"
         }
-        is KaChatLinkRef.BroadcastRoom -> "Public Chat Room"
-        is KaChatLinkRef.Profile -> "KaPost Profile"
+        is KaChatLinkRef.BroadcastRoom -> stringResource(R.string.l53_link_public_chat_room)
+        is KaChatLinkRef.Profile -> stringResource(R.string.l53_link_kapost_profile)
         is KaChatLinkRef.PaymentRequest -> payEyebrow
     }
     val title = when (ref) {
@@ -1182,13 +1186,13 @@ fun KaChatInternalLinkCard(
             // A quote with no added comment is a repost: there is no text to show, so say what
             // it is rather than leaving the card looking half-loaded.
             post.snippet.isBlank() ->
-                if (post.action == "quote") "Reposted a post." else stringResource(R.string.kapost_link_card_tap_to_open)
+                stringResource(if (post.action == "quote") R.string.l53_link_reposted_a_post else R.string.kapost_link_card_tap_to_open)
             else -> post.snippet
         }
         is KaChatLinkRef.BroadcastRoom ->
-            if (roomIsKnown) "Tap to open this public chat room." else "Tap to join this public chat room."
+            stringResource(if (roomIsKnown) R.string.l53_link_tap_open_room else R.string.l53_link_tap_join_room)
         is KaChatLinkRef.Profile ->
-            if (profileIsContact) "Tap to open your chat." else "Tap to see their KaPost profile."
+            stringResource(if (profileIsContact) R.string.l53_link_tap_open_chat else R.string.l53_link_tap_see_profile)
         // The memo, the maker as the signature in the link proves - their name, not the payment
         // address - and what a tap does (iOS c6851d6, 7c71a98, 1fe8388).
         is KaChatLinkRef.PaymentRequest -> listOfNotNull(
@@ -1271,11 +1275,11 @@ fun KaChatInternalLinkCard(
     }
 
     if (showMenu) {
-        MessageActionsSheet(title = "KaPost Link", preview = url, onDismiss = { showMenu = false }) {
+        MessageActionsSheet(title = stringResource(R.string.l53_link_menu_title), preview = url, onDismiss = { showMenu = false }) {
             ActionSheetRow(
                 icon = Icons.AutoMirrored.Filled.OpenInNew,
-                title = "Open in KaPost",
-                subtitle = "Opens it right here in the app.",
+                title = stringResource(R.string.l53_link_open_in_kapost),
+                subtitle = stringResource(R.string.l53_link_opens_here),
             ) {
                 showMenu = false
                 openKaChatLink(ref)
@@ -1283,7 +1287,7 @@ fun KaChatInternalLinkCard(
             ActionSheetRow(
                 icon = Icons.Default.Link,
                 title = stringResource(R.string.copy_link),
-                subtitle = "Copies the address to your clipboard.",
+                subtitle = stringResource(R.string.copy_link_subtitle),
             ) {
                 clipboardManager.setText(AnnotatedString(url))
                 showMenu = false
@@ -1291,7 +1295,7 @@ fun KaChatInternalLinkCard(
             ActionSheetRow(
                 icon = Icons.Default.Public,
                 title = stringResource(R.string.view_in_explorer),
-                subtitle = "Opens this transaction in the block explorer.",
+                subtitle = stringResource(R.string.payment_explorer_subtitle),
             ) {
                 uriHandler.openUri(kaspaExplorer.txUrl(txId))
                 showMenu = false
@@ -1299,8 +1303,8 @@ fun KaChatInternalLinkCard(
             if (onSelect != null) {
                 ActionSheetRow(
                     icon = Icons.Default.CheckCircle,
-                    title = "Select",
-                    subtitle = "Pick several messages at once.",
+                    title = stringResource(R.string.message_action_select),
+                    subtitle = stringResource(R.string.message_action_select_subtitle),
                 ) {
                     onSelect()
                     showMenu = false
@@ -1318,4 +1322,35 @@ class KaChatLinkCardViewModel @javax.inject.Inject constructor(
     suspend fun hasJoinedRoom(channel: String): Boolean = runCatching {
         broadcastRepository.getJoinedChannels().first().any { it.channelName == channel }
     }.getOrDefault(false)
+}
+
+/**
+ * The logo a social network's link preview shows in place of the post's image: the network's mark
+ * in white on its brand colour. YouTube isn't here: its preview keeps the video's thumbnail
+ * (owner's call, 2026-11-18). The marks are Simple Icons' (CC0), as vector drawables (`social_*`),
+ * as iOS's `SocialLinkLogo` (b78fdb0).
+ */
+object SocialLinkLogo {
+    data class Logo(@androidx.annotation.DrawableRes val drawable: Int, val color: Color)
+
+    private val INSTAGRAM = Color(red = 0.894f, green = 0.251f, blue = 0.373f)
+    private val FACEBOOK = Color(red = 0.031f, green = 0.4f, blue = 1f)
+    private val LINKEDIN = Color(red = 0.039f, green = 0.4f, blue = 0.761f)
+
+    private val byDomain: List<Pair<String, Logo>> = listOf(
+        "x.com" to Logo(R.drawable.social_x, Color.Black),
+        "twitter.com" to Logo(R.drawable.social_x, Color.Black),
+        "instagram.com" to Logo(R.drawable.social_instagram, INSTAGRAM),
+        "facebook.com" to Logo(R.drawable.social_facebook, FACEBOOK),
+        "linkedin.com" to Logo(R.drawable.social_linkedin, LINKEDIN),
+        "tiktok.com" to Logo(R.drawable.social_tiktok, Color.Black),
+        "threads.net" to Logo(R.drawable.social_threads, Color.Black),
+        "threads.com" to Logo(R.drawable.social_threads, Color.Black),
+    )
+
+    /** The network's logo for a link to it (any subdomain: www., m., mobile.), or null. */
+    fun logo(url: String): Logo? {
+        val host = runCatching { android.net.Uri.parse(url).host }.getOrNull()?.lowercase() ?: return null
+        return byDomain.firstOrNull { (domain, _) -> host == domain || host.endsWith(".$domain") }?.second
+    }
 }

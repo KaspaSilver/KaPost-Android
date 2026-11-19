@@ -26,6 +26,7 @@ import dagger.assisted.AssistedInject
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import kotlinx.coroutines.flow.first
 import javax.inject.Provider
 import javax.inject.Singleton
 
@@ -90,6 +91,7 @@ class KaPostsScheduledReminderWorker @AssistedInject constructor(
     private val scheduledStore: Provider<KaPostsScheduledStore>,
     /** Injected so its channels exist before this posts on one. */
     private val notificationHelper: NotificationHelper,
+    private val settings: com.kachat.app.repository.AppSettingsRepository,
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -109,8 +111,11 @@ class KaPostsScheduledReminderWorker @AssistedInject constructor(
             Log.w(TAG, "Background send of scheduled posts failed", e)
         }
         // Only a post still waiting on this phone: one that went out, failed, was handed to the
-        // indexer, or is gone (cancelled, or its account deleted) needs no reminder.
+        // indexer, or is gone (cancelled, or its account deleted) needs no reminder. Another
+        // saved account's post isn't in the loaded list: read from its own stored list, it still
+        // reminds (iOS's local notification fires whichever account is open).
         val entry = store.entries.value.firstOrNull { it.txId == txId }
+            ?: KaPostsScheduledStore.storedEntry(applicationContext, txId)
         if (entry == null || entry.status != KaPostScheduledEntry.STATUS_SCHEDULED || entry.onServer) {
             return Result.success()
         }
@@ -126,7 +131,7 @@ class KaPostsScheduledReminderWorker @AssistedInject constructor(
         false
     }
 
-    private fun showReminder(txId: String) {
+    private suspend fun showReminder(txId: String) {
         val context = applicationContext
         // POST_NOTIFICATIONS not granted: skip rather than crash.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -146,11 +151,14 @@ class KaPostsScheduledReminderWorker @AssistedInject constructor(
             context, notificationId, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        // iOS: the default sound.
-        val notification = NotificationCompat.Builder(context, NotificationHelper.CHANNEL_ID)
+        // Sound & Vibration applies here too, as iOS's willPresent applies it to every
+        // notification, local ones included.
+        val soundEnabled = settings.notificationSoundEnabled.first()
+        val vibrationEnabled = settings.notificationVibrationEnabled.first()
+        val notification = NotificationCompat.Builder(context, NotificationHelper.channelFor(soundEnabled, vibrationEnabled))
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Scheduled post")
-            .setContentText("Your post is ready to go out. Open KaPost to send it.")
+            .setContentTitle(context.getString(R.string.kaposts_scheduled_reminder_title))
+            .setContentText(context.getString(R.string.kaposts_scheduled_reminder_body))
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

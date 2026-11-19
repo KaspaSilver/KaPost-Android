@@ -146,6 +146,12 @@ data class NfcCardStatus(
 
 /** One card, for the length of one tap. */
 class NfcCardConnection internal constructor(private val isoDep: IsoDep) {
+    companion object {
+        /** The most a backup can be: READ's offset is two bytes. Today's applet holds 2048 (iOS
+         *  369794e `maxReadableBackup`). */
+        const val MAX_READABLE_BACKUP = 0xFFFF
+    }
+
     private fun send(apdu: ByteArray): Pair<ByteArray, Int> {
         val reply = isoDep.transceive(apdu)
         if (reply.size < 2) throw NfcCardError.CardFailed("short reply")
@@ -215,6 +221,10 @@ class NfcCardConnection internal constructor(private val isoDep: IsoDep) {
             val chunk = command(0xB0, p1p2 = backup.size, responseLength = 256)
             if (chunk.isEmpty()) return backup
             backup += chunk
+            // A faulty or hostile card that never sends the empty end would grow this until the
+            // session times out, and past two bytes the offset wraps and re-reads the start (iOS
+            // 369794e).
+            if (backup.size > MAX_READABLE_BACKUP) throw NfcCardError.UnreadableBackup()
         }
     }
 

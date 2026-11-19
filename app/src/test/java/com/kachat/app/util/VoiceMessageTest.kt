@@ -76,8 +76,14 @@ class VoiceMessageTest {
     }
 
     @Test
-    fun `formatDuration never goes negative for a not-yet-ready player`() {
-        assertEquals("0:00", VoiceMessage.formatDuration(-1))
+    fun `formatDuration shows an unknown or out-of-range length as dashes`() {
+        // MediaPlayer says -1 for a length it doesn't know; a sender's file can claim anything
+        // (iOS 369794e `formattedDuration`).
+        assertEquals("--:--", VoiceMessage.formatDuration(-1))
+        assertEquals("--:--", VoiceMessage.formatDuration(Int.MIN_VALUE))
+        assertEquals("--:--", VoiceMessage.formatDuration(360_000_000))
+        assertEquals("--:--", VoiceMessage.formatDuration(Int.MAX_VALUE))
+        assertEquals("5999:59", VoiceMessage.formatDuration(359_999_999))
     }
 
     @Test

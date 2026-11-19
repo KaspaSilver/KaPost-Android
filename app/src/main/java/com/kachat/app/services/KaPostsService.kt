@@ -335,6 +335,19 @@ data class KScheduledPost(
 
 data class KScheduledPostsResponse(val posts: List<KScheduledPost>?)
 
+/** The indexer answered a request with an error of its own (iOS `KaPostsAPIError.api`): it was
+ *  reached, and said no. */
+class KaPostsApiException(message: String, cause: Throwable, val code: String? = null) : IllegalStateException(message, cause) {
+    /** The indexer's own "nothing like that here" answer (`NOT_FOUND`): for a cancel, it holds no
+     *  still-scheduled post with that id. Every other answer (rate limit, bad signature, storage
+     *  error) says nothing about whether it will still send it (iOS b78fdb0 `isNotFound`). */
+    val isNotFound: Boolean get() = code == "NOT_FOUND"
+}
+
+/** The payload can't fit one transaction ([KaPostsService.payloadFitsOneTransaction], iOS
+ *  `KaPostsAPIError.tooLong`). The same text never fits on a later try. */
+class KaPostTooLongException(message: String) : IllegalStateException(message)
+
 /**
  * KaPosts client - mirrors iOS KaPostsAPIClient. Reads come from the K indexer REST API
  * (KaChat-marker-filtered); writes never touch REST - every K action is an on-chain Kaspa
@@ -414,6 +427,38 @@ class KaPostsService @Inject constructor(
             } else null
         } catch (_: Exception) {
             null
+        }
+
+        /**
+         * Whether [payload] fits one transaction with one input: its fee mass within the node's
+         * 100,000-gram limit. The composer's byte cap ([com.kachat.app.models.KaPostDraft.postLength])
+         * keeps posts well inside it; this stops anything that got past it before a fee is shown
+         * or a coin is spent, with a reason instead of "too many coins" (iOS 369794e).
+         */
+        fun payloadFitsOneTransaction(payload: String): Boolean =
+            com.kachat.app.util.KaspaMass.calculateMass(
+                numInputs = 1,
+                outputScriptLens = listOf(34),
+                payloadSize = payload.toByteArray(Charsets.UTF_8).size,
+            ) <= com.kachat.app.util.KaspaMass.MAX_STANDARD_MASS
+
+        /**
+         * The mentions array a post, reply, edit or poll signs: valid shapes only, in order, one
+         * per person, never self. Both checks are on the x-only key: a key worked out from an
+         * address is "02" + x, so with exact matching an author holding an 03 key slipped past the
+         * self check, and one person could be listed under both spellings (iOS 369794e).
+         */
+        fun mentionsJson(mentionedPubkeys: List<String>, me: String): String {
+            val mine = KaPostsChainPosts.xOnly(me)
+            val seen = HashSet<String>()
+            val shape = Regex("^0[23][0-9a-f]{64}$")
+            val clean = mentionedPubkeys
+                .map { it.lowercase() }
+                .filter {
+                    it.matches(shape) && KaPostsChainPosts.xOnly(it) != mine &&
+                        seen.add(KaPostsChainPosts.xOnly(it))
+                }
+            return "[" + clean.joinToString(",") { "\"$it\"" } + "]"
         }
 
         private fun decodeHex(hex: String): ByteArray? {
@@ -723,16 +768,21 @@ class KaPostsService @Inject constructor(
             throw e
         }
         health.noteAnswered()
-        if (pageKey != null) KaPostsPageCache.save(appContext, pageGson.toJson(decoded).toByteArray(Charsets.UTF_8), pageKey)
+        if (pageKey != null) {
+            KaPostsPageCache.save(appContext, pageKey) { pageGson.toJson(decoded).toByteArray(Charsets.UTF_8) }
+        }
         return decoded
     }
 
     private suspend fun <T : Any> savedPage(type: Class<T>, key: String?): T? {
         val data = KaPostsPageCache.load(appContext, key ?: return null) ?: return null
-        return try {
-            pageGson.fromJson(String(data, Charsets.UTF_8), type)
-        } catch (_: Exception) {
-            null
+        // Off Main: the caller is a screen, and a saved page can be a long one.
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            try {
+                pageGson.fromJson(String(data, Charsets.UTF_8), type)
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 
@@ -776,10 +826,13 @@ class KaPostsService @Inject constructor(
         return chainPage(page.items, chain())
     }
 
-    /** The indexer's copy wins a tie: it has the counts and the viewer's own votes. */
+    /** The indexer's copy wins a tie: it has the counts and the viewer's own votes. Deletes and
+     *  edits the block stream saw during the outage apply to the saved page and the chain rows
+     *  alike ([KaPostsLiveChainFeed.amended]); otherwise a post deleted while it's down came back
+     *  on every refresh (iOS 369794e). */
     private fun chainPage(saved: List<KPost>, chain: List<KPost>): KPage<KPost> {
         val known = saved.mapTo(HashSet()) { it.id }
-        val merged = (saved + chain.filter { it.id !in known }).sortedByDescending { it.timestamp }
+        val merged = liveFeed.amended((saved + chain.filter { it.id !in known }).sortedByDescending { it.timestamp })
         return KPage(items = merged, rawIds = merged.map { it.id }, cursor = null, hasMore = false)
     }
 
@@ -804,10 +857,13 @@ class KaPostsService @Inject constructor(
     /** Surfaces the indexer's JSON error body message instead of Retrofit's opaque HTTP line. */
     private fun apiError(e: HttpException): IllegalStateException {
         val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
-        val message = body
+        val answered = body
             ?.let { Regex("\"error\"\\s*:\\s*\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
-            ?: "KaPost indexer error (HTTP ${e.code()})"
-        return IllegalStateException(message, e)
+        // An error body of its own is the indexer's answer (iOS `.api`); without one it's not.
+        val code = body
+            ?.let { Regex("\"code\"\\s*:\\s*\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
+        if (answered != null) return KaPostsApiException(answered, e, code)
+        return IllegalStateException("KaPost indexer error (HTTP ${e.code()})", e)
     }
 
     /** An indexer write: reports to [health], like every read. */
@@ -840,12 +896,7 @@ class KaPostsService @Inject constructor(
     suspend fun submitPost(text: String, mentionedPubkeys: List<String> = emptyList()): String {
         val b64 = KaPostsProtocol.b64(KaPostsProtocol.KACHAT_MARKER + text)
         val pubkey = requesterPubkey()
-        val me = pubkey.lowercase()
-        val clean = mentionedPubkeys
-            .map { it.lowercase() }
-            .filter { it.matches(Regex("^0[23][0-9a-f]{64}$")) && it != me }
-            .distinct()
-        val mentions = "[" + clean.joinToString(",") { "\"$it\"" } + "]"
+        val mentions = mentionsJson(mentionedPubkeys, pubkey)
         val signature = sign(KaPostsProtocol.postSigningString(b64, mentions))
         return submitPayloadTx(KaPostsProtocol.postPayload(pubkey, signature, b64, mentions))
     }
@@ -859,12 +910,7 @@ class KaPostsService @Inject constructor(
     suspend fun submitReply(text: String, postId: String, parentAuthorPubkey: String?, mentionedPubkeys: List<String> = emptyList()): String {
         val b64 = KaPostsProtocol.b64(KaPostsProtocol.KACHAT_MARKER + text)
         val pubkey = requesterPubkey()
-        val me = pubkey.lowercase()
-        val clean = (listOfNotNull(parentAuthorPubkey) + mentionedPubkeys)
-            .map { it.lowercase() }
-            .filter { it.matches(Regex("^0[23][0-9a-f]{64}$")) && it != me }
-            .distinct()
-        val mentions = "[" + clean.joinToString(",") { "\"$it\"" } + "]"
+        val mentions = mentionsJson(listOfNotNull(parentAuthorPubkey) + mentionedPubkeys, pubkey)
         val signature = sign(KaPostsProtocol.replySigningString(postId, b64, mentions))
         return submitPayloadTx(KaPostsProtocol.replyPayload(pubkey, signature, postId, b64, mentions))
     }
@@ -878,12 +924,7 @@ class KaPostsService @Inject constructor(
     suspend fun submitEdit(text: String, postId: String, mentionedPubkeys: List<String> = emptyList()): String {
         val b64 = KaPostsProtocol.b64(KaPostsProtocol.KACHAT_MARKER + text)
         val pubkey = requesterPubkey()
-        val me = pubkey.lowercase()
-        val clean = mentionedPubkeys
-            .map { it.lowercase() }
-            .filter { it.matches(Regex("^0[23][0-9a-f]{64}$")) && it != me }
-            .distinct()
-        val mentions = "[" + clean.joinToString(",") { "\"$it\"" } + "]"
+        val mentions = mentionsJson(mentionedPubkeys, pubkey)
         val signature = sign(KaPostsProtocol.editSigningString(postId, b64, mentions))
         return submitPayloadTx(KaPostsProtocol.editPayload(pubkey, signature, postId, b64, mentions))
     }
@@ -902,12 +943,7 @@ class KaPostsService @Inject constructor(
         val b64 = KaPostsProtocol.b64(KaPostsProtocol.KACHAT_MARKER + question)
         val csv = KaPostsProtocol.pollOptionsCsv(options)
         val pubkey = requesterPubkey()
-        val me = pubkey.lowercase()
-        val clean = mentionedPubkeys
-            .map { it.lowercase() }
-            .filter { it.matches(Regex("^0[23][0-9a-f]{64}$")) && it != me }
-            .distinct()
-        val mentions = "[" + clean.joinToString(",") { "\"$it\"" } + "]"
+        val mentions = mentionsJson(mentionedPubkeys, pubkey)
         val signature = sign(KaPostsProtocol.pollSigningString(b64, csv, closesAtMs, mentions))
         return submitPayloadTx(KaPostsProtocol.pollPayload(pubkey, signature, b64, csv, closesAtMs, mentions))
     }
@@ -938,14 +974,10 @@ class KaPostsService @Inject constructor(
     suspend fun buildScheduledPost(text: String, mentionedPubkeys: List<String> = emptyList()): ScheduledTransaction {
         val b64 = KaPostsProtocol.b64(KaPostsProtocol.KACHAT_MARKER + text)
         val pubkey = requesterPubkey()
-        val me = pubkey.lowercase()
-        val clean = mentionedPubkeys
-            .map { it.lowercase() }
-            .filter { it.matches(Regex("^0[23][0-9a-f]{64}$")) && it != me }
-            .distinct()
-        val mentions = "[" + clean.joinToString(",") { "\"$it\"" } + "]"
+        val mentions = mentionsJson(mentionedPubkeys, pubkey)
         val signature = sign(KaPostsProtocol.postSigningString(b64, mentions))
         val payload = KaPostsProtocol.postPayload(pubkey, signature, b64, mentions)
+        if (!payloadFitsOneTransaction(payload)) throw tooLong()
         val built = walletService.buildSignedPayloadSelfSend(payload.toByteArray(Charsets.UTF_8)).getOrThrow()
         return ScheduledTransaction(
             txId = built.txId,
@@ -1057,6 +1089,8 @@ class KaPostsService @Inject constructor(
             .toByteArray(Charsets.UTF_8)
     }
 
+    private fun tooLong() = KaPostTooLongException(appContext.getString(com.kachat.app.R.string.kaposts_post_too_long))
+
     private fun sign(message: String): String =
         KaspaMessageSigner.sign(message, walletManager.getPrivateKeyBytes(), KaspaMessageSigner.SigningMode.KASPA_PERSONAL_MESSAGE)
 
@@ -1067,6 +1101,7 @@ class KaPostsService @Inject constructor(
      */
     private suspend fun submitPayloadTx(payload: String): String {
         val account = walletManager.getAddress()
+        if (!payloadFitsOneTransaction(payload)) throw tooLong()
         val txId = walletService.sendKaspa(
             toAddress = account,
             amountSompi = 0,

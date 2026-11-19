@@ -2,6 +2,8 @@ package com.kachat.app.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -125,7 +127,9 @@ fun WalletYourDomainsRow(viewModel: WalletViewModel, onClick: () -> Unit) {
         val owner = address ?: return@LaunchedEffect
         // the saved list's count at once; the read below corrects it when it answers
         if (kachatOwnedCount == 0 && KachatNamesService.isLaunched) {
-            com.kachat.app.services.kachatnames.KachatOwnedNamesCache.load(cacheContext, owner)?.let {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.kachat.app.services.kachatnames.KachatOwnedNamesCache.load(cacheContext, owner)
+            }?.let {
                 kachatOwnedCount = it.names.size
             }
         }
@@ -161,7 +165,7 @@ fun WalletYourDomainsRow(viewModel: WalletViewModel, onClick: () -> Unit) {
  * Your Domains (iOS 071e901 `KNSDomainsListView`, as KaPay's `KnsDomainsScreen`): one square card
  * per name ending, KaChat's own first - .kachat, KNS (.kas), dotk (.k), Kaspa Names (.kaspa) - each
  * with how many names this wallet holds there, opening that service's own list. A .kas domain
- * opens its detail (Set as Primary, Send); a .kachat name its live page.
+ * opens its detail (Set as Primary, Send); the .kachat list is display only (iOS b78fdb0).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -175,11 +179,6 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     val primaryDomainName by viewModel.primaryDomainName.collectAsState()
     val setPrimaryState by viewModel.setPrimaryState.collectAsState()
     val confirmPrimaryTitle = stringResource(R.string.wd_confirm_primary_domain)
-    // A .kachat name opened from the .kachat card's list: its live page.
-    var selectedKachat by remember { mutableStateOf<NameInfo?>(null) }
-    // Inscribe: the .kachat marketplace over Your Domains; the list refreshes when it closes.
-    var showKachatMarket by remember { mutableStateOf(false) }
-    var kachatRefreshRequested by remember { mutableStateOf(false) }
     // The name service whose card was tapped, null on the cards themselves.
     var openedService by rememberSaveable { mutableStateOf<NameServiceTLD?>(null) }
     // The .kas domain whose detail is open. Held as it was tapped (iOS passes the domain itself),
@@ -188,7 +187,6 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
     var showSendSheet by remember { mutableStateOf(false) }
     // The domain a Set as Primary tap is for, until it lands or fails (for the toast).
     var pendingPrimary by remember { mutableStateOf<String?>(null) }
-    val openChat: (String) -> Unit = { openChatInKaChat(context, it) }
 
     LaunchedEffect(Unit) {
         viewModel.refreshOwnedDomainsAndAwait()
@@ -208,22 +206,6 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
         } else {
             haptic(IosHaptic.IMPACT_MEDIUM)
         }
-    }
-
-    if (showKachatMarket) {
-        BackHandler { showKachatMarket = false; kachatRefreshRequested = true }
-        // runs on under the dock, clearing it itself (LocalDockInset)
-        KachatMarketScreen(
-            onBack = { showKachatMarket = false; kachatRefreshRequested = true },
-            onOpenChat = openChat,
-        )
-        return
-    }
-
-    selectedKachat?.let { info ->
-        BackHandler { selectedKachat = null }
-        AboveDock { KachatLiveNameDetailScreen(info, onBack = { selectedKachat = null }, onOpenChat = openChat) }
-        return
     }
 
     val selectedDomain = selectedDomainState
@@ -316,15 +298,10 @@ fun KnsDomainsScreen(viewModel: WalletViewModel, onBack: () -> Unit) {
                         onSelect = { selectedDomainState = it },
                     )
                     NameServiceTLD.K, NameServiceTLD.KASPA -> ServiceNameListTab(tld = tld, viewModel = viewModel)
+                    // display only: the names, then Get a .kachat domain (iOS b78fdb0)
                     NameServiceTLD.KACHAT ->
                         if (KachatNamesService.isEnabled) {
-                            KachatLiveDomainsTab(
-                                walletAddress = walletAddress ?: "",
-                                onOpen = { selectedKachat = it },
-                                onInscribe = { showKachatMarket = true },
-                                refreshRequested = kachatRefreshRequested,
-                                onRefreshHandled = { kachatRefreshRequested = false },
-                            )
+                            KachatLiveDomainsTab(walletAddress = walletAddress ?: "")
                         } else {
                             KachatNamesComingSoon()
                         }
@@ -773,8 +750,12 @@ private fun KnsDomainSendScreen(
     }
 
     fun onInput(value: String) {
-        recipientInput = value
-        viewModel.checkTransferRecipient(value)
+        // An upper-case address goes into the field in lower case (iOS 369794e `handleInputChange`).
+        val trimmed = value.trim()
+        val lowered = KaspaAddress.lowercasedKaspaAddress(trimmed)
+        val input = if (lowered != trimmed) lowered else value
+        recipientInput = input
+        viewModel.checkTransferRecipient(input)
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -1039,7 +1020,7 @@ private fun DomainTransferProgressSheet(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Text(
-                        "Sending $domainName",
+                        stringResource(R.string.l53_sending_domain, domainName),
                         color = colors.textPrimary,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 17.sp,

@@ -951,7 +951,8 @@ class WalletManager @Inject constructor(
      * skipping any name a saved account already has (iOS 9e22075 `nextDefaultAccountName`).
      */
     fun nextDefaultAccountName(): String {
-        val base = "My Account"
+        // In the app's language, as iOS 369794e names it (`AppLocalization.string("My Account")`).
+        val base = context.getString(com.kachat.app.R.string.l53_my_account)
         val taken = getAccounts().map { it.name.trim().lowercase() }.toSet()
         if (base.lowercase() !in taken) return base
         var number = 2
@@ -1151,7 +1152,17 @@ class WalletManager @Inject constructor(
         form: PassphraseForm = PassphraseForm.NFKD
     ): DeterministicKey {
         val seed = seedFor(mnemonic, passphrase, form)
-        val master = HDKeyDerivation.createMasterPrivateKey(seed)
+        val master = try {
+            HDKeyDerivation.createMasterPrivateKey(seed)
+        } finally {
+            seed.fill(0)
+        }
+        return identityBaseNode(master, family)
+    }
+
+    /** [family]'s base node from an already-made master key, so one seed serves every family
+     *  (import's search, [importSearchAddresses]). The paths are [identityBaseNode]'s. */
+    private fun identityBaseNode(master: DeterministicKey, family: WalletSourceFamily): DeterministicKey {
         val purpose = HDKeyDerivation.deriveChildKey(master, ChildNumber(44, true))
         return when (family) {
             // m/44'/111111'/0'/0 — OneKey shares the standard chain; only the final key is tweaked.
@@ -1332,7 +1343,7 @@ class WalletManager @Inject constructor(
     }
 
     fun getAccountName(): String {
-        return getActiveAccount()?.name ?: "My Account"
+        return getActiveAccount()?.name ?: context.getString(com.kachat.app.R.string.l53_my_account)
     }
 
     /** Renames a saved account in place — used from the Profile screen's editable account name.
@@ -1366,6 +1377,18 @@ class WalletManager @Inject constructor(
      * signing) funnels through here.
      */
     fun getPrivateKeyBytes(): ByteArray {
+        // Logged out: no key (iOS 369794e `getPrivateKey`). Log Out keeps the accounts for a later
+        // sign-in, and this used to read them anyway for any caller still running.
+        if (isLoggedOut) throw IllegalStateException("No active account")
+        return storedPrivateKeyBytes()
+    }
+
+    /**
+     * The active slot's chatting key whether or not Log Out was the last thing done (iOS
+     * `KeychainService.loadPrivateKey`, which the push service's sign-out unregister reads
+     * directly). Everything else asks [getPrivateKeyBytes].
+     */
+    fun storedPrivateKeyBytes(): ByteArray {
         val account = getActiveAccount() ?: throw IllegalStateException("No active account")
         val mnemonic = account.mnemonic.split(" ")
         val family = WalletSourceFamily.fromRaw(account.sourceFamily)
@@ -2082,6 +2105,40 @@ class WalletManager @Inject constructor(
         return indices.mapNotNull { index ->
             val privateKey = identityPrivateKeyBytes(baseNode, index, family) ?: return@mapNotNull null
             index to addressFromPrivateKeyBytes(privateKey)
+        }
+    }
+
+    /**
+     * Import's search: every family's identity addresses at its
+     * [WalletSourceFamily.importSearchDepth], in [WalletSourceFamily.entries] order, from ONE seed
+     * and master key (PBKDF2 is the slow part; iOS `findImportAccounts` makes the seed once too).
+     * Each family's #0 is its first entry, the rows See Every Wallet Type offers. A family whose
+     * base node fails is left empty, as [previewIdentityAddresses]; invalid words give an empty map.
+     */
+    fun importSearchAddresses(
+        mnemonic: List<String>,
+        passphrase: String,
+    ): Map<WalletSourceFamily, List<Pair<Int, String>>> {
+        val master = try {
+            val seed = seedFor(mnemonic, passphrase)
+            try {
+                HDKeyDerivation.createMasterPrivateKey(seed)
+            } finally {
+                seed.fill(0)
+            }
+        } catch (e: Exception) {
+            return emptyMap()
+        }
+        return WalletSourceFamily.entries.associateWith { family ->
+            val baseNode = try {
+                identityBaseNode(master, family)
+            } catch (e: Exception) {
+                return@associateWith emptyList<Pair<Int, String>>()
+            }
+            family.importSearchDepth.mapNotNull { index ->
+                val privateKey = identityPrivateKeyBytes(baseNode, index, family) ?: return@mapNotNull null
+                index to addressFromPrivateKeyBytes(privateKey)
+            }
         }
     }
 

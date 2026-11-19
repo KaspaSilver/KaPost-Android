@@ -161,6 +161,8 @@ class ConnectionViewModel @Inject constructor(
     val kapostIndexerUrl: StateFlow<String> = settings.selectedKapostIndexerUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
     /** The indexer the running app is connected to, for the connection status screen. */
     val runningIndexerUrl: StateFlow<String> = settings.indexerUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
+    /** The push service the running app registers with, for the status screen's Push Register row. */
+    val runningPushIndexerUrl: StateFlow<String> = settings.pushIndexerUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
     /** The KaPosts indexer the running app uses - whether KaPosts can open now. */
     val runningKapostIndexerUrl: StateFlow<String?> = settings.kapostIndexerUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
     val translationServiceUrl: StateFlow<String> = settings.selectedTranslationServiceUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")

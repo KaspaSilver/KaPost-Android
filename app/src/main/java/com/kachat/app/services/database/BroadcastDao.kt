@@ -157,10 +157,11 @@ interface BroadcastDao {
     @Query("UPDATE broadcast_messages SET deliveryStatus = 'sent', blockTimestamp = :blockTimestamp WHERE id = :id AND deliveryStatus = 'unconfirmed'")
     suspend fun settleUnconfirmed(id: String, blockTimestamp: Long): Int
 
-    /** How many delivered rows match a pending one: same sender and content, sent, and no older
-     *  than [sinceMillis] (iOS e5a9b11 `settlePendingMessages`). */
-    @Query("SELECT COUNT(*) FROM broadcast_messages WHERE channelName = :channelName AND senderAddress = :senderAddress AND content = :content AND deliveryStatus = 'sent' AND blockTimestamp >= :sinceMillis")
-    suspend fun countDeliveredCopies(channelName: String, senderAddress: String, content: String, sinceMillis: Long): Int
+    /** The delivered rows matching a pending one, oldest first: same sender and content, sent, and
+     *  no older than [sinceMillis] (iOS e5a9b11 `settlePendingMessages`). Their ids, so one copy
+     *  settles one pending row (iOS b78fdb0). */
+    @Query("SELECT id FROM broadcast_messages WHERE channelName = :channelName AND senderAddress = :senderAddress AND content = :content AND deliveryStatus = 'sent' AND blockTimestamp >= :sinceMillis ORDER BY blockTimestamp ASC")
+    suspend fun deliveredCopyIds(channelName: String, senderAddress: String, content: String, sinceMillis: Long): List<String>
 
     @Query("DELETE FROM broadcast_messages WHERE channelName = :channelName AND blockTimestamp < :cutoffMillis")
     suspend fun deleteOlderThan(channelName: String, cutoffMillis: Long)

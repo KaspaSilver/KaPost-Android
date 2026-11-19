@@ -55,12 +55,10 @@ import javax.inject.Singleton
  * ([addressPrefix]). The manifest in use always matches the network the app runs on
  * ([networkName]).
  *
- * Callers: `KachatNamesRegistry` (reads) and `KachatNamesActions` (every operation).
- *
- * The flow every action follows ([KachatNamesActions]): [loadManifest], read the records it needs
- * ([KachatNamesRegistry]: the indexer's `/names/...` or the chain walker), confirm them with
- * [liveRegistryUtxo], [environment], build with [builder], show the plan's fee,
- * then [signAndSubmit] (iOS 24d673a).
+ * Callers: `KachatNamesRegistry` (reads) and `KachatNamesActions` (the profile record only:
+ * [profileRecordFee], [submitProfileRecord]). KaPost signs no registry transaction since iOS
+ * b78fdb0 (claiming and the market are KaPay's); the builder, signing and submit paths below
+ * ([builder], [environment], [signAndSubmit]) have no caller left in the app.
  */
 @Singleton
 class KachatNamesService @Inject constructor(
@@ -347,6 +345,15 @@ class KachatNamesService @Inject constructor(
             ?: throw ServiceError.NotOnChain("$txidHex:${outpoint.index}")
         if (!live.entry.script.contentEquals(script)) throw ServiceError.NotOnChain("$txidHex:${outpoint.index} with that state")
         return live
+    }
+
+    /** Every live UTXO holding [script], whatever transaction made it: a commit's salt makes its
+     *  script unique, so this finds a commit sent more than once by whichever send landed
+     *  (iOS 369794e `liveUtxos(script:)`). */
+    suspend fun liveUtxos(script: ByteArray): List<Utxo> {
+        requireLaunched()
+        val address = p2shAddress(script) ?: throw ServiceError.NotOnChain("a non-P2SH script")
+        return utxosByAddresses(listOf(address)).filter { it.entry.script.contentEquals(script) }
     }
 
     /** [liveUtxo] for a gap or name, which must also carry the registry covenant id. */

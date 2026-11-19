@@ -72,6 +72,10 @@ class KaPostsViewModel @Inject constructor(
     private val heldPosts: com.kachat.app.services.KaPostsHeldPostStore,
     private val indexerHealth: com.kachat.app.services.KaPostsIndexerHealth,
     private val liveChainFeed: com.kachat.app.services.KaPostsLiveChainFeed,
+    /** The follow list the last full chain read gave, and follows waiting for a key (iOS 369794e). */
+    private val followSync: com.kachat.app.services.KaPostsFollowSyncStore,
+    /** Popular's background sweep pages on Feed only off a metered network (iOS b78fdb0). */
+    private val meteredNetwork: com.kachat.app.services.MeteredNetwork,
     @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
 ) : ViewModel() {
 
@@ -123,7 +127,7 @@ class KaPostsViewModel @Inject constructor(
                 showActionToast(if (entry.onServer) scheduled else scheduledOnPhone, txId = "")
             } catch (e: Exception) {
                 Log.w(TAG, "Could not schedule a post", e)
-                showActionToast(couldNotSchedule.format(UserFacingError.message(e, "Could not schedule this post")), txId = "")
+                showActionToast(couldNotSchedule.format(UserFacingError.message(e, "Could not schedule this post")), txId = "", isFailure = true)
             }
         }
     }
@@ -197,6 +201,10 @@ class KaPostsViewModel @Inject constructor(
         private val SENDER_PROBE_BACKOFF_MS = longArrayOf(5_000L, 20_000L, 60_000L)
         private const val TAG = "KaPostsViewModel"
         const val UNDO_DELAY_MS = 5_000L
+
+        /** Mentioned people's real keys, by x-only key, for this run: a key never changes parity
+         *  (iOS 369794e `mentionKeyCache`). */
+        private val mentionKeyCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
         /** [actionError] for a reply to a post not on chain yet; the alert shows it translated
          *  (`R.string.kaposts_reply_not_on_network`, iOS 33095ac). */
@@ -348,6 +356,20 @@ class KaPostsViewModel @Inject constructor(
 
     /** The Popular tab's deep ranking sweep (see [deepenPopularRanking]); at most one at a time. */
     private var popularSweepJob: Job? = null
+    /** A sweep is running (from its start until its finally, a cancelled one too). */
+    private var popularSweepRunning = false
+    /** A sweep was asked for while one ran; it runs once that one stops (iOS b78fdb0
+     *  `PopularSweepState.rearmed`). */
+    private var popularSweepRearmed = false
+    /** This view model's feed (the Feed tab's, not the Profile's) is on screen (iOS
+     *  `PopularSweepState.feedOnScreen`): set by [setFeedOnScreen]. */
+    private var popularFeedOnScreen = false
+    /** The dock has the Feed tab selected (iOS `PopularSweepState.dockOnFeed`). */
+    private var popularDockOnFeed = true
+
+    /** True while Popular's sweep pulls older pages: Popular keeps its row order meanwhile
+     *  ([popularPosts]). */
+    private val _isDeepeningPopular = MutableStateFlow(false)
 
     /** True once this surface has been loaded at least once in this session. */
     private fun surfaceLoaded(key: String): Boolean = generations.containsKey(key)
@@ -596,11 +618,50 @@ class KaPostsViewModel @Inject constructor(
             .map { it.first }
     }
 
+    /** Popular's row order while its sweep runs (post ids, as on screen when it started). Read
+     *  and written only inside [popularPosts]' combine. */
+    @Volatile private var popularFrozenOrder: List<String>? = null
+    /** What [popularPosts] last produced: the order a sweep starting now freezes. */
+    @Volatile private var lastPopularResult: List<KaPostDraft> = emptyList()
+
     /** The Popular tab's rows: [visiblePosts] re-scored and re-sorted off the main thread, so a
      *  tab tap or a stream tick never ranks 300 posts during composition. */
-    val popularPosts: StateFlow<List<KaPostDraft>> = visiblePosts
-        .map { feedFor(FeedTab.POPULAR, it, emptyList()) }
-        .flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    //
+    // While the sweep pulls older pages, Popular keeps the order it has: re-ranking after each
+    // page reshuffled the list under the reader, which looked like the tab reloading. It re-ranks
+    // once when the sweep ends. Only the ORDER is kept, never the posts themselves: each pass
+    // maps the frozen ids through the current posts, so a like or delete acts on the live post
+    // and a muted or blocked author still leaves (iOS b78fdb0 `FeedMemo.frozenOrder`).
+    val popularPosts: StateFlow<List<KaPostDraft>> = combine(visiblePosts, _isDeepeningPopular) { posts, sweeping ->
+        val ranked = feedFor(FeedTab.POPULAR, posts, emptyList())
+        val result = if (sweeping) {
+            val order = popularFrozenOrder
+                ?: lastPopularResult.takeIf { it.isNotEmpty() }?.map { it.id }?.also { popularFrozenOrder = it }
+            if (order != null) inFrozenOrder(order, ranked) else ranked
+        } else {
+            popularFrozenOrder = null
+            ranked
+        }
+        lastPopularResult = result
+        result
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+
+    /** [current] (the live, filtered posts) laid out in [order]: posts that have gone (deleted,
+     *  muted, blocked) drop out, and any not in [order] follow at the end in their own order
+     *  (iOS `inFrozenOrder`). */
+    private fun inFrozenOrder(order: List<String>, current: List<KaPostDraft>): List<KaPostDraft> {
+        val byId = HashMap<String, KaPostDraft>(current.size)
+        for (post in current) byId.putIfAbsent(post.id, post)
+        val placed = HashSet<String>(current.size)
+        val result = ArrayList<KaPostDraft>(current.size)
+        for (id in order) {
+            val post = byId[id] ?: continue
+            if (placed.add(id)) result.add(post)
+        }
+        for (post in current) if (post.id !in placed) result.add(post)
+        return result
+    }
 
     /** The selected tab's feed - kept for callers that only care about what's on screen. */
     val visibleFeed: StateFlow<List<KaPostDraft>> = combine(
@@ -733,7 +794,18 @@ class KaPostsViewModel @Inject constructor(
      *  who switches language keeps the previous language's offers for the rest of the session. */
     private var consideredLanguage: String? = null
 
-    fun translationKey(post: KaPostDraft): String = post.remoteId ?: post.id
+    /**
+     * Stable per-post key: the txid where there is one, else the local id. An edited post adds a
+     * hash of its current text: keyed by txid alone, a translation made before the edit kept
+     * showing over the new text. The text rather than the edit time, since this phone's own copy
+     * and the indexer's carry different times for the same edit. (States live in memory only, so
+     * a per-run hash is enough; iOS 369794e.)
+     */
+    fun translationKey(post: KaPostDraft): String {
+        val base = post.remoteId ?: post.id
+        if (post.editedAt == null) return base
+        return base + "#" + post.text.hashCode().toString(36)
+    }
 
     /** Identifies the post's language once, and records it if it is worth offering to translate. */
     fun considerTranslation(post: KaPostDraft) {
@@ -763,7 +835,10 @@ class KaPostsViewModel @Inject constructor(
         _translations.value = _translations.value + (key to PostTranslationService.TranslationState.Translating)
         viewModelScope.launch {
             val next = try {
-                val result = translationService.translate(post.text, post.remoteId)
+                // An edited post's key isn't its bare txid. The server caches by txid for good, so
+                // it would answer with the text before the edit: sent with no id, it is translated
+                // fresh, uncached, until the server keys its cache by edit too (iOS 369794e).
+                val result = translationService.translate(post.text, post.remoteId?.takeIf { it == key })
                 PostTranslationService.TranslationState.Translated(
                     text = result.text,
                     // The server's detection is what the line reports; our local guess only
@@ -828,11 +903,13 @@ class KaPostsViewModel @Inject constructor(
      * included, no mentions) with the typical single input and the single self output a
      * zero-amount self-send actually has - mirrors iOS's KaPostsAPIClient.estimatePostFee.
      */
-    fun estimatePostFeeSompi(text: String): Long {
+    fun estimatePostFeeSompi(text: String): Long? {
         val b64 = com.kachat.app.util.KaPostsProtocol.b64(com.kachat.app.util.KaPostsProtocol.KACHAT_MARKER + text)
         val payload = com.kachat.app.util.KaPostsProtocol.postPayload(
             pubkey = "0".repeat(66), signature = "0".repeat(128), b64Message = b64, mentionsJson = "[]",
         )
+        // No fee for a post no node would take (iOS 369794e).
+        if (!KaPostsService.payloadFitsOneTransaction(payload)) return null
         val mass = com.kachat.app.util.KaspaMass.calculateMass(
             numInputs = 1,
             outputScriptLens = listOf(34),
@@ -869,8 +946,10 @@ class KaPostsViewModel @Inject constructor(
          * Null for the reactions (like / dislike / repost) - nothing was composed.
          */
         val draftText: String? = null,
-        /** The post a quote was aimed at, so Undo reopens the quote composer still on it. */
-        val quoteTargetId: String? = null,
+        /** The post a quote was aimed at, so Undo reopens the quote composer still on it. Kept
+         *  whole (iOS `quoteTarget`): looked up by id it may have left memory, and the composer
+         *  would reopen as a plain post. */
+        val quoteTarget: KaPostDraft? = null,
         /**
          * Every segment of a thread, in order, so Undo rebuilds the whole chain and not just
          * its first post. The composer submits `threadSegments + [current text]`, so restoring
@@ -888,7 +967,7 @@ class KaPostsViewModel @Inject constructor(
     /** A draft handed back by Undo, for whichever composer is about to reopen. */
     data class RestoredDraft(
         val text: String,
-        val quoteTargetId: String?,
+        val quoteTarget: KaPostDraft?,
         val isComment: Boolean,
         /** Segments to stack ABOVE [text] in the composer; empty for a single post. */
         val threadSegments: List<String> = emptyList(),
@@ -923,7 +1002,7 @@ class KaPostsViewModel @Inject constructor(
     /** KaPost Settings > Cool down before post: off, [scheduleUndoable] runs the action at once
      *  and no Undo toast shows (iOS KaPosts 4c0d5a8 `KaPostsActionScheduler.cooldownEnabled`). */
     private val cooldownEnabled = settings.kaPostsCooldownEnabled
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private fun scheduleUndoable(key: String, action: suspend () -> Unit) {
         cancelUndoable(key)
@@ -953,19 +1032,27 @@ class KaPostsViewModel @Inject constructor(
     /** The same capsule the in-app actions use, for a tip that went out without a sheet. */
     fun showTipToast(message: String, txId: String, isFailure: Boolean = false) = showActionToast(message, txId, isFailure)
 
+    /** The on-chain confirmation for ~4 s, or what didn't go through for ~6 s (a reason takes
+     *  longer to read, iOS b78fdb0). [message] is shown as given, so callers pass it already
+     *  localized. */
     private fun showActionToast(message: String, txId: String, isFailure: Boolean = false) {
         val toast = ActionToast(message = message, txId = txId, isFailure = isFailure)
         _actionToast.value = toast
         viewModelScope.launch {
-            delay(4_000)
+            delay(if (isFailure) 6_000 else 4_000)
             if (_actionToast.value?.id == toast.id) _actionToast.value = null
         }
     }
 
+    /** "<what failed>: <why>", for a failure toast. [action] is already localized; the colon and
+     *  its spacing come from the translation (iOS b78fdb0 `failureText`, "%@: %@"). */
+    private fun failureText(action: String, e: Exception): String =
+        appContext.getString(R.string.feed54_failure_format, action, UserFacingError.message(e, "Something went wrong"))
+
     /** A shared/linked post that nothing could resolve: the same capsule, with the explorer link
      *  so the reader can at least see the transaction (iOS). */
     fun showPostNotFound(txId: String) {
-        showActionToast("Post not found - it may be older than the current feed", txId)
+        showActionToast(appContext.getString(R.string.feed54_post_not_found), txId)
     }
 
     /** Memory, then the indexer, then the chain - the order every reopened draft resolves its
@@ -980,9 +1067,13 @@ class KaPostsViewModel @Inject constructor(
         val tab = _selectedFeed.value
         val key = feedKey(tab)
         if (!surfaceLoaded(key) || feedFlow(tab).value.isEmpty() || !isLoadFresh(pageOneLoadedAt[key] ?: 0L)) {
+            // A load from page one starts Popular's sweep itself once it is in.
             viewModelScope.launch { loadFeed(tab) }
         } else {
             checkForNewPosts(tab)
+            // Popular ranked in the background (on Wi-Fi, or with Popular open), so switching to
+            // it shows the finished order (iOS b78fdb0).
+            deepenPopularRanking()
         }
     }
 
@@ -1232,8 +1323,7 @@ class KaPostsViewModel @Inject constructor(
             if (needle.isEmpty()) return@combine emptyList()
             scanned.filter { post ->
                 post.posterAddress !in hidden &&
-                    (post.text.lowercase().contains(needle) ||
-                        posterDisplayName(post.posterAddress).lowercase().contains(needle))
+                    (post.text.lowercase().contains(needle) || searchNameMatches(post.posterAddress, needle))
             }
         }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -1247,13 +1337,31 @@ class KaPostsViewModel @Inject constructor(
                 .groupingBy { it.posterAddress }
                 .eachCount()
                 .filter { (address, _) ->
-                    posterDisplayName(address).lowercase().contains(needle) ||
-                        address.lowercase().contains(needle)
+                    searchNameMatches(address, needle) || address.lowercase().contains(needle)
                 }
                 .map { (address, count) -> SearchPerson(address, count) }
                 .sortedWith(compareByDescending<SearchPerson> { it.postCount }
                     .thenBy { posterDisplayName(it.address) })
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * Whether the search [needle] finds this author by name. A `.kachat` name matches in either
+     * form, whatever Show .kachat Endings shows: its label ("alice") or written out
+     * ("alice.kachat"). The ending on its own doesn't count, or "kachat" would find every named
+     * author (iOS 369794e `nameMatches`).
+     */
+    private fun searchNameMatches(address: String, needle: String): Boolean {
+        val shown = posterDisplayName(address)
+        val rawLabel = com.kachat.app.services.kachatnames.KachatNamesRegistry.cachedIdentityOf(address)?.label
+            ?.takeIf { it.isNotEmpty() }
+            ?: return shown.lowercase().contains(needle)
+        val label = rawLabel.lowercase()
+        if (label.contains(needle)) return true
+        if (needle.contains('.') && "$label.kachat".contains(needle)) return true
+        // A name given to the contact on this device is shown in its place, and searched too.
+        if (shown == com.kachat.app.models.KachatNameLabel.display(rawLabel)) return false
+        return shown.lowercase().contains(needle)
+    }
 
     /** Reads another stretch of the global feed into the searchable set. */
     fun searchLoadMore() {
@@ -1330,9 +1438,11 @@ class KaPostsViewModel @Inject constructor(
      * row is the most popular post in a real window of history rather than the most popular of
      * whatever page one happened to contain.
      *
-     * Runs only while Popular is the selected tab, and re-checks the surface generation between
-     * passes, so a tab switch, a refresh or an account change stops it instead of paging a feed
-     * the user has left.
+     * Runs with Popular open, and in the background on Feed (both show the global feed) only on
+     * an unmetered network ([popularSweepAllowed]), so on Wi-Fi Popular is usually ranked before
+     * it is opened. Following, leaving the Feed tab or this screen, a refresh or an account change
+     * stops it (checked between passes); a refresh starts it again. Feed is newest first, so the
+     * older pages this adds land below the reader (iOS b78fdb0).
      */
     // MARK: - Load gates (iOS FeedLoadGates)
     //
@@ -1358,51 +1468,102 @@ class KaPostsViewModel @Inject constructor(
         isLoadFresh(myProfileLoadedAt) && KaPostsService.ownActivityAt < myProfileLoadedAt
 
     private fun deepenPopularRanking() {
-        val key = PAGE_GLOBAL_FEED
-        if (popularSweepJob?.isActive == true) return
+        if (!popularSweepAllowed()) return
+        // One sweep at a time. A call that lands while one runs (a refresh mid-sweep) is kept and
+        // run once that sweep stops, since the refresh threw away the window it was ranking.
+        if (popularSweepRunning) {
+            popularSweepRearmed = true
+            return
+        }
         // A heavily-filtered stretch of history never reaches the ranking depth, and without
         // this every return to the tab re-spent the full request budget chasing it.
         if (isLoadFresh(popularSweptAt)) return
         popularSweptAt = System.currentTimeMillis()
+        popularSweepRunning = true
+        _isDeepeningPopular.value = true
         popularSweepJob = viewModelScope.launch {
-            var passes = 0
-            while (
-                _globalPosts.value.size < POPULAR_RANKING_DEPTH &&
-                passes < POPULAR_SWEEP_MAX_PASSES &&
-                _selectedFeed.value == FeedTab.POPULAR
-            ) {
-                passes++
-                val generation = generations[key] ?: 0
-                val state = pagingState(key)
-                if (state.isLoadingMore || !state.hasMore || _isLoadingFeed.value) return@launch
-                updatePaging(key) { it.copy(isLoadingMore = true, error = null) }
-                val result = accumulate(
-                    startCursor = state.cursor,
-                    target = POPULAR_RANKING_DEPTH,
-                    seenIds = _globalPosts.value.mapNotNull { it.remoteId }.toSet(),
-                    maxRequests = POPULAR_SWEEP_REQUESTS_PER_PASS,
-                    idOf = KPost::id,
-                    map = { mapRemotePost(it) },
-                    isVisible = { isFeedRowVisible(FeedTab.POPULAR, it) },
-                    fetch = { before -> fetchFeedPage(FeedTab.POPULAR, before) },
-                )
-                if (generations[key] != generation) return@launch
-                if (result.items.isNotEmpty()) {
-                    _globalPosts.value = appendUnique(_globalPosts.value, result.items)
+            try {
+                // Stopped because the reader left (or Feed went onto a metered network): the
+                // window isn't done, so the next visit carries on from the pages already in,
+                // without waiting out the gate.
+                if (runPopularSweep()) popularSweptAt = 0L
+            } finally {
+                popularSweepRunning = false
+                _isDeepeningPopular.value = false
+                if (popularSweepRearmed) {
+                    popularSweepRearmed = false
+                    viewModelScope.launch { deepenPopularRanking() }
                 }
-                updatePaging(key) {
-                    it.copy(
-                        cursor = result.cursor,
-                        hasMore = if (result.error != null) it.hasMore else result.hasMore,
-                        isLoadingMore = false,
-                        error = result.error,
-                    )
-                }
-                // A pass that added nothing (everything filtered out, or the fetch failed) would
-                // otherwise spin against the same cursor.
-                if (result.items.isEmpty() || result.error != null || !result.hasMore) return@launch
             }
         }
+    }
+
+    /** The sweep's passes. True when it stopped because it may no longer page
+     *  ([popularSweepAllowed]) rather than because it finished. */
+    private suspend fun runPopularSweep(): Boolean {
+        val key = PAGE_GLOBAL_FEED
+        var passes = 0
+        while (_globalPosts.value.size < POPULAR_RANKING_DEPTH && passes < POPULAR_SWEEP_MAX_PASSES) {
+            passes++
+            // Following, the Feed tab or this screen left, or Feed on a metered network: stop.
+            if (!popularSweepAllowed()) return true
+            val generation = generations[key] ?: 0
+            val state = pagingState(key)
+            if (state.isLoadingMore || !state.hasMore || state.stalled || state.error != null || _isLoadingFeed.value) return false
+            updatePaging(key) { it.copy(isLoadingMore = true, error = null) }
+            val result = accumulate(
+                startCursor = state.cursor,
+                target = POPULAR_RANKING_DEPTH,
+                seenIds = _globalPosts.value.mapNotNull { it.remoteId }.toSet(),
+                maxRequests = POPULAR_SWEEP_REQUESTS_PER_PASS,
+                idOf = KPost::id,
+                map = { mapRemotePost(it) },
+                isVisible = { isFeedRowVisible(FeedTab.POPULAR, it) },
+                fetch = { before -> fetchFeedPage(FeedTab.POPULAR, before) },
+            )
+            // Tab switch, refresh or account change landed mid-pass: continuing would page a
+            // feed the user has left.
+            if (generations[key] != generation) return false
+            if (result.items.isNotEmpty()) {
+                _globalPosts.value = appendUnique(_globalPosts.value, result.items)
+            }
+            updatePaging(key) {
+                it.copy(
+                    cursor = result.cursor,
+                    hasMore = if (result.error != null) it.hasMore else result.hasMore,
+                    isLoadingMore = false,
+                    error = result.error,
+                )
+            }
+            // A pass that added nothing (everything filtered out, or the fetch failed) would
+            // otherwise spin against the same cursor.
+            if (result.items.isEmpty() || result.error != null || !result.hasMore) return false
+        }
+        return false
+    }
+
+    /**
+     * Whether Popular's sweep may page now: only while this view model's feed is on screen in the
+     * Feed tab and showing the global feed. With Popular open it always may; on Feed (the same
+     * posts, ranked in the background) only on Wi-Fi or another unmetered network, so opening
+     * Feed on cellular never spends a sweep (iOS b78fdb0 `popularSweepAllowed`).
+     */
+    private fun popularSweepAllowed(): Boolean {
+        if (!popularFeedOnScreen || !popularDockOnFeed) return false
+        val tab = _selectedFeed.value
+        if (tab == FeedTab.FOLLOWING) return false
+        return tab == FeedTab.POPULAR || !meteredNetwork.isMetered
+    }
+
+    /** The Feed tab's feed came on screen or left it (iOS onAppear / onDisappear). Only the Feed
+     *  tab's screen calls this, so the Profile's view model never sweeps. */
+    fun setFeedOnScreen(onScreen: Boolean) {
+        popularFeedOnScreen = onScreen
+    }
+
+    /** The dock's selected tab is (or isn't) Feed (iOS `KaPostsDockRouter.selectedTab`). */
+    fun setDockOnFeed(onFeed: Boolean) {
+        popularDockOnFeed = onFeed
     }
 
     fun selectFeed(tab: FeedTab) {
@@ -1410,12 +1571,14 @@ class KaPostsViewModel @Inject constructor(
         // changes): carried over, its posts were spliced into the other tab.
         if (tab != _selectedFeed.value) _pendingNewPosts.value = emptyList()
         _selectedFeed.value = tab
+        // Popular still needs its window deepened before its order is meaningful, and Feed ranks
+        // it in the background on an unmetered network ([popularSweepAllowed] decides).
         if (!surfaceLoaded(feedKey(tab))) {
             viewModelScope.launch {
                 loadFeed(tab)
-                if (tab == FeedTab.POPULAR) deepenPopularRanking()
+                deepenPopularRanking()
             }
-        } else if (tab == FeedTab.POPULAR) {
+        } else {
             deepenPopularRanking()
         }
     }
@@ -1432,10 +1595,21 @@ class KaPostsViewModel @Inject constructor(
      * The local set is what every Follow button and the Following feed filter read, and it
      * lives only in DataStore — so an upgrade/reinstall that clears app data left users
      * "following 0 friends" with Follow buttons beside people they already follow on-chain.
-     * Chain entries are only ever ADDED (never removed), so a just-tapped local unfollow the
-     * indexer hasn't caught up on can't be resurrected mid-session.
+     * A follow is removed only when a full read stops listing what the previous one listed, and
+     * this session's own taps always win, so a just-tapped follow or unfollow the indexer hasn't
+     * caught up on holds (iOS 369794e).
      */
     private var followingChainSyncStarted = false
+
+    /** Addresses followed or unfollowed here this session, for the current account: their state
+     *  here wins over a chain read that may not list the transaction yet (iOS 369794e). */
+    private val followsToggledThisSession = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** The keys the chain's follow list named, by address (from the last sync): an unfollow
+     *  signs the key the follow named. */
+    @Volatile
+    private var followChainKeys: Map<String, String> = emptyMap()
+
     fun syncFollowingFromChain() {
         if (followingChainSyncStarted) return
         followingChainSyncStarted = true
@@ -1453,27 +1627,86 @@ class KaPostsViewModel @Inject constructor(
                     return@launch
                 }
                 val chain = mutableSetOf<String>()
+                val keys = mutableMapOf<String, String>()
+                var complete = false
                 var cursor: String? = null
                 var pagesLeft = 10 // up to 10 pages of 100 — far beyond any real follow list (iOS)
                 while (pagesLeft-- > 0) {
                     val page = kaPostsService.fetchFollowListPage(pubkey, followers = false, FOLLOW_PAGE_LIMIT, cursor)
                     page.items.forEach { user ->
-                        KaPostsService.kaspaAddressFromPubkey(user.userPublicKey)?.let { chain += it }
+                        KaPostsService.kaspaAddressFromPubkey(user.userPublicKey)?.let {
+                            chain += it
+                            keys[it] = user.userPublicKey
+                        }
                     }
                     cursor = page.cursor
-                    if (!page.hasMore || cursor == null) break
+                    if (!page.hasMore || cursor == null) {
+                        complete = true
+                        break
+                    }
                 }
+                // The account may have switched while the pages loaded; this graph belongs to the
+                // one that asked for it (iOS).
+                if (myAddress() != walletAddress) return@launch
+                followChainKeys = keys
                 // Read + write the CAPTURED account's scoped set (not following.value, which
                 // tracks whatever account is active by the time the fetch loop finishes).
                 val local = settings.kapostsFollowing(walletAddress).first()
-                val merged = local + chain - walletAddress
+                val merged = (local + chain).toMutableSet()
+                // Only adding left an unfollow made on another device or in KaChat as
+                // "Following" here for good. What the last full read listed and this one doesn't
+                // was unfollowed elsewhere; a follow only ever on this phone was never listed,
+                // so it stays. Only from a full read: a cut-off list proves nothing (iOS 369794e).
+                if (complete) {
+                    followSync.lastChainList(walletAddress)?.let { last -> merged -= (last - chain) }
+                    followSync.setLastChainList(walletAddress, chain)
+                }
+                // This session's own taps win: the chain may not list them yet.
+                for (address in followsToggledThisSession.toList()) {
+                    if (address in local) merged += address else merged -= address
+                }
+                merged -= walletAddress
                 if (merged != local) settings.setKapostsFollowing(walletAddress, merged)
+                submitPendingFollows(walletAddress, listedOnChain = chain)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                followingChainSyncStarted = false
+                throw e
             } catch (e: Exception) {
                 followingChainSyncStarted = false // network miss — retry on the next feed load
                 Log.w(TAG, "Follow-set chain sync failed", e)
             }
         }
     }
+
+    /** Puts waiting follows on chain once the person's key can be read from their posts (iOS
+     *  369794e `submitPendingFollows`). */
+    private suspend fun submitPendingFollows(walletAddress: String, listedOnChain: Set<String>) {
+        for (address in followSync.pendingFollows(walletAddress).sorted()) {
+            if (myAddress() != walletAddress) return
+            // Unfollowed since, or on chain already (made elsewhere): nothing to send.
+            if (address !in settings.kapostsFollowing(walletAddress).first() || address in listedOnChain) {
+                followSync.setAwaitingKey(walletAddress, address, following = false)
+                continue
+            }
+            val key = resolveKaPostsPubkey(address) ?: continue
+            if (myAddress() != walletAddress || address !in settings.kapostsFollowing(walletAddress).first()) continue
+            try {
+                kaPostsService.submitFollow(true, key)
+                followSync.setAwaitingKey(walletAddress, address, following = false)
+            } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
+                // It may have landed: never sent twice.
+                followSync.setAwaitingKey(walletAddress, address, following = false)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Waiting follow submit failed", e)
+            }
+        }
+    }
+
+    /** Set once [startFeedWork] has run: this view model shows a feed. */
+    @Volatile
+    private var feedWorkStarted = false
 
     init {
         // Before anything else: open with what KNS told us last time this app ran, rather than
@@ -1486,6 +1719,8 @@ class KaPostsViewModel @Inject constructor(
             // persisted key itself via flatMapLatest).
             walletManager.activeAddressFlow.drop(1).collect {
                 followingChainSyncStarted = false
+                followsToggledThisSession.clear()
+                followChainKeys = emptyMap()
                 // One account's reading history must not linger on screen under another's feed.
                 resetTranslations()
                 // Account switch: nothing loaded belongs to the new identity.
@@ -1496,8 +1731,9 @@ class KaPostsViewModel @Inject constructor(
                 undoJobs.clear()
                 _undoDeadlines.value = emptyMap()
                 _undoToasts.value = emptyList()
-                // Posts an earlier session of this account left unfinished are drafts now.
-                heldPosts.recover()
+                // Posts an earlier session of this account left unfinished are drafts now -
+                // by a feed's view model only, not the Notifications tab's (iOS).
+                if (feedWorkStarted) heldPosts.recover()
                 pendingEditOriginals.clear()
                 // Every list and cursor belongs to the old identity (K responses are decorated per
                 // requester): drop them all and start over (iOS KaPostsView.swift onChange of the
@@ -1505,6 +1741,7 @@ class KaPostsViewModel @Inject constructor(
                 // is gone, and a new one never reuses a number.
                 loadMoreJobs.values.forEach { it.cancel() }
                 loadMoreJobs.clear()
+                popularSweepRearmed = false
                 popularSweepJob?.cancel()
                 generations.clear()
                 // The old account's load no longer clears the spinner (its generation is gone),
@@ -1526,8 +1763,20 @@ class KaPostsViewModel @Inject constructor(
         // One-time cleanup of the legacy GLOBAL follow set, which leaked one account's follows
         // into every other account on this device (fresh accounts started with them).
         viewModelScope.launch { settings.clearLegacyKapostsFollowing() }
+    }
+
+    /**
+     * The work only a view model that shows a feed does: the Feed and Profile tabs'
+     * `KaPostsScreen` call it, the Notifications tab's own instance doesn't, so it never reloads
+     * a feed or merges the chain feed nobody sees (iOS does this only in the Feed and Profile
+     * `KaPostsView`). Runs once per view model.
+     */
+    fun startFeedWork() {
+        if (feedWorkStarted) return
+        feedWorkStarted = true
         // New posts off the block stream while the indexer is down (iOS ee5ec98).
         viewModelScope.launch { liveChainFeed.posts.collect { mergeLivePosts(it) } }
+        viewModelScope.launch { liveChainFeed.amendments.collect { applyLiveAmendments(it) } }
         // The indexer's back: the real feed, with counts and everything it missed.
         viewModelScope.launch {
             indexerHealth.availabilityChanged.collect {
@@ -1577,6 +1826,47 @@ class KaPostsViewModel @Inject constructor(
     }
 
     /**
+     * Deletes and edits the block stream saw while the indexer is down, applied to the feeds on
+     * screen (a saved page): without this a post deleted during the outage stayed until the
+     * indexer came back. Same rule as [com.kachat.app.services.KaPostsLiveChainFeed.amended]:
+     * only the post's own key counts, and an edit only inside the edit window and never on a poll
+     * (iOS 369794e).
+     */
+    private fun applyLiveAmendments(amendments: Map<String, com.kachat.app.services.KaPostsLiveChainFeed.LiveAmendment>) {
+        if (amendments.isEmpty()) return
+        fun amendmentOf(post: KaPostDraft): com.kachat.app.services.KaPostsLiveChainFeed.LiveAmendment? {
+            val id = post.remoteId ?: return null
+            val pubkey = post.posterPubkey ?: return null
+            return amendments[com.kachat.app.services.KaPostsLiveChainFeed.amendmentKey(id, pubkey)]
+        }
+        fun apply(flow: MutableStateFlow<List<KaPostDraft>>) {
+            var changed = false
+            val updated = flow.value.mapNotNull { post ->
+                val amendment = amendmentOf(post) ?: return@mapNotNull post
+                val edit = amendment.edit
+                if (edit == null) {
+                    changed = true
+                    return@mapNotNull null
+                }
+                if (post.poll != null) return@mapNotNull post
+                val sinceOriginal = edit.timestampMs - post.timestamp
+                if (sinceOriginal < 0 || sinceOriginal > KaPostsService.EDIT_WINDOW_MS) return@mapNotNull post
+                if (edit.timestampMs <= (post.editedAt ?: Long.MIN_VALUE)) return@mapNotNull post
+                val text = com.kachat.app.util.KaPostsProtocol.decodeB64(edit.b64) ?: return@mapNotNull post
+                changed = true
+                post.copy(
+                    text = com.kachat.app.util.KaPostsProtocol.stripMarker(text),
+                    editedAt = edit.timestampMs,
+                    mentionedPubkeys = edit.mentions,
+                )
+            }
+            if (changed) flow.value = updated
+        }
+        apply(_globalPosts)
+        apply(_followingPosts)
+    }
+
+    /**
      * A page-one reset replaces its rows, whose comment trees only this device has: this carries
      * over the replies that aren't on chain yet, pending or failed, with the replies above them
      * (iOS ee5ec98).
@@ -1610,6 +1900,7 @@ class KaPostsViewModel @Inject constructor(
             _isLoadingFeed.value = true
             _feedError.value = null
         }
+        var restartPopularSweep = false
         try {
             val result = accumulate(
                 startCursor = null,
@@ -1634,6 +1925,9 @@ class KaPostsViewModel @Inject constructor(
                     // window it ranked was just thrown away.
                     feedLoadedAt = System.currentTimeMillis()
                     popularSweptAt = 0L
+                    // ...and starts it again once this load is done (after the one running, if
+                    // any - see [deepenPopularRanking]; iOS b78fdb0).
+                    restartPopularSweep = true
                 }
             }
             updatePaging(key) {
@@ -1650,6 +1944,7 @@ class KaPostsViewModel @Inject constructor(
                 updatePaging(key) { it.copy(isLoadingMore = false) }
             }
         }
+        if (restartPopularSweep && generations[key] == generation) deepenPopularRanking()
     }
 
     /**
@@ -1839,7 +2134,7 @@ class KaPostsViewModel @Inject constructor(
         _localPosts.value = listOf(newPost) + _localPosts.value
         heldPosts.hold(newPost.id, text)
         val key = "post:${newPost.id}"
-        showUndoToast(UndoToast(key, newPost.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Posting", draftText = text))
+        showUndoToast(UndoToast(key, newPost.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_posting), draftText = text))
         scheduleUndoable(key) {
             clearUndoToast(key)
             submitScheduledPost(newPost.id, text)
@@ -1881,7 +2176,7 @@ class KaPostsViewModel @Inject constructor(
             val segments = toast.draftSegments.orEmpty()
             _restoredDraft.value = RestoredDraft(
                 text = text,
-                quoteTargetId = toast.quoteTargetId,
+                quoteTarget = toast.quoteTarget,
                 isComment = toast.key.startsWith("comment:"),
                 threadSegments = if (segments.size > 1) segments.dropLast(1) else emptyList(),
                 commentParent = toast.replyParent,
@@ -1906,12 +2201,17 @@ class KaPostsViewModel @Inject constructor(
         if (post.editTimeRemainingMs == null) return
         if (post.posterAddress != myAddress()) return
 
-        pendingEditOriginals[post.id] = post.text to post.editedAt
+        val key = "edit:${post.id}"
+        // A second edit while the first is still held replaces it unsent (same key). Undo or a
+        // failure must then go back to the text before the first edit, the one on chain, not to
+        // the first edit's text, which never left the phone (iOS 369794e).
+        if (!_undoDeadlines.value.containsKey(key) || !pendingEditOriginals.containsKey(post.id)) {
+            pendingEditOriginals[post.id] = post.text to post.editedAt
+        }
         mutateEverywhere(post.id) {
             it.copy(text = trimmed, editedAt = System.currentTimeMillis(), deliveryStatus = KaPostDraft.Delivery.PENDING)
         }
-        val key = "edit:${post.id}"
-        showUndoToast(UndoToast(key, post.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Saving edit"))
+        showUndoToast(UndoToast(key, post.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_saving_edit)))
         scheduleUndoable(key) {
             clearUndoToast(key)
             val original = pendingEditOriginals.remove(post.id)
@@ -1923,7 +2223,7 @@ class KaPostsViewModel @Inject constructor(
             } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
                 // It may have landed, so the new text stays up, marked as unconfirmed (iOS ee5ec98).
                 mutateEverywhere(post.id) { it.copy(deliveryStatus = KaPostDraft.Delivery.UNCONFIRMED) }
-                _actionError.value = com.kachat.app.services.SendOutcomeUnknownException.MESSAGE
+                _actionError.value = appContext.getString(R.string.l53_send_outcome_unknown)
                 Log.w(TAG, "Edit outcome unknown", e)
             } catch (e: Exception) {
                 mutateEverywhere(post.id) {
@@ -1933,7 +2233,7 @@ class KaPostsViewModel @Inject constructor(
                         deliveryStatus = KaPostDraft.Delivery.SENT,
                     )
                 }
-                _actionError.value = "Couldn't save the edit: ${UserFacingError.message(e, "Something went wrong")}"
+                _actionError.value = appContext.getString(R.string.kaposts_couldnt_save_edit, UserFacingError.message(e, "Something went wrong"))
                 Log.w(TAG, "Edit submit failed", e)
             }
         }
@@ -1958,24 +2258,31 @@ class KaPostsViewModel @Inject constructor(
         val remoteId = post.remoteId ?: return
         if (post.deliveryStatus != KaPostDraft.Delivery.SENT || post.pendingDeletion) return
         if (post.posterAddress != myAddress()) return
+        // A second Delete while this post's delete is going out would send a second one (iOS
+        // b78fdb0 `KaPostsActionHolds`).
+        if (KaPostsActionHolds.isDeleting(remoteId)) return
 
         mutateEverywhere(post.id) { it.copy(pendingDeletion = true) }
         val key = "delete:${post.id}"
-        showUndoToast(UndoToast(key, post.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Deleting post"))
+        showUndoToast(UndoToast(key, post.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_deleting_post)))
         scheduleUndoable(key) {
             clearUndoToast(key)
+            if (KaPostsActionHolds.isDeleting(remoteId)) return@scheduleUndoable
+            KaPostsActionHolds.beginDelete(remoteId)
             try {
                 kaPostsService.submitDelete(remoteId)
                 removePostEverywhere(post.id, remoteId)
             } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
                 // It may have landed: the card stays dimmed, with no second Delete on offer.
                 mutateEverywhere(post.id) { it.copy(deliveryStatus = KaPostDraft.Delivery.UNCONFIRMED) }
-                _actionError.value = com.kachat.app.services.SendOutcomeUnknownException.MESSAGE
+                _actionError.value = appContext.getString(R.string.l53_send_outcome_unknown)
                 Log.w(TAG, "Delete outcome unknown", e)
             } catch (e: Exception) {
                 mutateEverywhere(post.id) { it.copy(pendingDeletion = false) }
-                _actionError.value = "Couldn't delete the post: ${UserFacingError.message(e, "Something went wrong")}"
+                _actionError.value = appContext.getString(R.string.kaposts_couldnt_delete_post, UserFacingError.message(e, "Something went wrong"))
                 Log.w(TAG, "Delete submit failed", e)
+            } finally {
+                KaPostsActionHolds.endDelete(remoteId)
             }
         }
     }
@@ -2038,7 +2345,7 @@ class KaPostsViewModel @Inject constructor(
         // A draft has no poll, so the options are kept as lines of its text.
         heldPosts.hold(newPost.id, (listOf(question) + clean.map { "- $it" }).joinToString("\n"))
         val key = "post:${newPost.id}"
-        showUndoToast(UndoToast(key, newPost.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Posting poll", draftText = question, pollOptions = clean))
+        showUndoToast(UndoToast(key, newPost.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_posting_poll), draftText = question, pollOptions = clean))
         scheduleUndoable(key) {
             clearUndoToast(key)
             try {
@@ -2053,44 +2360,36 @@ class KaPostsViewModel @Inject constructor(
     }
 
     /**
-     * Votes in a poll. The card takes the choice at once (one vote per person, so a second vote
-     * moves the first), behind the usual five seconds, and then one transaction carries it. The
-     * indexer's own numbers replace the optimistic ones as soon as it has counted the vote.
+     * Votes in a poll behind the same five-second Undo as every other action; the vote is one
+     * transaction (KAPOSTS_INDEXER.md section 5.9). The card shows a clock while the countdown
+     * runs and takes the new numbers only once the vote has gone out (iOS `votePoll`). A switch
+     * of account inside the five seconds stops it in [scheduleUndoable].
      */
     fun votePoll(post: KaPostDraft, optionIndex: Int) {
         val poll = post.poll ?: return
         val remoteId = post.remoteId ?: return
         if (poll.isClosed || optionIndex !in poll.options.indices) return
-        val previous = poll.myVote
-        if (previous == optionIndex) return
-        mutateEverywhere(post.id) { current ->
-            val live = current.poll ?: return@mutateEverywhere current
-            val counts = live.counts.toMutableList()
-            if (previous != null && previous in counts.indices) counts[previous] = (counts[previous] - 1).coerceAtLeast(0)
-            if (optionIndex in counts.indices) counts[optionIndex] = counts[optionIndex] + 1
-            current.copy(poll = live.copy(counts = counts, myVote = optionIndex))
-        }
         val key = "pollvote:${post.id}"
+        showUndoToast(UndoToast(key, post.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_voting)))
         scheduleUndoable(key) {
+            clearUndoToast(key)
             try {
-                kaPostsService.submitPollVote(remoteId, optionIndex)
-                refreshPoll(post.id, remoteId)
-            } catch (e: Exception) {
-                Log.w(TAG, "Poll vote failed", e)
-                // It may have landed: the card keeps the vote (iOS ee5ec98).
-                if (e is com.kachat.app.services.SendOutcomeUnknownException) return@scheduleUndoable
-                showActionToast(
-                    "${appContext.getString(R.string.kaposts_couldnt_post_vote)}: ${UserFacingError.message(e, "Something went wrong")}",
-                    txId = "", isFailure = true,
-                )
-                // Put the card back the way it was: the vote never reached the chain.
+                val txId = kaPostsService.submitPollVote(remoteId, optionIndex)
+                // One vote per person, so a second vote moves the first.
                 mutateEverywhere(post.id) { current ->
                     val live = current.poll ?: return@mutateEverywhere current
                     val counts = live.counts.toMutableList()
-                    if (optionIndex in counts.indices) counts[optionIndex] = (counts[optionIndex] - 1).coerceAtLeast(0)
-                    if (previous != null && previous in counts.indices) counts[previous] = counts[previous] + 1
-                    current.copy(poll = live.copy(counts = counts, myVote = previous))
+                    val previous = live.myVote
+                    if (previous != null && previous in counts.indices) counts[previous] = (counts[previous] - 1).coerceAtLeast(0)
+                    if (optionIndex in counts.indices) counts[optionIndex] = counts[optionIndex] + 1
+                    current.copy(poll = live.copy(counts = counts, myVote = optionIndex))
                 }
+                showActionToast(appContext.getString(R.string.feed54_vote_posted), txId)
+            } catch (e: Exception) {
+                // The card only moves once the vote has gone out, so there's nothing to undo.
+                Log.w(TAG, "Poll vote failed", e)
+                if (e is com.kachat.app.services.SendOutcomeUnknownException) return@scheduleUndoable
+                showActionToast(failureText(appContext.getString(R.string.kaposts_couldnt_post_vote), e), txId = "", isFailure = true)
             }
         }
     }
@@ -2172,12 +2471,13 @@ class KaPostsViewModel @Inject constructor(
     private suspend fun mentionAddress(token: String, signed: List<String> = emptyList()): String? {
         val results = nameServices.resolveEverywhere(token)
         if (signed.isNotEmpty()) {
-            val keys = signed.mapTo(HashSet()) { it.lowercase() }
+            // On the x-only key: an address gives only x, and the signed key may start 03.
+            val keys = signed.mapTo(HashSet()) { com.kachat.app.services.KaPostsChainPosts.xOnly(it) }
             val typed = com.kachat.app.services.NameServiceTLD.splitTypedName(token).second
             val ordered = results.filter { it.tld == typed } + results.filter { it.tld != typed }
             val match = ordered.firstOrNull { r ->
                 val pk = r.address?.let { KaPostsService.kapostPubkeyFromAddress(it) } ?: return@firstOrNull false
-                pk.lowercase() in keys
+                com.kachat.app.services.KaPostsChainPosts.xOnly(pk) in keys
             }
             if (match != null) return match.address
         }
@@ -2213,15 +2513,38 @@ class KaPostsViewModel @Inject constructor(
         if (tokens.isEmpty()) return emptyList()
         // contacts' .kas names resolve from the local cache - only for a token typed as .kas
         val byKasName = mentionCandidates().toMap()
-        val found = linkedSetOf<String>()
+        // x-only key -> the key signed, one per person (iOS 369794e)
+        val found = linkedMapOf<String, String>()
         for (token in tokens) {
             val cached = if (token.endsWith(".kas")) byKasName[token.dropLast(4)] else null
-            if (cached != null) { found.add(cached); continue }
+            if (cached != null) {
+                val real = mentionPubkey(cached)
+                found.putIfAbsent(com.kachat.app.services.KaPostsChainPosts.xOnly(real), real)
+                continue
+            }
             // everyone else: the mention rule - the ending typed, else .kachat, else .kas (iOS e493c97)
             val owner = mentionAddress(token) ?: continue
-            KaPostsService.kapostPubkeyFromAddress(owner)?.let { found.add(it) }
+            KaPostsService.kapostPubkeyFromAddress(owner)?.let { guessed ->
+                val real = mentionPubkey(guessed)
+                found.putIfAbsent(com.kachat.app.services.KaPostsChainPosts.xOnly(real), real)
+            }
         }
-        return found.toList()
+        return found.values.toList()
+    }
+
+    /**
+     * The key a mention signs: the person's real "02"/"03" key, worked out the way Follow does
+     * ([resolveKaPostsPubkey]), since an address gives only x and about half of keys start 03.
+     * Someone who has never posted keeps the "02" guess, which only an indexer matching on the
+     * x-only key can notify (iOS 369794e).
+     */
+    private suspend fun mentionPubkey(guessed: String): String {
+        val xOnly = com.kachat.app.services.KaPostsChainPosts.xOnly(guessed)
+        mentionKeyCache[xOnly]?.let { return it }
+        val address = KaPostsService.kaspaAddressFromPubkey(guessed) ?: return guessed
+        val real = resolveKaPostsPubkey(address) ?: return guessed
+        mentionKeyCache[xOnly] = real
+        return real
     }
 
     /** Composer autocomplete: live-resolve the typed @query - anyone with a name: .kachat first,
@@ -2290,7 +2613,7 @@ class KaPostsViewModel @Inject constructor(
         // ledger, and an undone thread must leave nothing behind for a later retry to pick up.
         val key = "post:${newPost.id}"
         showUndoToast(UndoToast(
-            key, newPost.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Posting thread",
+            key, newPost.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_posting_thread),
             draftText = segments.last(), draftSegments = segments,
         ))
         scheduleUndoable(key) {
@@ -2378,6 +2701,8 @@ class KaPostsViewModel @Inject constructor(
             try { return op() } catch (e: Exception) {
                 // Never after an unknown outcome: the first one may have landed (iOS e5a9b11).
                 if (e is com.kachat.app.services.SendOutcomeUnknownException) throw e
+                // The same text never fits on a later try (iOS 369794e).
+                if (e is com.kachat.app.services.KaPostTooLongException) throw e
                 attempt += 1
                 if (attempt > 4) throw e
                 Log.w(TAG, "Thread segment retry $attempt", e)
@@ -2423,7 +2748,12 @@ class KaPostsViewModel @Inject constructor(
         val remoteId = post.remoteId ?: return
         if (_threadRootFlags.value.containsKey(remoteId)) return
         if (commentCount(post) <= 0) return
-        if (!threadProbeStore.claim(remoteId)) return
+        // claim, so one post isn't probed twice while its answer holds (iOS 369794e)
+        if (!threadProbeStore.claim(
+                remoteId,
+                com.kachat.app.services.KaPostsThreadProbeStore.noThreadAnswerLifetimeMs(System.currentTimeMillis() - post.timestamp),
+            )
+        ) return
         run {
             val page = try {
                 threadProbeLimit.withPermit { kaPostsService.fetchRepliesPage(remoteId, 10, null) }
@@ -2702,7 +3032,7 @@ class KaPostsViewModel @Inject constructor(
         // the comment before anything hits the network.
         val key = "comment:${comment.id}"
         showUndoToast(UndoToast(
-            key, comment.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Posting comment",
+            key, comment.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_posting_comment),
             draftText = text, replyParent = parent,
         ))
         scheduleUndoable(key) {
@@ -2723,6 +3053,9 @@ class KaPostsViewModel @Inject constructor(
     // MARK: - Votes (5s in-icon countdown, then on-chain; un-like submits the fork's unvote)
 
     fun toggleLike(post: KaPostDraft) {
+        // A vote on this post is still going out: a second one now could land before it (iOS
+        // b78fdb0 `KaPostsActionHolds`).
+        if (KaPostsActionHolds.isVoting(post.remoteId)) return
         if (post.likedByMe && post.remoteId == null) {
             performLike(post)   // local-only unlike, instant
             return
@@ -2740,7 +3073,10 @@ class KaPostsViewModel @Inject constructor(
     private fun performLike(post: KaPostDraft) {
         val remoteId = post.remoteId
         val author = post.posterPubkey
+        // Held through a cool-down, and another vote went out meanwhile: this one would race it.
+        if (remoteId != null && author != null && KaPostsActionHolds.isVoting(remoteId)) return
         if (remoteId != null && author != null) {
+            KaPostsActionHolds.beginVote(remoteId)
             viewModelScope.launch {
                 try {
                     val txId = if (!post.likedByMe) {
@@ -2748,9 +3084,11 @@ class KaPostsViewModel @Inject constructor(
                     } else {
                         kaPostsService.submitUnvote(remoteId, authorPubkey = author)
                     }
-                    showActionToast(if (!post.likedByMe) "Like posted to the network" else "Like removed on the network", txId)
+                    showActionToast(appContext.getString(if (!post.likedByMe) R.string.feed54_like_posted else R.string.feed54_like_removed), txId)
                 } catch (e: Exception) {
                     voteFailed(post, e, appContext.getString(if (!post.likedByMe) R.string.kaposts_couldnt_post_like else R.string.kaposts_couldnt_remove_like))
+                } finally {
+                    KaPostsActionHolds.endVote(remoteId)
                 }
             }
         }
@@ -2789,10 +3127,11 @@ class KaPostsViewModel @Inject constructor(
             }
             restored
         }
-        showActionToast("$message: ${UserFacingError.message(e, "Something went wrong")}", txId = "", isFailure = true)
+        showActionToast(failureText(message, e), txId = "", isFailure = true)
     }
 
     fun toggleDislike(post: KaPostDraft) {
+        if (KaPostsActionHolds.isVoting(post.remoteId)) return
         if (post.dislikedByMe && post.remoteId == null) {
             performDislike(post)
             return
@@ -2808,7 +3147,10 @@ class KaPostsViewModel @Inject constructor(
     private fun performDislike(post: KaPostDraft) {
         val remoteId = post.remoteId
         val author = post.posterPubkey
+        // Held through a cool-down, and another vote went out meanwhile: this one would race it.
+        if (remoteId != null && author != null && KaPostsActionHolds.isVoting(remoteId)) return
         if (remoteId != null && author != null) {
+            KaPostsActionHolds.beginVote(remoteId)
             viewModelScope.launch {
                 try {
                     val txId = if (!post.dislikedByMe) {
@@ -2816,9 +3158,11 @@ class KaPostsViewModel @Inject constructor(
                     } else {
                         kaPostsService.submitUnvote(remoteId, authorPubkey = author)
                     }
-                    showActionToast(if (!post.dislikedByMe) "Dislike posted to the network" else "Dislike removed on the network", txId)
+                    showActionToast(appContext.getString(if (!post.dislikedByMe) R.string.feed54_dislike_posted else R.string.feed54_dislike_removed), txId)
                 } catch (e: Exception) {
                     voteFailed(post, e, appContext.getString(if (!post.dislikedByMe) R.string.kaposts_couldnt_post_dislike else R.string.kaposts_couldnt_remove_dislike))
+                } finally {
+                    KaPostsActionHolds.endVote(remoteId)
                 }
             }
         }
@@ -2856,7 +3200,7 @@ class KaPostsViewModel @Inject constructor(
             return
         }
         val key = "repost:${target.id}"
-        showUndoToast(UndoToast(key, target.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Reposting"))
+        showUndoToast(UndoToast(key, target.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_reposting)))
         scheduleUndoable(key) {
             clearUndoToast(key)
             performRepost(target, text = null, localQuoteId = null)
@@ -2870,7 +3214,7 @@ class KaPostsViewModel @Inject constructor(
             return
         }
         val key = "repost:${target.id}"
-        showUndoToast(UndoToast(key, target.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Removing repost"))
+        showUndoToast(UndoToast(key, target.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_removing_repost)))
         scheduleUndoable(key) {
             clearUndoToast(key)
             performUnrepost(target)
@@ -2891,7 +3235,7 @@ class KaPostsViewModel @Inject constructor(
         }
         try {
             val txId = kaPostsService.submitUnquote(contentId)
-            showActionToast("Repost removed on the network", txId)
+            showActionToast(appContext.getString(R.string.feed54_repost_removed), txId)
         } catch (e: Exception) {
             Log.w(TAG, "Unquote submit failed", e)
             if (e is com.kachat.app.services.SendOutcomeUnknownException) return
@@ -2900,10 +3244,7 @@ class KaPostsViewModel @Inject constructor(
                     if (!post.repostedByMe) post.copy(repostedByMe = true, reposts = post.reposts + 1) else post
                 }
             }
-            showActionToast(
-                "${appContext.getString(R.string.kaposts_couldnt_remove_repost)}: ${UserFacingError.message(e, "Something went wrong")}",
-                txId = "", isFailure = true,
-            )
+            showActionToast(failureText(appContext.getString(R.string.kaposts_couldnt_remove_repost), e), txId = "", isFailure = true)
         }
     }
 
@@ -2927,7 +3268,7 @@ class KaPostsViewModel @Inject constructor(
         _localPosts.value = listOf(quotePost) + _localPosts.value
         heldPosts.hold(quotePost.id, text, quotedRemoteId = target.remoteId)
         val key = "post:${quotePost.id}"
-        showUndoToast(UndoToast(key, quotePost.id, System.currentTimeMillis() + UNDO_DELAY_MS, "Posting quote", draftText = text, quoteTargetId = target.id))
+        showUndoToast(UndoToast(key, quotePost.id, System.currentTimeMillis() + UNDO_DELAY_MS, appContext.getString(R.string.l53_undo_posting_quote), draftText = text, quoteTarget = target))
         scheduleUndoable(key) {
             clearUndoToast(key)
             performRepost(target, text, quotePost.id)
@@ -2943,7 +3284,7 @@ class KaPostsViewModel @Inject constructor(
         try {
             val txId = kaPostsService.submitQuote(text, contentId, author)
             showActionToast(
-                if (!text.isNullOrEmpty()) "Quote posted to the network" else "Repost posted to the network",
+                appContext.getString(if (!text.isNullOrEmpty()) R.string.feed54_quote_posted else R.string.feed54_repost_posted),
                 txId,
             )
             if (localQuoteId != null) {
@@ -2963,28 +3304,43 @@ class KaPostsViewModel @Inject constructor(
             }
             // A failed quote says so on its own card, with Retry.
             if (localQuoteId == null) {
-                showActionToast(
-                    "${appContext.getString(R.string.kaposts_couldnt_repost)}: ${UserFacingError.message(e, "Something went wrong")}",
-                    txId = "", isFailure = true,
-                )
+                showActionToast(failureText(appContext.getString(R.string.kaposts_couldnt_repost), e), txId = "", isFailure = true)
             }
         }
     }
 
     // MARK: - Follows (local set drives UI instantly; on-chain tx mirrors when pubkey known)
 
+    /**
+     * Local follow toggle + on-chain K follow/unfollow. The key comes from post data, else the
+     * chain's follow list, else the person's own posts ([resolveKaPostsPubkey]); never a guessed
+     * 02/03 (IOS-099). With none of those (no post names their key yet) the follow waits on this
+     * phone and goes on chain at a later sync, once one does ([submitPendingFollows], iOS 369794e).
+     */
     fun toggleFollow(address: String, pubkey: String?) {
         val walletAddress = myAddress() ?: return
         if (address.isEmpty() || address == walletAddress) return
         val willFollow = address !in following.value
+        followsToggledThisSession += address
         viewModelScope.launch {
             // Scoped to the account that tapped the button, read fresh from its own key.
             val current = settings.kapostsFollowing(walletAddress).first()
             settings.setKapostsFollowing(walletAddress, if (willFollow) current + address else current - address)
-            if (pubkey == null) return@launch
+            var key = pubkey ?: followChainKeys[address]
+            if (key == null) {
+                key = resolveKaPostsPubkey(address)
+                // Tapped again while the key was looked up: that tap sends its own.
+                if ((address in settings.kapostsFollowing(walletAddress).first()) != willFollow) return@launch
+            }
+            if (key == null) {
+                followSync.setAwaitingKey(walletAddress, address, following = willFollow)
+                return@launch
+            }
+            followSync.setAwaitingKey(walletAddress, address, following = false)
+            val followKey: String = key
             try {
-                val txId = kaPostsService.submitFollow(willFollow, pubkey)
-                showActionToast(if (willFollow) "Follow posted to the network" else "Unfollow posted to the network", txId)
+                val txId = kaPostsService.submitFollow(willFollow, followKey)
+                showActionToast(appContext.getString(if (willFollow) R.string.feed54_follow_posted else R.string.feed54_unfollow_posted), txId)
             } catch (e: Exception) {
                 Log.w(TAG, "Follow submit failed", e)
                 if (e is com.kachat.app.services.SendOutcomeUnknownException) return@launch
@@ -2994,7 +3350,7 @@ class KaPostsViewModel @Inject constructor(
                     settings.setKapostsFollowing(walletAddress, if (willFollow) now - address else now + address)
                 }
                 val action = appContext.getString(if (willFollow) R.string.kaposts_couldnt_follow else R.string.kaposts_couldnt_unfollow)
-                showActionToast("$action: ${UserFacingError.message(e, "Something went wrong")}", txId = "", isFailure = true)
+                showActionToast(failureText(action, e), txId = "", isFailure = true)
             }
         }
     }
@@ -3022,6 +3378,11 @@ class KaPostsViewModel @Inject constructor(
             settings.setKapostsBlocked(wallet, settings.kapostsBlocked(wallet).first() + address)
             settings.setKapostsMuted(wallet, settings.kapostsMuted(wallet).first() - address)
         }
+        // Their bell goes too: the push service sends every new post by a watched author, and a
+        // background push never passes the block list. Turning it off re-registers without them
+        // ([com.kachat.app.services.KaPostsWatchStore.watchedPubkeys] leaves out anyone blocked
+        // before this, at the next update; iOS 369794e).
+        if (watchStore.isWatching(address)) watchStore.toggle(address)
     }
 
     fun unblock(address: String) {
@@ -4102,4 +4463,24 @@ class KaPostsViewModel @Inject constructor(
             repostedByMe = me != null && entries.any { isRepost(it.kind) && it.actorPubkey.lowercase() == me },
         )
     }
+}
+
+/**
+ * Posts with a like, dislike or delete on its way to the network, by the post's transaction id
+ * (a local card and its feed twin are one post on chain). Shared like `KaPostsTipHolds`: with no
+ * cool-down, a second tap while the first is still submitting would send a second transaction,
+ * and votes landing out of order could leave the opposite of what was tapped last. While one is
+ * out, more taps on that post are ignored (iOS b78fdb0 `KaPostsActionHolds`).
+ */
+internal object KaPostsActionHolds {
+    private val voting = mutableSetOf<String>()
+    private val deleting = mutableSetOf<String>()
+
+    @Synchronized fun isVoting(remoteId: String?): Boolean = remoteId != null && remoteId in voting
+    @Synchronized fun beginVote(remoteId: String) { voting.add(remoteId) }
+    @Synchronized fun endVote(remoteId: String) { voting.remove(remoteId) }
+
+    @Synchronized fun isDeleting(remoteId: String?): Boolean = remoteId != null && remoteId in deleting
+    @Synchronized fun beginDelete(remoteId: String) { deleting.add(remoteId) }
+    @Synchronized fun endDelete(remoteId: String) { deleting.remove(remoteId) }
 }

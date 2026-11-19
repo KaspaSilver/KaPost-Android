@@ -736,12 +736,30 @@ fun SpendingAddressSendFlow(
     var nameResolutions by remember { mutableStateOf<List<com.kachat.app.services.NameResolution>>(emptyList()) }
     var selectedTld by remember { mutableStateOf<com.kachat.app.services.NameServiceTLD?>(null) }
     // Use one service's answer (the priority one, or a pick from "Other domains").
-    val selectResolution: (com.kachat.app.services.NameResolution) -> Unit = { resolution ->
-        resolution.address?.let {
-            knsResolvedAddress = it
-            knsResolvedDomain = resolution.display
-            selectedTld = resolution.tld
-            knsError = null
+    val selectContext = LocalContext.current
+    val selectResolution: (com.kachat.app.services.NameResolution) -> Unit = select@{ resolution ->
+        val address = resolution.address ?: return@select
+        // Only an address of this network is an answer; anything else reads as not found (iOS
+        // 369794e `selectResolution`).
+        if (!KaspaAddress.isValidOnActiveNetwork(address)) {
+            knsResolvedAddress = null
+            knsResolvedDomain = null
+            selectedTld = null
+            knsError = com.kachat.app.services.NameServicesClient.notFoundMessage(selectContext, resolution.display, emptyList())
+            return@select
+        }
+        knsResolvedAddress = address
+        knsResolvedDomain = resolution.display
+        selectedTld = resolution.tld
+        knsError = null
+    }
+    /** The resolved name as Show .kachat Endings says now, not as it was when the name resolved
+     *  (iOS 369794e `shownResolvedDomain`). */
+    fun shownResolvedDomain(): String? = knsResolvedDomain?.let { name ->
+        if (selectedTld == com.kachat.app.services.NameServiceTLD.KACHAT) {
+            com.kachat.app.models.KachatNameLabel.display(name.removeSuffix(".kachat"))
+        } else {
+            name
         }
     }
 
@@ -984,7 +1002,7 @@ fun SpendingAddressSendFlow(
                     // A compound is a self-send: naming the address it just came from reads as a
                     // mistake, so it just says how much moved. Else the domain when one was
                     // resolved, otherwise the address itself.
-                    recipient = if (isCompoundMode) null else (knsResolvedDomain ?: recipientInput.trim()),
+                    recipient = if (isCompoundMode) null else (shownResolvedDomain() ?: recipientInput.trim()),
                 )
             }
         } else {
@@ -1164,6 +1182,10 @@ fun SpendingAddressSendFlow(
                             manualUtxos = utxos,
                             expectedFeeSompi = expectedFee,
                         ) { ok, error, txId ->
+                            // sendPayment hands back only the message, so the SendFeeChangedException
+                            // check below can't see it: any failure works the fee out again, as the
+                            // tip sheet does (iOS 33095ac `feeRetry`).
+                            if (!ok) feeRetry += 1
                             viewModel.sends.finish(
                                 sendId,
                                 if (ok && txId != null) Result.success(txId)
@@ -1251,7 +1273,7 @@ fun SpendingAddressSendFlow(
         stringResource(R.string.send_max_capped, com.kachat.app.util.KaspaUtxoSelector.MAX_INPUTS_PER_TRANSACTION)
     }
     /** The recipient's name: the domain it resolved from. */
-    val recipientName = knsResolvedDomain
+    val recipientName = shownResolvedDomain()
     val sourceTitle = if (isCompoundMode) stringResource(R.string.send_this_address) else sendSourceTitle(source)
     // the From address's balance: the amount's Available and its check
     LaunchedEffect(source, chattingAddress, usesWithdrawalCoins) {
@@ -1297,12 +1319,15 @@ fun SpendingAddressSendFlow(
                                 applyRequest(pasted)
                                 go(afterRecipient)
                             } else {
-                                recipientInput = input
+                                // An upper-case address goes into the field in lower case (iOS
+                                // 369794e `handleInputChange`).
+                                val lowered = KaspaAddress.lowercasedKaspaAddress(trimmedInput)
+                                recipientInput = if (lowered != trimmedInput) lowered else input
                             }
                         },
                         isResolving = isResolvingKns,
                         resolvedAddress = knsResolvedAddress,
-                        resolvedName = knsResolvedDomain,
+                        resolvedName = shownResolvedDomain(),
                         nameResolutions = nameResolutions,
                         selectedTld = selectedTld,
                         onSelectResolution = selectResolution,
@@ -1410,7 +1435,7 @@ fun SpendingAddressSendFlow(
                 isBusy = isSending,
                 isEnabled = canSend,
                 amountSompi = amountSompi,
-                recipient = if (isCompoundMode) null else (knsResolvedDomain ?: effectiveAddress.trim()).takeIf { it.isNotEmpty() },
+                recipient = if (isCompoundMode) null else (shownResolvedDomain() ?: effectiveAddress.trim()).takeIf { it.isNotEmpty() },
                 sent = sentTransaction,
                 failureMessage = sendError,
                 explorerUrl = { kaspaExplorer.txUrl(it) },
@@ -1611,8 +1636,6 @@ fun IdentityAddressDetailScreen(
     var utxoLabels by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var labelingUtxoKey by remember { mutableStateOf<String?>(null) }
     var labelInput by remember { mutableStateOf("") }
-    // The .kachat name opened from the Domains tab's .kachat screen (iOS 881ada6).
-    var openedKachat by remember { mutableStateOf<com.kachat.app.services.kachatnames.NameInfo?>(null) }
     // The name service opened from the Domains tab (iOS fe52376).
     var openedDomainService by remember { mutableStateOf<com.kachat.app.services.NameServiceTLD?>(null) }
 
@@ -1625,12 +1648,6 @@ fun IdentityAddressDetailScreen(
         }
     }
 
-    // A .kachat name opened from this address's .kachat tab: its live detail, which knows which of
-    // your addresses holds it (iOS 881ada6).
-    openedKachat?.let { info ->
-        AboveDock { KachatLiveNameDetailScreen(info, onBack = { openedKachat = null }, onOpenChat = onOpenChat) }
-        return
-    }
     // A name service opened from this address's Domains tab: its names (iOS fe52376).
     openedDomainService?.let { tld ->
         AboveDock {
@@ -1638,7 +1655,6 @@ fun IdentityAddressDetailScreen(
                 address = address.orEmpty(),
                 tld = tld,
                 onBack = { openedDomainService = null },
-                onOpenKachat = { openedKachat = it },
             )
         }
         return
@@ -1795,13 +1811,15 @@ fun IdentityAddressDetailScreen(
     }
 
     if (showAddressActions) {
+        // iOS 369794e ChattingAddressManageView: the same words as a spending address's key
+        val unlockPrivateKeyTitle = stringResource(R.string.unlock_address_private_key)
         AddressActionsSheet(
             explorerUrl = address?.takeIf { it.isNotEmpty() }?.let { kaspaExplorer.addressUrl(it) },
             onPrivateKey = {
                 showAddressActions = false
                 if (biometricSpendingKeyEnabled) {
                     context.authenticateWithDeviceCredential(
-                        title = "Unlock to View Private Key",
+                        title = unlockPrivateKeyTitle,
                         onSuccess = { showPrivateKey = true }
                     )
                 } else {
@@ -2774,8 +2792,6 @@ fun ReactionPill(reactions: List<ReactionEntity>, modifier: Modifier = Modifier,
 @Composable
 fun KachatProfileEditorScreen(
     onBack: () -> Unit,
-    showSetupGuides: Boolean = true,
-    onSetupGuide: () -> Unit = {},
 ) {
     // The live editor on every network since iOS 7227d69, and it saves there too since d36fc42.
     // The placeholder below is kept, unreachable, as the switch-back.
@@ -2815,14 +2831,6 @@ fun KachatProfileEditorScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
             Spacer(Modifier.height(4.dp))
-            // The setup guide lives here since 5.2 (iOS b000310) - .kachat is the name KaChat sets
-            // up for you; .kas profiles are edited field by field in Your Domains.
-            if (showSetupGuides) {
-                SettingsSection(title = null) {
-                    SettingsNavigationItem(stringResource(R.string.kg_setup_guide), null, showIcon = false, onClick = onSetupGuide)
-                }
-                SettingsFooter(stringResource(R.string.kg_names_setup_footer))
-            }
             SettingsSection(title = null) {
                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.Top) {
                     Icon(Icons.Default.AlternateEmail, contentDescription = null, tint = KaspaTeal, modifier = Modifier.size(22.dp))
@@ -3145,6 +3153,10 @@ fun SettingsScreen(
             // iOS PushError.permissionDenied: the alert and the toast. After a second refusal
             // Android 13+ shows no dialog at all (shouldShowRequestPermissionRationale is false)
             // and lands here at once, so the alert's Open Settings is the only way forward.
+            // The setting goes back to what the switch showed, off (iOS sets previousMode back):
+            // a stored "on" (the default) would otherwise register by itself once Android allows
+            // notifications, with the switch never having been on.
+            settingsViewModel.setNotificationsEnabled(false)
             notificationPermissionDenied = true
             IosToasts.error("Push subscription failed.")
         }
@@ -3160,7 +3172,9 @@ fun SettingsScreen(
         } else {
             // Android 8-12 has no permission to ask for, and a granted permission with the
             // app's notifications blocked can't be asked again: iOS's "Notifications Disabled"
-            // alert, whose Open Settings leads to the switch, and the toast.
+            // alert, whose Open Settings leads to the switch, and the toast. The setting goes
+            // back to off, as after a refusal above.
+            settingsViewModel.setNotificationsEnabled(false)
             notificationPermissionDenied = true
             IosToasts.error("Push subscription failed.")
         }
@@ -4313,6 +4327,8 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
     val network by viewModel.network.collectAsState()
     // The indexer this launch is connected to (a Testnet switch waits for the next launch).
     val indexerUrl by viewModel.runningIndexerUrl.collectAsState()
+    // The push service this launch registers with, for the Push Register row (iOS SettingsView).
+    val pushIndexerUrl by viewModel.runningPushIndexerUrl.collectAsState()
 
     val activeNodes by viewModel.activeNodes.collectAsState()
     val allNodes by viewModel.allNodes.collectAsState()
@@ -4453,6 +4469,15 @@ fun ConnectionStatusScreen(onBack: () -> Unit, viewModel: ConnectionViewModel = 
                 }
                 SettingsDivider()
                 ConnectionStatusRow(stringResource(R.string.indexer), indexerHost, monospaced = true)
+                // iOS's Push Register row, only when push goes to a different service.
+                if (pushIndexerUrl != indexerUrl) {
+                    SettingsDivider()
+                    ConnectionStatusRow(
+                        stringResource(R.string.push_register),
+                        pushIndexerUrl.substringAfter("://").substringBefore("/").substringBefore(":"),
+                        monospaced = true,
+                    )
+                }
                 SettingsDivider()
                 ConnectionStatusRow(stringResource(R.string.last_sync), lastSyncAt)
             }
@@ -4713,66 +4738,6 @@ fun KaPostsNotificationSettingsScreen(onBack: () -> Unit, settingsViewModel: Set
             SettingsDivider()
             SettingsSwitchItem("Mentions", mentions) { settingsViewModel.setKaPostsNotifyMentions(it) }
         }
-    }
-}
-
-/** Settings > Chats > Quick Reactions - replace any of the 6 emojis shown in the double-tap
- *  [QuickReactionBar]. iOS's QuickReactionEmojisSettingsView: the six as 44 tiles in one card
- *  with the footer under it, then Reset to Default as a red button in its own card. A tap opens
- *  the emoji picker for that slot. */
-@Composable
-fun QuickReactionSettingsScreen(onBack: () -> Unit, settingsViewModel: SettingsViewModel = hiltViewModel()) {
-    val emojis by settingsViewModel.quickReactionEmojis.collectAsState()
-    var editingSlotIndex by remember { mutableStateOf<Int?>(null) }
-
-    SettingsFormPage(title = stringResource(R.string.quick_reactions), onBack = onBack) {
-        SettingsFormSection(title = null, footer = stringResource(R.string.quick_reactions_footer)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally)
-            ) {
-                emojis.forEachIndexed { index, emoji ->
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(LocalAppColors.current.surfaceVariant)
-                            .clickable { editingSlotIndex = index },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(emoji, fontSize = 26.sp)
-                    }
-                }
-            }
-        }
-        SettingsFormSection(title = null) {
-            Text(
-                stringResource(R.string.reset_to_default),
-                color = LocalAppColors.current.danger,
-                fontSize = 17.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        settingsViewModel.setQuickReactionEmojis(com.kachat.app.repository.AppSettingsRepository.DEFAULT_QUICK_REACTION_EMOJIS)
-                    }
-                    .heightIn(min = 52.dp)
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
-            )
-        }
-    }
-
-    val slotIndex = editingSlotIndex
-    if (slotIndex != null) {
-        EmojiPickerDialog(
-            onDismissRequest = { editingSlotIndex = null },
-            onSelect = { emoji ->
-                settingsViewModel.setQuickReactionEmojis(
-                    emojis.toMutableList().also { it[slotIndex] = emoji }
-                )
-            }
-        )
     }
 }
 
@@ -5262,7 +5227,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        if (rejected) "Use https. Unencrypted connections are not supported."
+                        if (rejected) stringResource(R.string.nc_use_https)
                         else if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_INDEXER_URL}"
                         else stringResource(R.string.no_testnet_indexer_yet),
                         color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
@@ -5308,7 +5273,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        if (rejected) "Use https. Unencrypted connections are not supported."
+                        if (rejected) stringResource(R.string.nc_use_https)
                         // The network's default: none on testnet.
                         else if (onMainnetSettings) "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_KAPOST_INDEXER_URL}"
                         else stringResource(R.string.no_testnet_indexer_yet),
@@ -5348,7 +5313,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, viewModel: ConnectionViewModel 
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        if (rejected) "Use https. Unencrypted connections are not supported."
+                        if (rejected) stringResource(R.string.nc_use_https)
                         else "Leave blank to use ${com.kachat.app.repository.AppSettingsRepository.DEFAULT_TRANSLATION_SERVICE_URL}",
                         color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
                         style = MaterialTheme.typography.bodySmall
@@ -5428,7 +5393,7 @@ private fun ConnectionUrlEditDialog(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    if (rejected) "Use https. Unencrypted connections are not supported." else hint,
+                    if (rejected) stringResource(R.string.nc_use_https) else hint,
                     color = if (rejected) Color(0xFFE57373) else LocalAppColors.current.textSecondary,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -6053,16 +6018,23 @@ fun KaPostWalletScreen(
     // account, so a switch can't show the previous account's address for a moment (iOS ee5ec98).
     var receiveQrAddress by remember(address) { mutableStateOf<String?>(null) }
     var receiveQrResolving by remember(address) { mutableStateOf(true) }
+    // Bumped each time the QR opens: a warm-up answering after that is dropped, so it never
+    // replaces the address the QR confirmed (and revealed) with one it didn't (iOS keeps the warm
+    // result in `ReceiveAddressWarmCache`, and the QR resolves its own).
+    var receiveQrRequest by remember(address) { mutableStateOf(0) }
     LaunchedEffect(address) {
         if (address == null) return@LaunchedEffect
+        val request = receiveQrRequest
         // Only picked, not revealed: nothing appears on Manage Addresses until the QR shows.
         viewModel.resolveFreshReceiveAddress(revealing = false) { fresh ->
+            if (request != receiveQrRequest) return@resolveFreshReceiveAddress
             receiveQrAddress = fresh
             receiveQrResolving = false
         }
     }
     LaunchedEffect(showReceive) {
         if (!showReceive) return@LaunchedEffect
+        receiveQrRequest += 1
         if (receiveQrAddress == null) receiveQrResolving = true
         // Shown now: it goes on the Manage Addresses list (and is watched for payments). Swapped
         // only if the warmed answer went stale: a QR must not change under a pointed camera.
@@ -6206,7 +6178,8 @@ fun KaPostWalletScreen(
                 }
             }
             // KaPay's Wallet tab (iOS 071e901 `WalletAccountSections`, WalletAccountScreens.kt):
-            // the Manage Addresses and Chatting Address squares, Your Domains, then Help.
+            // the Manage Addresses and Chatting Address squares, then Your Domains (no Help row since
+            // iOS b78fdb0: the .kachat guide went with claiming).
             // One item: iOS spaces these three 16 apart, the list's other rows 20.
             item(key = "wallet_account_sections") {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -6216,7 +6189,6 @@ fun KaPostWalletScreen(
                     )
                     // KaPay's Your Domains (iOS 071e901 `WalletAccountSections.yourDomainsRow`).
                     WalletYourDomainsRow(viewModel) { navController.navigate("kns_domains") }
-                    WalletHelpRow { navController.navigate("help") }
                 }
             }
         }

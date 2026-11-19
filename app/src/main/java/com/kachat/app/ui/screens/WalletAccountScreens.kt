@@ -211,62 +211,6 @@ internal fun WalletLinkRow(label: String, icon: ImageVector, value: String? = nu
     }
 }
 
-/** The Wallet screen's Help row (iOS 071e901 `linkRow(title: "Help")`). */
-@Composable
-internal fun WalletHelpRow(onClick: () -> Unit) {
-    WalletLinkRow(
-        label = stringResource(R.string.help),
-        icon = Icons.AutoMirrored.Filled.HelpOutline,
-        onClick = onClick,
-    )
-}
-
-/**
- * Wallet > Help (iOS 071e901 `ProfileHelpView`): the .kachat names guide, one row, pushed with a
- * large title.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun WalletHelpScreen(onBack: () -> Unit, onKachatGuide: () -> Unit) {
-    val colors = LocalAppColors.current
-    Scaffold(
-        containerColor = colors.background,
-        topBar = { MainPageHeader(title = stringResource(R.string.help), onBack = onBack, showStatus = false) },
-        // Runs on under the dock, as iOS's content runs on under its tab bar.
-        contentWindowInsets = WindowInsets(0),
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp)
-                .padding(top = 12.dp, bottom = LocalDockInset.current),
-        ) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.surface)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onKachatGuide)
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                ) {
-                    // iOS helpRow: a 20pt icon in a 30pt frame, 14 apart; subheadline semibold
-                    // over caption.
-                    Box(Modifier.width(30.dp), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Badge, null, tint = KaspaTeal, modifier = Modifier.size(22.dp))
-                    }
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(stringResource(R.string.kg_names_help_title), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                        Text(stringResource(R.string.kg_names_help_body), color = colors.textSecondary, fontSize = 12.sp)
-                    }
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = colors.textSecondary, modifier = Modifier.size(24.dp))
-                }
-            }
-        }
-    }
-}
-
 // MARK: - QR pages
 
 /**
@@ -403,6 +347,9 @@ fun ManageAddressesScreen(
     var discoverySummary by remember { mutableStateOf<String?>(null) }
     val pullRefreshState = rememberPullToRefreshState()
     val noneFoundText = stringResource(R.string.ma_none_found)
+    // iOS 369794e: "Found %lld address(es) with a balance or domain.", localized
+    val foundOneTemplate = stringResource(R.string.wallet_53_found_address_one)
+    val foundManyTemplate = stringResource(R.string.wallet_53_found_addresses)
     val hiddenText = stringResource(R.string.ma_address_hidden)
     val cantHideText = stringResource(R.string.ma_cant_hide)
 
@@ -439,6 +386,8 @@ fun ManageAddressesScreen(
         }
     }
 
+    // "Address #N is ready." in the app's language (iOS b78fdb0).
+    val readyToastContext = LocalContext.current
     val dockInset = LocalDockInset.current
     Scaffold(
         containerColor = colors.background,
@@ -597,7 +546,7 @@ fun ManageAddressesScreen(
                 viewModel.generateNewSpendingAddress { index ->
                     isGenerating = false
                     // The number people see (iOS 071e901 `WalletManager.addressNumber`).
-                    if (index != null) IosToasts.show("${WalletManager.spendingAddressTitle(index)} is ready.")
+                    if (index != null) IosToasts.show(readyToastContext.getString(R.string.address_number_is_ready, "${WalletManager.addressNumber(index)}"))
                     else IosToasts.error("Could not check addresses. Try again when connected.")
                 }
             },
@@ -606,7 +555,7 @@ fun ManageAddressesScreen(
                 viewModel.discoverSpendingAddresses { count ->
                     // Addresses that hold a balance or a domain - not "used".
                     val summary = if (count == 0) noneFoundText
-                    else "Found $count address${if (count == 1) "" else "es"} with a balance or domain."
+                    else String.format(java.util.Locale.getDefault(), if (count == 1) foundOneTemplate else foundManyTemplate, count)
                     discoverySummary = summary
                     // Closed the sheet and carried on? Then say it here instead of finishing silently.
                     if (!showActionsMenu) IosToasts.show(summary)
@@ -954,7 +903,7 @@ private fun ManageAddressesActionsSheet(
                         Spacer(Modifier.height(8.dp))
                         com.kachat.app.ui.theme.IosActivityIndicator(color = KaspaTeal, modifier = Modifier.size(32.dp))
                         Text(
-                            "Checking address #${progress?.checkingIndex ?: 0}",
+                            stringResource(R.string.l53_checking_address, progress?.checkingIndex ?: 0),
                             color = colors.textPrimary,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 15.sp,
@@ -1452,7 +1401,6 @@ fun SpendingAddressTxHistoryScreen(
     var utxoLabels by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var labelingUtxoKey by remember { mutableStateOf<String?>(null) }
     var labelInput by remember { mutableStateOf("") }
-    var openedKachat by remember { mutableStateOf<com.kachat.app.services.kachatnames.NameInfo?>(null) }
     var openedDomainService by remember { mutableStateOf<com.kachat.app.services.NameServiceTLD?>(null) }
     val unlockTitle = stringResource(R.string.unlock_address_private_key)
 
@@ -1464,17 +1412,12 @@ fun SpendingAddressTxHistoryScreen(
         }
     }
 
-    openedKachat?.let { info ->
-        AboveDock { KachatLiveNameDetailScreen(info, onBack = { openedKachat = null }, onOpenChat = {}) }
-        return
-    }
     openedDomainService?.let { tld ->
         AboveDock {
             AddressDomainServiceScreen(
                 address = address,
                 tld = tld,
                 onBack = { openedDomainService = null },
-                onOpenKachat = { openedKachat = it },
             )
         }
         return

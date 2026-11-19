@@ -163,7 +163,7 @@ private fun dockOwnerRoute(route: String?): String? = when (route) {
     "cold_storage_detail/{accountId}", "cold_storage_tx_history/{address}" -> Screen.ColdStorage.route
     "help", "manage_addresses", "identity_address_detail", "spending_address_detail/{index}",
     "manage_addresses_visibility", "chatting_address_qr",
-    "kns_domains", Screen.Wallet.route -> Screen.Profile.route
+    "kns_domains", "kachat_your_domains", Screen.Wallet.route -> Screen.Profile.route
     "portfolio_price_chart", "portfolio_value_chart", "portfolio_hashrate_chart" -> Screen.Portfolio.route
     "broadcast_room_info/{channelName}" -> Screen.Broadcasts.route
     Screen.Chess.route, Screen.Broadcasts.route, Screen.KaPosts.route, Screen.Portfolio.route,
@@ -468,7 +468,11 @@ fun MainShell(
     // aboveDock below). It steps aside for the keyboard.
     val hideBottomBar by walletViewModel.hideBottomBar.collectAsState()
     val imeVisible = WindowInsets.isImeVisible
-    val dockShown = !hideBottomBar && !imeVisible
+    // The Welcome Guide over the shell (iOS b78fdb0 KaPostsTabView `.fullScreenCover`): none, the
+    // run after a create or import (no Skip), or a replay from Profile > Help (with Skip). Saved, so
+    // the language step's Activity recreation keeps it up.
+    var welcomeGuideMode by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(WELCOME_GUIDE_NONE) }
+    val dockShown = !hideBottomBar && !imeVisible && welcomeGuideMode == WELCOME_GUIDE_NONE
     val localTabOrder = KAPOSTS_DOCK
     val currentTopRoute = currentDestination?.route
 
@@ -484,6 +488,15 @@ fun MainShell(
         }
     }
 
+    /** True when [channel]'s room is the screen on top. Opening it again would pop that room and
+     *  push a new one, and the old one's onDispose then cleared the "on screen" mark the new one
+     *  had just set, so the open room's next messages got banners. */
+    fun isRoomOnTop(channel: String): Boolean {
+        val top = navController.currentBackStackEntry ?: return false
+        return top.destination.route == "broadcast_channel/{channelName}" &&
+            top.arguments?.getString("channelName") == channel
+    }
+
     // A notify-enabled public chat room's new message notification opens that room.
     // Activity-scoped, only to start the notification prefetch; the room keeps its own instance.
     val notificationBroadcastViewModel: com.kachat.app.viewmodels.BroadcastViewModel = hiltViewModel()
@@ -494,17 +507,23 @@ fun MainShell(
             // uses - an unnormalized or hostile name would otherwise be pasted raw into the
             // route and land on nothing.
             val channel = com.kachat.app.ui.screens.KaChatLink.sanitizeChannelName(pendingChannelName)
-            // A thread or profile open over the tabs would sit on top of the room, so they close
-            // first, as for a tap on the dock copy (iOS 9e22075).
-            com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
-            if (channel == null) {
-                showTab(Screen.Broadcasts)
-            } else {
-                // Newest rows first, alongside the navigation rather than after it.
-                notificationBroadcastViewModel.prefetchNewest(channel)
-                // On the Public Chats tab, as a tapped room link (iOS KaPostsTabView).
-                showTab(Screen.Broadcasts)
-                navController.navigate("broadcast_channel/$channel")
+            // A tapped room push opens the room only while it is on this account's list: a room
+            // deleted since (or never joined here) is not joined back by a tap, and a name that
+            // fails the gate opens nothing (iOS b78fdb0 `openRoomFromPush`). The room's newest
+            // rows are asked for once it opens.
+            if (channel != null) {
+                notificationBroadcastViewModel.openRoomFromPush(channel) {
+                    // A thread or profile open over the tabs would sit on top of the room, so they
+                    // close first, as for a tap on the dock copy (iOS 9e22075).
+                    com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
+                    // Already in that room (left with Home): the covers are closed above and the
+                    // room stays as it is, on its tab.
+                    if (!isRoomOnTop(channel)) {
+                        // On the Public Chats tab, as a tapped room link (iOS KaPostsTabView).
+                        showTab(Screen.Broadcasts)
+                        navController.navigate("broadcast_channel/$channel")
+                    }
+                }
             }
             onPendingChannelHandled()
         }
@@ -567,9 +586,6 @@ fun MainShell(
         com.kachat.app.ui.screens.KaPostsDock.unreadPublicChats.value = dockPublicChatsUnread
     }
 
-    // A .kachat registration in flight: its progress half sheet, back up after a relaunch (iOS 61fb0fc).
-    com.kachat.app.ui.screens.KachatRegistrationPresenter()
-
     // KaPosts share/deep links (kachat://kapost/<txid>, https://kachat.app/post/…):
     // surface the KaPosts tab; KaPostsScreen itself consumes the pending txid and opens the
     // post's thread once visible.
@@ -631,6 +647,12 @@ fun MainShell(
 
     fun openRoomFromLink(channel: String) {
         com.kachat.app.ui.screens.KaPostsDock.closeCovers.tryEmit(Unit)
+        // A link to the room already open: nothing to navigate (see isRoomOnTop). The join the
+        // room would have consumed on open is made here instead.
+        if (isRoomOnTop(channel)) {
+            if (BroadcastDeepLink.consumeJoinRequest(channel)) notificationBroadcastViewModel.joinChannel(channel)
+            return
+        }
         showTab(Screen.Broadcasts)
         navController.navigate("broadcast_channel/$channel")
     }
@@ -697,16 +719,26 @@ fun MainShell(
         )
     }
 
-    // KaChat's welcome guide used to lift the hold create/import put on syncing; KaPosts has no
-    // guide, so the dock lifts it, and the address's node subscription (balance, coins for
-    // sending) starts (iOS KaPosts KaPostsTabView.onAppear).
+    // A new or imported account gets the Welcome Guide once (iOS b78fdb0 KaPostsTabView.onAppear).
+    // Marked before presenting, so an app killed mid-guide shows it again on the next launch.
+    // Then the dock lifts the hold create/import put on syncing (KaPost's sync is light, so the
+    // guide doesn't wait for it), and the address's node subscription (balance, coins for sending)
+    // starts.
+    val welcomeGuideContext = androidx.compose.ui.platform.LocalContext.current
     val pendingWelcomeGuide by walletViewModel.pendingWelcomeGuide.collectAsState()
     LaunchedEffect(pendingWelcomeGuide) {
         if (pendingWelcomeGuide) {
-            walletViewModel.clearJustImportedWallet()
             walletViewModel.consumePendingWelcomeGuide()
+            com.kachat.app.ui.screens.WelcomeGuidePending.mark(welcomeGuideContext)
+            welcomeGuideMode = WELCOME_GUIDE_ONBOARDING
+        } else if (com.kachat.app.ui.screens.WelcomeGuidePending.isPending(welcomeGuideContext)) {
+            welcomeGuideMode = WELCOME_GUIDE_ONBOARDING
         }
         chatViewModel.releaseOnboardingHoldIfIdle()
+    }
+    /** Profile > Help: the guide again, with Skip. */
+    val openWelcomeGuide: () -> Unit = remember {
+        { if (welcomeGuideMode == WELCOME_GUIDE_NONE) welcomeGuideMode = WELCOME_GUIDE_REPLAY }
     }
 
     // Which tab the glass pill sits under - the same test each item makes for
@@ -745,6 +777,7 @@ fun MainShell(
     // draws a blurred copy of whatever sits behind it (RenderEffect on Android 12+, a
     // translucent scrim below that) - the way iOS's bar is a material rather than a colour.
     val dockHaze = remember { HazeState() }
+    CompositionLocalProvider(com.kachat.app.ui.screens.LocalOpenWelcomeGuide provides openWelcomeGuide) {
     Scaffold(
         containerColor = LocalAppColors.current.background,
         bottomBar = {
@@ -1116,7 +1149,9 @@ fun MainShell(
         val pushedDockPad = if (dockShown) innerPadding.calculateBottomPadding() else 0.dp
         val baseColors = LocalAppColors.current
         CompositionLocalProvider(
-            LocalAppColors provides if (inSettingsSheet && baseColors.isDark) com.kachat.app.ui.theme.DarkSheetAppColors else baseColors
+            LocalAppColors provides if (inSettingsSheet && baseColors.isDark) com.kachat.app.ui.theme.DarkSheetAppColors else baseColors,
+            // a Domains tab's Open Your Domains (iOS 369794e)
+            com.kachat.app.ui.screens.LocalOpenKachatYourDomains provides { navController.navigate("kachat_your_domains") },
         ) {
         NavHost(
             navController = navController,
@@ -1220,19 +1255,22 @@ fun MainShell(
                     )
                 }
             }
-            composable("help") {
-                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
-                    com.kachat.app.ui.screens.WalletHelpScreen(
-                        onBack = { navController.popBackStack() },
-                        onKachatGuide = { navController.navigate("kachat_setup_guide") },
-                    )
-                }
-            }
             // Wallet > Your Domains (iOS 071e901 `KNSDomainsListView`), runs on under the dock.
             composable("kns_domains") {
                 CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
                     com.kachat.app.ui.screens.KnsDomainsScreen(
                         viewModel = walletViewModel,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+            }
+            // An address's Domains tab > Open Your Domains: the account's own .kachat list (iOS
+            // 369794e `AddressDomainsTab`), runs on under the dock like Your Domains.
+            composable("kachat_your_domains") {
+                val accountAddress by walletViewModel.address.collectAsState()
+                CompositionLocalProvider(com.kachat.app.ui.screens.LocalDockInset provides innerPadding.calculateBottomPadding()) {
+                    com.kachat.app.ui.screens.KachatYourDomainsScreen(
+                        walletAddress = accountAddress.orEmpty(),
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -1323,15 +1361,7 @@ fun MainShell(
                 AboveDock(pushedDockPad) {
                     com.kachat.app.ui.screens.KachatProfileEditorScreen(
                         onBack = { navController.popBackStack() },
-                        showSetupGuides = walletViewModel.showSetupGuides.collectAsState().value,
-                        onSetupGuide = { navController.navigate("kachat_setup_guide") },
                     )
-                }
-            }
-            // The .kachat profile setup guide (iOS b000310) - from Edit KaChat Profile and Help.
-            composable("kachat_setup_guide") {
-                AboveDock(pushedDockPad) {
-                    com.kachat.app.ui.screens.KachatSetupGuideScreen(onClose = { navController.popBackStack() })
                 }
             }
 
@@ -1424,14 +1454,6 @@ fun MainShell(
                 }
             }
 
-            composable("quick_reaction_settings") {
-                AboveDock(pushedDockPad) {
-                    QuickReactionSettingsScreen(
-                        onBack = { navController.popBackStack() }
-                    )
-                }
-            }
-
             composable(
                 "broadcasts",
                 enterTransition = { EnterTransition.None },
@@ -1494,6 +1516,16 @@ fun MainShell(
         }
         }
 
+        // The Welcome Guide covers everything, the dock too (it steps aside above); the toast
+        // host below still draws over it.
+        if (welcomeGuideMode != WELCOME_GUIDE_NONE) {
+            com.kachat.app.ui.screens.WelcomeGuideScreen(
+                walletViewModel = walletViewModel,
+                isOnboardingRun = welcomeGuideMode == WELCOME_GUIDE_ONBOARDING,
+                onFinished = { welcomeGuideMode = WELCOME_GUIDE_NONE },
+            )
+        }
+
         // iOS's in-app toast for every screen: it sits above the dock, as iOS's sits above the
         // tab bar; with the dock aside, above the navigation bar and keyboard.
         com.kachat.app.ui.screens.IosToastHost(
@@ -1505,7 +1537,13 @@ fun MainShell(
             },
         )
     }
+    }
 }
+
+/** [MainShell]'s Welcome Guide: not shown, the onboarding run, or a Help replay. */
+private const val WELCOME_GUIDE_NONE = 0
+private const val WELCOME_GUIDE_ONBOARDING = 1
+private const val WELCOME_GUIDE_REPLAY = 2
 
 /**
  * A pushed screen under the floating dock: laid out above it, with the bottom it covers taken

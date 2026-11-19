@@ -215,7 +215,7 @@ private fun NfcCardErrorAlert(message: String?, onDismiss: () -> Unit) {
     com.kachat.app.ui.theme.IosAlertDialog(
         onDismissRequest = onDismiss,
         containerColor = colors.surface,
-        title = { Text("NFC Card", color = colors.textPrimary) },
+        title = { Text(stringResource(R.string.l53_nfc_card), color = colors.textPrimary) },
         text = { Text(text, color = colors.textSecondary) },
         confirmButton = {
             TextButton(onClick = onDismiss) {
@@ -449,9 +449,9 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
     NfcCardErrorAlert(errorMessage) { errorMessage = null }
     if (showEraseConfirmation) {
         ConfirmActionSheet(
-            title = "Erase the backup on this card?",
-            confirmTitle = "Erase Backup",
-            confirmSubtitle = "This can't be undone.",
+            title = stringResource(R.string.l53_nfc_erase_question),
+            confirmTitle = stringResource(R.string.l53_nfc_erase_backup),
+            confirmSubtitle = stringResource(R.string.l53_nfc_cant_be_undone),
             confirmIcon = Icons.Filled.Delete,
             onConfirm = {
                 showEraseConfirmation = false
@@ -462,9 +462,9 @@ fun NfcCardBackupScreen(viewModel: WalletViewModel, onClose: () -> Unit) {
     }
     if (showReplaceConfirmation) {
         ConfirmActionSheet(
-            title = "Replace the backup on this card?",
-            confirmTitle = "Replace Backup",
-            confirmSubtitle = "The old backup is removed once the new one is confirmed.",
+            title = stringResource(R.string.l53_nfc_replace_question),
+            confirmTitle = stringResource(R.string.l53_nfc_replace_backup),
+            confirmSubtitle = stringResource(R.string.l53_nfc_old_backup_removed),
             confirmIcon = Icons.Filled.Contactless,
             onConfirm = {
                 showReplaceConfirmation = false

@@ -163,19 +163,35 @@ object NameNormalization {
 }
 
 /** What a typed name points to on one service. */
-data class NameResolution(
+class NameResolution(
     val tld: NameServiceTLD,
     /** The name as shown, e.g. "bob.k". A .kachat name follows Show .kachat Endings
      *  ([com.kachat.app.models.KachatNameLabel], iOS 1b15521), so it may be bare. */
     val display: String,
-    /** Where it points; null when the name is not registered there (or has no address to pay). */
-    val address: String?,
-    /** The service could not be asked (network or server failure), so "not registered" is unknown. */
-    val failed: Boolean,
+    address: String?,
+    failed: Boolean,
     /** The service isn't live on this network yet (.kachat on mainnet before its launch): listed,
      *  first as always, but nothing can resolve there (iOS 6ac48a7). */
     val notLive: Boolean = false,
 ) {
+    /** Where it points; null when the name is not registered there (or has no address to pay).
+     *  A service's answer counts only as an address of this network; anything else is no answer
+     *  (iOS 369794e). */
+    val address: String? = address?.takeIf { KaspaAddress.isValidOnActiveNetwork(it) }
+
+    /** The service could not be asked (network or server failure), so "not registered" is
+     *  unknown; also when it answered with an address that isn't one of this network's. */
+    val failed: Boolean = failed || (address != null && this.address == null)
+
+    override fun equals(other: Any?): Boolean =
+        other is NameResolution && tld == other.tld && display == other.display && address == other.address &&
+            failed == other.failed && notLive == other.notLive
+
+    override fun hashCode(): Int = listOf(tld, display, address, failed, notLive).hashCode()
+
+    override fun toString(): String =
+        "NameResolution(tld=$tld, display=$display, address=$address, failed=$failed, notLive=$notLive)"
+
     /** The name with its ending always, for text other people read later (a post's @mention):
      *  a bare name there wouldn't say which service it means, whatever this phone shows
      *  (iOS 1b15521). */
@@ -443,8 +459,9 @@ class NameServicesClient @Inject constructor(
 
     private suspend fun resolveKas(label: String): NameResolution? {
         val canonical = KnsService.normalizeDomainLabel(label) ?: return null
-        val owner = knsService.resolve("$canonical.kas")
-        return NameResolution(NameServiceTLD.KAS, "$canonical.kas", owner, failed = false)
+        // KNS unreachable is "couldn't look up", never "no such domain" (iOS 369794e)
+        val (owner, failed) = knsService.resolveLookup("$canonical.kas")
+        return NameResolution(NameServiceTLD.KAS, "$canonical.kas", owner, failed = failed)
     }
 
     private suspend fun resolveDotk(label: String): NameResolution? {
@@ -551,7 +568,7 @@ class NameServicesClient @Inject constructor(
         fun notFoundMessage(context: android.content.Context, typed: String, results: List<NameResolution>): String {
             val wanted = NameServiceTLD.splitTypedName(typed).second ?: NameServiceTLD.KACHAT
             if (wanted != NameServiceTLD.KACHAT && !OTHER_SERVICES_ENABLED) {
-                return "KaPost looks up .kachat names only"
+                return context.getString(com.kachat.app.R.string.kn53_kapost_looks_up_kachat_only)
             }
             if (wanted == NameServiceTLD.KACHAT &&
                 (results.any { it.tld == NameServiceTLD.KACHAT && it.notLive } || !NameServiceTLD.KACHAT.isLive)

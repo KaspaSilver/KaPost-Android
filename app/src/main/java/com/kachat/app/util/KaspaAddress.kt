@@ -64,6 +64,24 @@ object KaspaAddress {
     /** The two address prefixes there are: mainnet's and testnet's. */
     private val KNOWN_HRPS = setOf(KaspaNetwork.Type.MAINNET.hrp, KaspaNetwork.Type.TESTNET.hrp)
 
+    /** The prefixes a script may be built for (iOS 369794e `KaspaAddress.init?(address:)`). */
+    private val SCRIPT_HRPS = setOf("kaspa", "kaspatest", "kaspasim", "kaspadev")
+
+    /**
+     * A bare `kaspa:` / `kaspatest:` address in upper case ("KASPA:QR…", what a compact QR code
+     * carries) in lower case (iOS 369794e `lowercasedKaspaAddress`): bech32 is case-insensitive,
+     * but only in one case, so mixed case stays as typed and fails the check. Anything else (a
+     * name, a link with a query) is returned as is.
+     */
+    fun lowercasedKaspaAddress(text: String): String {
+        val lower = text.lowercase()
+        if (!(lower.startsWith("kaspa:") || lower.startsWith("kaspatest:")) || '?' in text) return text
+        val colon = text.indexOf(':')
+        if (colon < 0) return text
+        val payload = text.substring(colon + 1)
+        return if (payload == payload.uppercase() || payload == payload.lowercase()) lower else text
+    }
+
     /**
      * The payload an address version carries (iOS `Bech32.isValid`): v0 a 32-byte x-only Schnorr
      * key, v1 a 33-byte compressed ECDSA key, v8 a 32-byte script hash. Any other version, or any
@@ -185,6 +203,9 @@ object KaspaAddress {
      * Returns the scriptPublicKey hex for a given address.
      */
     fun getScriptPublicKey(address: String): String {
+        // Known prefixes only (iOS 369794e `KaspaAddress.init?(address:)`): anything else would
+        // build a script for an address no Kaspa network has.
+        require(address.substringBefore(':', "") in SCRIPT_HRPS) { "Unknown address prefix" }
         val (version, payload) = decode(address)
         // A payload that doesn't fit its version builds a malformed script (AND-011).
         require(hasValidPayload(version, payload)) { "Invalid address payload for version $version" }

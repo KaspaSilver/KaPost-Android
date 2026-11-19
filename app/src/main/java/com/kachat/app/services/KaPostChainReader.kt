@@ -1,5 +1,6 @@
 package com.kachat.app.services
 
+import com.kachat.app.util.txIdForLog
 import android.util.Log
 import com.kachat.app.util.KaPostsProtocol
 import kotlinx.coroutines.flow.filterNotNull
@@ -46,7 +47,7 @@ class KaPostChainReader @Inject constructor(
         val tx = try {
             api.getTransactionPayload(txId)
         } catch (e: Exception) {
-            Log.w(TAG, "No transaction for post $txId: ${e.message}")
+            Log.w(TAG, "No transaction for post ${txId.txIdForLog()}: ${e.message}")
             return null
         }
         val payload = tx.payload?.takeIf { it.isNotBlank() }?.let { hexToString(it) } ?: return null

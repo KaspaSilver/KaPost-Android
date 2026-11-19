@@ -41,6 +41,79 @@ class VoiceRecorderService @Inject constructor(
 
     val isSupported: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
+    private val _interrupted = kotlinx.coroutines.flow.MutableStateFlow(false)
+    /**
+     * A call, the assistant or another app took the microphone (audio focus lost, iOS b78fdb0
+     * `wasInterrupted`): the recording stopped there and what was recorded so far waits for Send
+     * or the trash. Cleared when the next recording starts or this one ends.
+     */
+    val interrupted: kotlinx.coroutines.flow.StateFlow<Boolean> = _interrupted
+
+    private val audioManager: android.media.AudioManager? by lazy {
+        context.getSystemService(android.media.AudioManager::class.java)
+    }
+    private var focusRequest: android.media.AudioFocusRequest? = null
+
+    /**
+     * Takes the audio for the recording, as iOS's record session does (other apps' audio pauses),
+     * and listens for it being taken away: a phone call or another app stops the recording
+     * ([interruptCapture]).
+     */
+    private fun takeAudioFocus() {
+        releaseAudioFocus()
+        val manager = audioManager ?: return
+        val request = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+            .setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setOnAudioFocusChangeListener(
+                { change ->
+                    if (change == android.media.AudioManager.AUDIOFOCUS_LOSS ||
+                        change == android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+                    ) {
+                        interruptCapture()
+                    }
+                },
+                android.os.Handler(android.os.Looper.getMainLooper()),
+            )
+            .build()
+        focusRequest = request
+        runCatching { manager.requestAudioFocus(request) }
+    }
+
+    /** Gives the audio back (other apps' audio may resume, iOS b78fdb0 `releaseAudioSession`). */
+    private fun releaseAudioFocus() {
+        val request = focusRequest ?: return
+        focusRequest = null
+        runCatching { audioManager?.abandonAudioFocusRequest(request) }
+    }
+
+    /**
+     * The microphone was taken away (iOS b78fdb0 `handleInterruption`): capture stops where it got
+     * to, keeping what it has for [stopVoiceNoteParts] / [stopRecording] or [cancelRecording], and
+     * the audio is given back.
+     */
+    private fun interruptCapture() {
+        if (_interrupted.value) return
+        val active = partsRecorder != null || opusRecorder != null || recorder != null
+        if (!active) return
+        partsRecorder?.stopCapture()
+        opusRecorder?.stopCapture()
+        recorder?.let { runCatching { it.pause() } }
+        _interrupted.value = true
+        releaseAudioFocus()
+    }
+
+    /**
+     * The active recording's length from the recorder's own clock, in ms (iOS b78fdb0: the time and
+     * the 2:50 cut-off go by `currentTime`, so they can't drift from what the file holds). Null for
+     * MediaRecorder's note, which has no clock to read: the caller keeps its wall clock.
+     */
+    fun recordedMs(): Long? = partsRecorder?.capturedMs ?: opusRecorder?.capturedMs
+
     /** The active recording is iOS's own WebM layout ([OpusWebMRecorder]), not MediaRecorder's -
      *  the fee preview sizes it by [VoiceMessage.estimatedRecordingBytes]'s matching rate. */
     val writesOwnWebM: Boolean get() = opusRecorder != null
@@ -63,6 +136,8 @@ class VoiceRecorderService @Inject constructor(
             maxDurationMs = (policy.maxSeconds * 1000).toLong()
             maxBytes = null
             fallbackStopsAtBytes = false
+            _interrupted.value = false
+            takeAudioFocus()
             return
         }
         startRecording(
@@ -76,15 +151,22 @@ class VoiceRecorderService @Inject constructor(
     /**
      * Stops a room voice note and returns its parts in order, every part a complete WebM-Opus file
      * (one when it is a part's length or shorter); empty when nothing usable was captured. A
-     * MediaRecorder note (no platform Opus encoder) is its one file.
+     * MediaRecorder note (no platform Opus encoder) is its one file. A failed encode throws, for
+     * the room to say so (iOS `stopAndEncodeParts` throws to "Failed to send voice message").
      */
     suspend fun stopVoiceNoteParts(): List<File> {
         partsRecorder?.let { parts ->
             partsRecorder = null
+            _interrupted.value = false
+            // An interruption already gave the audio back.
+            releaseAudioFocus()
             return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                runCatching { parts.finishParts(context.cacheDir) }
-                    .onFailure { Log.w("VoiceRecorderService", "Could not encode the recorded voice note", it) }
-                    .getOrDefault(emptyList())
+                try {
+                    parts.finishParts(context.cacheDir)
+                } catch (e: Exception) {
+                    Log.w("VoiceRecorderService", "Could not encode the recorded voice note", e)
+                    throw e
+                }
             }
         }
         return listOfNotNull(stopRecording())
@@ -115,6 +197,8 @@ class VoiceRecorderService @Inject constructor(
         OpusWebMRecorder.start(maxDurationMs, maxBytes?.toInt())?.let { started ->
             opusRecorder = started
             outputFile = file
+            _interrupted.value = false
+            takeAudioFocus()
             return file
         }
         val newRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -140,6 +224,8 @@ class VoiceRecorderService @Inject constructor(
         }
         recorder = newRecorder
         outputFile = file
+        _interrupted.value = false
+        takeAudioFocus()
         return file
     }
 
@@ -165,6 +251,10 @@ class VoiceRecorderService @Inject constructor(
 
     /** Stops the active recording and returns the file, or null if nothing usable was captured. */
     fun stopRecording(): File? {
+        if (partsRecorder == null && (opusRecorder != null || recorder != null)) {
+            _interrupted.value = false
+            releaseAudioFocus()
+        }
         opusRecorder?.let { opus ->
             opusRecorder = null
             val file = outputFile
@@ -195,6 +285,9 @@ class VoiceRecorderService @Inject constructor(
 
     /** Stops (if needed) and discards the in-progress recording — no message should ever come out of this. */
     fun cancelRecording() {
+        // Nothing is sent, the file goes, and the audio is given back (iOS b78fdb0 `cancel`).
+        _interrupted.value = false
+        releaseAudioFocus()
         partsRecorder?.let { parts ->
             partsRecorder = null
             parts.cancel()

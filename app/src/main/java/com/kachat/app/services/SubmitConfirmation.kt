@@ -26,6 +26,14 @@ class SendOutcomeUnknownException(val txId: String, cause: Exception) : IllegalS
 class NoCoinFreeYetException : IllegalStateException("Insufficient funds: No UTXOs found")
 
 /**
+ * A post or room message (any zero-amount payload send) whose coins don't fit one transaction: at
+ * most 80 inputs and 100,000 grams (iOS 369794e, `KaspaUtxoSelector.fitsOneTransaction`). Nothing
+ * was sent; [message] asks the person to compound ("Your balance is spread over too many small
+ * coins for one transaction. Compound UTXOs in Manage Addresses, then try again.", localized).
+ */
+class TooManySmallCoinsException(message: String) : IllegalStateException(message)
+
+/**
  * A node answered a submit with a rejection (iOS `NodeRejectedTransactionError`). Only one about the
  * transaction itself ([isVerdict]: bad signature, fee, mass...) is a verdict on it: then a lost
  * answer to another try of the same submit no longer makes it read as "may have gone through" (iOS
@@ -166,9 +174,9 @@ object SubmitConfirmation {
      * ([txId] empty) the submit runs exactly as before, unchecked.
      *
      * After a rejection rather than a lost answer, [isKnownAfterRejection] asks instead: a node
-     * turned the transaction down, so a REST server typed into Settings isn't enough to call it
-     * sent - only a mempool, or the built-in REST server (iOS 33095ac `isTransactionKnown
-     * (afterRejection:)`).
+     * turned the transaction down, so one node's mempool or a REST server typed into Settings
+     * isn't enough to call it sent - only two nodes' mempools, or the built-in REST server (iOS
+     * 369794e `isTransactionKnown(afterRejection:)`).
      */
     suspend fun submitOrConfirmKnown(
         txId: String,

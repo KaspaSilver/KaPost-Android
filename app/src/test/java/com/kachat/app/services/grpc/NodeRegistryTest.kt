@@ -5,9 +5,16 @@ import org.junit.Test
 
 class NodeRegistryTest {
 
-    private fun reachable(address: String, synced: Boolean = true) = NodeProbeResult(
+    // Unit tests run on mainnet (KaspaNetwork.launch), so an eligible node reports "kaspa-mainnet"
+    // (iOS 369794e `NodeRegistry.isActiveEligible`).
+    private fun reachable(
+        address: String,
+        synced: Boolean = true,
+        networkName: String? = "kaspa-mainnet",
+        daa: Long? = 123L,
+    ) = NodeProbeResult(
         address = address, reachable = true, latencyMs = 42, isSynced = synced,
-        isUtxoIndexed = true, serverVersion = "1.0.0", networkName = "mainnet", virtualDaaScore = 123L
+        isUtxoIndexed = true, serverVersion = "1.0.0", networkName = networkName, virtualDaaScore = daa
     )
 
     private fun unreachable(address: String) = NodeProbeResult(
@@ -90,5 +97,49 @@ class NodeRegistryTest {
 
         registry.update("b:16110", "Seed", reachable("b:16110"))
         assertEquals(true, registry.lastSuccessAt()!! > 0)
+    }
+
+    // MARK: - Active eligibility (iOS 369794e)
+
+    @Test
+    fun `a node on another network is Suspect, unless the user added it`() {
+        val registry = NodeRegistry()
+        registry.update("t:16110", "Seed", reachable("t:16110", networkName = "kaspa-testnet-10"))
+        assertEquals("Suspect", registry.statusOf(registry.snapshot().single()))
+
+        val manual = NodeRegistry()
+        manual.update("m:16110", "Manual", reachable("m:16110", networkName = "kaspa-testnet-10"))
+        assertEquals("Active", manual.statusOf(manual.snapshot().single()))
+    }
+
+    @Test
+    fun `a node that never named its network is Suspect`() {
+        val registry = NodeRegistry()
+        registry.update("n:16110", "Seed", reachable("n:16110", networkName = null))
+        assertEquals("Suspect", registry.statusOf(registry.snapshot().single()))
+    }
+
+    @Test
+    fun `a failed network read keeps the name reported before`() {
+        val registry = NodeRegistry()
+        registry.update("k:16110", "Seed", reachable("k:16110"))
+        registry.update("k:16110", "Seed", reachable("k:16110", networkName = null))
+        val record = registry.snapshot().single()
+        assertEquals("kaspa-mainnet", record.lastProbe?.networkName)
+        assertEquals("Active", registry.statusOf(record))
+    }
+
+    @Test
+    fun `a node more than 600 DAA behind the pool's median is Suspect`() {
+        val registry = NodeRegistry()
+        registry.update("a:16110", "Seed", reachable("a:16110", daa = 1_000_000L))
+        registry.update("b:16110", "Seed", reachable("b:16110", daa = 1_000_000L))
+        registry.update("near:16110", "Seed", reachable("near:16110", daa = 999_500L))
+        registry.update("far:16110", "Seed", reachable("far:16110", daa = 998_000L))
+        val byAddress = registry.snapshot().associateBy { it.address }
+        assertEquals(600L, NodeRegistry.MAX_ACTIVE_DAA_LAG)
+        assertEquals("Active", registry.statusOf(byAddress.getValue("a:16110")))
+        assertEquals("Active", registry.statusOf(byAddress.getValue("near:16110")))
+        assertEquals("Suspect", registry.statusOf(byAddress.getValue("far:16110")))
     }
 }

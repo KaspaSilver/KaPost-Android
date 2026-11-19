@@ -27,3 +27,9 @@ private val kaspaAddressInText = Regex(
  * DiagnosticsExportService runs every log it bundles through this.
  */
 fun String.redactingKaspaAddresses(): String = kaspaAddressInText.replace(this, "…$3")
+
+/**
+ * A transaction id for a log line: its first 12 characters only (iOS b78fdb0, "logs give only a
+ * transaction id's first 12"), enough to match a line against an id you already have.
+ */
+fun String.txIdForLog(): String = take(12)

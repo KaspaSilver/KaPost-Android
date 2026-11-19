@@ -1,5 +1,6 @@
 package com.kachat.app.services
 
+import com.kachat.app.util.txIdForLog
 import android.content.Context
 import android.util.Log
 import com.kachat.app.util.KaspaAddress
@@ -107,7 +108,7 @@ class BroadcastSenderVerifier @Inject constructor(
         } else {
             "the address input 0 spends from could not be found out, so the sender is unverified"
         }
-        Log.w(TAG, "Public chat: dropped a #$channel post, tx $txId: $reason.")
+        Log.w(TAG, "Public chat: dropped a #$channel post, tx ${txId.txIdForLog()}: $reason.")
     }
 
     /** Verdict for a live hit from what is already known here - no network. */

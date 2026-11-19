@@ -5,8 +5,18 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import com.kachat.app.util.KaspaAddress
 
 class NameServicesTest {
+    /** A real mainnet address (unit tests run on mainnet): [NameResolution] keeps only an
+     *  address valid on the running network (iOS 369794e). */
+    private fun mainnetAddress(seed: Int): String =
+        KaspaAddress.encode("kaspa", 0x00, ByteArray(32) { (it * 7 + seed).toByte() })
+
+    private val kAddress = mainnetAddress(1)
+    private val kaspaAddress = mainnetAddress(2)
+    private val kachatAddress = mainnetAddress(3)
+
     @Test
     fun `dotk normalizes like its SDK`() {
         assertEquals("bob", NameNormalization.dotkCanonical("  Bob.K "))
@@ -39,8 +49,8 @@ class NameServicesTest {
     fun `primary is the typed ending, and a bare name is a kachat name only`() {
         val results = listOf(
             NameResolution(NameServiceTLD.KAS, "bob.kas", null, false),
-            NameResolution(NameServiceTLD.K, "bob.k", "kaspa:k", false),
-            NameResolution(NameServiceTLD.KASPA, "bob.kaspa", "kaspa:kaspa", false),
+            NameResolution(NameServiceTLD.K, "bob.k", kAddress, false),
+            NameResolution(NameServiceTLD.KASPA, "bob.kaspa", kaspaAddress, false),
         )
         // A bare "bob" means bob.kachat (Android ea932a0a = iOS 5a5122d): another service's bob
         // is never picked for it.
@@ -50,8 +60,32 @@ class NameServicesTest {
         assertTrue(NameServicesClient.looksLikeName("bob.k"))
         assertFalse(NameServicesClient.looksLikeName("kaspa:qqq"))
 
-        val withKachat = results + NameResolution(NameServiceTLD.KACHAT, "bob.kachat", "kaspa:kachat", false)
+        val withKachat = results + NameResolution(NameServiceTLD.KACHAT, "bob.kachat", kachatAddress, false)
         assertEquals(NameServiceTLD.KACHAT, NameServicesClient.primary(withKachat, "bob")?.tld)
         assertEquals(NameServiceTLD.K, NameServicesClient.primary(withKachat, "bob.k")?.tld)
+    }
+
+    @Test
+    fun `an answer that isn't an address of this network is no answer, and marked failed`() {
+        assertTrue(KaspaAddress.isValidOnActiveNetwork(kAddress))
+        val good = NameResolution(NameServiceTLD.K, "bob.k", kAddress, false)
+        assertEquals(kAddress, good.address)
+        assertFalse(good.failed)
+
+        val testnet = KaspaAddress.encode("kaspatest", 0x00, ByteArray(32) { (it * 7 + 1).toByte() })
+        for (bad in listOf("kaspa:k", "kaspa:kachat", testnet, "not an address")) {
+            val resolution = NameResolution(NameServiceTLD.K, "bob.k", bad, false)
+            assertNull(bad, resolution.address)
+            assertTrue(bad, resolution.failed)
+        }
+
+        // Not registered (no address) stays a plain "not found", not a failure.
+        val missing = NameResolution(NameServiceTLD.K, "bob.k", null, false)
+        assertNull(missing.address)
+        assertFalse(missing.failed)
+
+        // A fake address is never picked as the answer.
+        val results = listOf(NameResolution(NameServiceTLD.KACHAT, "bob.kachat", "kaspa:kachat", false))
+        assertNull(NameServicesClient.primary(results, "bob"))
     }
 }

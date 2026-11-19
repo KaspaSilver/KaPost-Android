@@ -62,6 +62,87 @@ object KaspaTransactionId {
         return id.joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * A transaction's id worked out here from what a node handed back (iOS 369794e
+     * `NodePoolService.transactionId(of:)`): version 0 as [compute], version 1 as the `.kachat`
+     * builders' [com.kachat.app.services.kachatnames.Tx.idHex]; null for one it can't read. Nodes
+     * are unauthenticated, so a mempool entry only counts when its transaction hashes to the id
+     * asked about.
+     */
+    fun compute(tx: protowire.Rpc.RpcTransaction): String? = try {
+        when (tx.version) {
+            0 -> compute(
+                RawTransaction(
+                    version = 0,
+                    inputs = tx.inputsList.map { input ->
+                        com.kachat.app.services.RawInput(
+                            previousOutpoint = com.kachat.app.services.Outpoint(
+                                transactionId = input.previousOutpoint.transactionId,
+                                index = input.previousOutpoint.index,
+                            ),
+                            signatureScript = "",
+                            sequence = input.sequence,
+                            sigOpCount = input.sigOpCount,
+                        )
+                    },
+                    outputs = tx.outputsList.map { output ->
+                        com.kachat.app.services.RawOutputWithVersion(
+                            amount = output.amount,
+                            scriptPublicKey = com.kachat.app.services.ScriptPublicKeyWithVersion(
+                                scriptPublicKey = output.scriptPublicKey.scriptPublicKey,
+                                version = output.scriptPublicKey.version,
+                            ),
+                        )
+                    },
+                    lockTime = tx.lockTime,
+                    subnetworkId = tx.subnetworkId,
+                    gas = tx.gas,
+                    payload = tx.payload,
+                )
+            )
+            1 -> {
+                val names = com.kachat.app.services.kachatnames.KachatNames
+                com.kachat.app.services.kachatnames.Tx(
+                    version = 1,
+                    inputs = tx.inputsList.map { input ->
+                        com.kachat.app.services.kachatnames.TxInput(
+                            outpoint = com.kachat.app.services.kachatnames.Outpoint(
+                                names.unhex32(input.previousOutpoint.transactionId),
+                                input.previousOutpoint.index,
+                            ),
+                            signatureScript = ByteArray(0),
+                            sequence = input.sequence,
+                            computeBudget = input.computeBudget,
+                        )
+                    },
+                    outputs = tx.outputsList.map { output ->
+                        com.kachat.app.services.kachatnames.TxOutput(
+                            value = output.amount,
+                            scriptVersion = output.scriptPublicKey.version,
+                            script = names.unhex(output.scriptPublicKey.scriptPublicKey),
+                            covenant = if (output.hasCovenant()) {
+                                com.kachat.app.services.kachatnames.CovenantBinding(
+                                    authorizingInput = output.covenant.authorizingInput,
+                                    covenantId = names.unhex(output.covenant.covenantId),
+                                )
+                            } else {
+                                null
+                            },
+                        )
+                    },
+                    lockTime = tx.lockTime,
+                    subnetworkId = names.unhex(tx.subnetworkId),
+                    gas = tx.gas,
+                    payload = names.unhex(tx.payload),
+                    storageMass = tx.storageMass,
+                ).idHex
+            }
+            else -> null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
     private fun le(value: Short): ByteArray =
         ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(value).array()
 

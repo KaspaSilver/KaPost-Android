@@ -21,8 +21,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
@@ -31,7 +29,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.lifecycleScope
-import com.kachat.app.services.CrashRecorder
 import com.kachat.app.services.NotificationHelper
 import com.kachat.app.ui.theme.KaChatTheme
 import com.kachat.app.ui.KaChatApp
@@ -43,7 +40,6 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import javax.inject.Inject
 
 /**
@@ -195,7 +191,6 @@ class MainActivity : AppCompatActivity() {
                         pendingOwnAddress = pendingOwnAddress,
                         onPendingOwnAddressHandled = { pendingOwnAddress = null }
                     )
-                    CrashNotice()
                     BatteryExemptionRationale(isLoggedIn = isLoggedIn)
                 }
             }
@@ -204,21 +199,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Shown once on the launch after the app crashed: the previous process died before anyone
-     * could see why, and its record is the one thing that turns "it will not open" into a fix.
-     * Share sends the newest report to a share sheet (mail, Telegram, anything); Not now keeps
-     * it for the diagnostics archive under Settings > Diagnostics.
-     */
-    /**
      * Says why before Android asks. Only inside the app proper - logged in, no onboarding wizard
-     * running - and never on the same launch as the crash notice, so two sheets never stack.
-     * Dismissing it counts as "Not now": asked once, as the system dialog always was.
+     * running. Dismissing it counts as "Not now": asked once, as the system dialog always was.
      */
     @androidx.compose.runtime.Composable
     private fun BatteryExemptionRationale(isLoggedIn: Boolean) {
         val onboardingHeld by onboardingGate.held.collectAsState()
-        val crashNoticePending = remember { CrashRecorder.unseenCrash(this) != null }
-        if (!batteryRationaleDue || !isLoggedIn || onboardingHeld || crashNoticePending) return
+        if (!batteryRationaleDue || !isLoggedIn || onboardingHeld) return
         com.kachat.app.ui.screens.ActionSheetContainer(
             title = androidx.compose.ui.res.stringResource(R.string.battery_rationale_title),
             subtitle = androidx.compose.ui.res.stringResource(R.string.battery_rationale_body),
@@ -237,41 +224,6 @@ class MainActivity : AppCompatActivity() {
                 onClick = { markBatteryExemptionAsked() },
             )
         }
-    }
-
-    @androidx.compose.runtime.Composable
-    private fun CrashNotice() {
-        val crashFile = remember { CrashRecorder.unseenCrash(this) }
-        var show by remember { mutableStateOf(crashFile != null) }
-        if (!show || crashFile == null) return
-        com.kachat.app.ui.theme.IosAlertDialog(
-            onDismissRequest = { show = false; CrashRecorder.markSeen(this) },
-            title = { Text("KaPost closed unexpectedly") },
-            text = { Text("The app did not close normally the last time it ran. A report of what happened was saved. Sharing it with the developer is the quickest way to get it fixed - it contains no messages, keys or addresses.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    show = false
-                    CrashRecorder.markSeen(this)
-                    shareCrashReport(crashFile)
-                }) { Text("Share report") }
-            },
-            dismissButton = {
-                TextButton(onClick = { show = false; CrashRecorder.markSeen(this) }) { Text("Not now") }
-            }
-        )
-    }
-
-    private fun shareCrashReport(file: File) {
-        runCatching {
-            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-            val send = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, "KaPost crash report")
-                putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(Intent.createChooser(send, "Share crash report"))
-        }.onFailure { android.util.Log.w("MainActivity", "Could not share crash report", it) }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -394,9 +346,11 @@ class MainActivity : AppCompatActivity() {
                 // three ways across the iOS/Android/indexer contracts (see the audit note in
                 // KaChatFirebaseMessagingService) — accept all of them rather than silently
                 // deep-linking to nothing.
+                // Only a transaction id: the payload is the push service's word, not ours (iOS
+                // b78fdb0 `isTxId(postId)`).
                 val postId = FCM_KEYS_POST_ID.firstNotNullOfOrNull {
                     intent.getStringExtra(it)?.takeIf { value -> value.isNotBlank() }
-                }?.let { KaChatLink.postIdOrNull(it) }
+                }?.trim()?.takeIf { KaPostsDeepLink.isTxId(it) }?.lowercase()
                 // A reply or a quote targets the action ITSELF - the push's tx_id is its own - and
                 // the landing rule opens its parent's thread with it spliced in and scrolled to,
                 // the same as a tap on the foreground banner (iOS 093fe4d). Anything else opens

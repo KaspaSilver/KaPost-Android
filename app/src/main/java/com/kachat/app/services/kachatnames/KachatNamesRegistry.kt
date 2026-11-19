@@ -44,8 +44,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * The `.kachat` registry for the screens: lookups, an owner's names, listings, lapsed names,
- * offers, history and identities, from one of two sources -
+ * The `.kachat` registry for the screens: lookups, an owner's names, offers, history and
+ * identities, from one of two sources (read only: KaPost signs no registry transaction, iOS b78fdb0) -
  *
  * - **the names indexer** (KACHAT_NAMES_INDEXER.md Part D) at the indexer URL (Connection
  *   Settings), used when that field is set and `GET /names/status` answers 200 for this manifest's
@@ -593,27 +593,16 @@ class KachatNamesRegistry @Inject constructor(
         val src = _source.value
         if (src is Source.Indexer) {
             val j = fromIndexer(src.base, "/names/$name") { IndexerApi.NameJson.parse(it) }
-            if (j != null) return j.info(::keyOf)?.let { Lookup.Registered(it) } ?: Lookup.Free(name, j.gap?.info)
+            if (j != null) {
+                j.info(::keyOf)?.let { return Lookup.Registered(it) }
+                // registered but a record that can't be read is no answer, never "free" (iOS 369794e)
+                if (j.registered == true) throw KachatNames.Failure("the indexer's record of $name can't be read")
+                return Lookup.Free(name, j.gap?.info)
+            }
         }
         val st = readChainState()
         return st.name(name)?.let { Lookup.Registered(RegistryState.info(it)) }
             ?: Lookup.Free(name, st.gap(Codec.key(name))?.let { RegistryState.info(it) })
-    }
-
-    /**
-     * [lookup] for a step that spends on the answer (a commit, a registration). A free answer from
-     * a chain copy a few minutes old can be wrong, so the copy is walked first; whatever this has
-     * to say then comes from the tip, or it throws (iOS ee5ec98).
-     */
-    suspend fun lookupForCommit(raw: String): Lookup {
-        val m = prepare()
-        if (_source.value == Source.Chain) {
-            val asked = System.currentTimeMillis()
-            walkShared(m)
-            val at = chainTipAt
-            if (at == null || at < asked) throw KachatNames.Failure("the registry is still being read from the chain")
-        }
-        return lookup(raw)
     }
 
     /**
@@ -713,15 +702,6 @@ class KachatNamesRegistry @Inject constructor(
         return System.currentTimeMillis() - at < ageMs
     }
 
-    /** Whether a read is solid enough to spend on with nobody confirming it: the indexer's, or a
-     *  chain copy at the tip within the last two minutes (iOS ee5ec98). */
-    val readsAreCurrentForAutoSpend: Boolean
-        get() = when (_source.value) {
-            is Source.Indexer -> true
-            Source.Chain -> chainCopyIsCurrent(120_000L)
-            null -> false
-        }
-
     /**
      * Which of [addresses] hold at least one .kachat name (active or in grace - the same set Your
      * Domains lists, [heldNames]; iOS aa36d2a). Drives the "Contains domain" tag (and the funded-first sort) on Manage
@@ -748,7 +728,7 @@ class KachatNamesRegistry @Inject constructor(
 
     /**
      * The names an owner still holds, oldest first: active ones and expired ones in grace (still
-     * renewable). A lapsed name is no longer theirs - it's in the marketplace's Available tab.
+     * renewable in KaPay). A lapsed name is no longer theirs.
      * Your Domains, its count on Profile and the "Contains domain" tag all show this set (iOS aa36d2a).
      */
     suspend fun heldNames(owner: ByteArray): List<NameInfo> = held(names(owner, includeInactive = true), graceMs)
@@ -763,7 +743,8 @@ class KachatNamesRegistry @Inject constructor(
         while (true) {
             val now = KachatNames.nowMs()
             val next = nextLapse(still, graceMs, now) ?: return
-            delay(next - now + 500)
+            // at most a day at a time, so a far-off (or junk) time can't overflow the wait (iOS 369794e)
+            delay(minOf(maxOf(0L, next - now), 86_400_000L) + 500)
             still = held(still, graceMs)
             update(still)
         }
@@ -787,56 +768,6 @@ class KachatNamesRegistry @Inject constructor(
         return all
             .filter { includeInactive || it.status(grace) == Status.ACTIVE }
             .sortedWith(compareBy<NameInfo>({ it.registeredAt ?: Long.MAX_VALUE }, { it.name }))
-    }
-
-    /** Active names listed for sale, most recently changed first. */
-    suspend fun listings(): List<NameInfo> {
-        prepare()
-        val src = _source.value
-        val grace = graceMs
-        if (src is Source.Indexer) {
-            val j = fromIndexer(src.base, "/market/listings?sort=recent") { IndexerApi.NameJson.parseListings(it) }
-            // an expired name's old listing is not for sale, whatever the indexer kept (iOS ba1a734)
-            if (j != null) return forSale(j.mapNotNull { it.info(::keyOf) }, grace)
-        }
-        return readChainState().names.map { RegistryState.info(it) }
-            .filter { it.isListed && it.status(grace) == Status.ACTIVE }
-            .sortedByDescending { it.updatedAt ?: 0L }
-    }
-
-    /** Lapsed names anyone may claim, oldest expiry first (the Available tab, iOS eea52b2). */
-    suspend fun lapsed(): List<NameInfo> {
-        prepare()
-        val src = _source.value
-        if (src is Source.Indexer) {
-            val j = fromIndexer(src.base, "/names/expiring") { IndexerApi.NameJson.parseNames(it) }
-            if (j != null) return j.mapNotNull { it.info(::keyOf) }
-        }
-        return reclaimable(readChainState().names.map { RegistryState.info(it) }, graceMs)
-    }
-
-    /**
-     * Names that expired and are still in their grace period (only their owner can renew them),
-     * soonest release first: each is free to claim at `expiresAt + graceMs` (the Expired tab, iOS
-     * cb3c27d). The indexer serves `GET /names/grace` (kachat-indexer docs/KACHAT_NAMES_GRACE.md);
-     * an indexer without it yet is answered from this device's own chain walk when it has one.
-     */
-    suspend fun inGrace(): List<NameInfo> {
-        prepare()
-        val grace = graceMs
-        // only a copy walked to the tip recently: "none here" from another says nothing (iOS ee5ec98)
-        val fromChain = { readChainState().names.map { RegistryState.info(it) } }
-        val all = when (val src = _source.value) {
-            is Source.Indexer -> try {
-                IndexerApi.NameJson.parseNames(get(src.base, "/names/grace")).mapNotNull { it.info(::keyOf) }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                fromChain()
-            }
-            else -> fromChain()
-        }
-        return inGracePeriod(all, grace)
     }
 
     /** Open offers on a name. Without an indexer only the offers this device made are known. */
@@ -873,154 +804,6 @@ class KachatNamesRegistry @Inject constructor(
             fromIndexer(src.base, "/names/$name/history") { IndexerApi.EventJson.parseEvents(it) }?.let { return it }
         }
         return readChainState().events.filter { it.name == name }.reversed()
-    }
-
-    /**
-     * Recent registry activity, newest first: every registration, renewal, extension, listing,
-     * sale, offer, transfer, release and reclaim. An indexer serves it at `GET /names/activity`;
-     * one without that endpoint yet answers only market events (`/market/activity`, iOS 0765ce0).
-     */
-    suspend fun activity(): List<Event> {
-        prepare()
-        val src = _source.value
-        if (src is Source.Indexer) {
-            val all = try {
-                IndexerApi.EventJson.parseEvents(get(src.base, "/names/activity"))
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
-            }
-            if (all != null) return all
-            fromIndexer(src.base, "/market/activity") { IndexerApi.EventJson.parseEvents(it) }?.let { return it }
-        }
-        // registry v4 has no price changes: every event is a name's (iOS c8f1086)
-        return readChainState().events.reversed().take(200)
-    }
-
-    /** A count or amount over the last 24 hours, the last 7 days and all time. */
-    data class Totals(val last24h: Long, val last7d: Long, val total: Long)
-
-    /**
-     * How many .kachat transactions there were and what they paid, across the registry - for
-     * KaChat Stats and the market's Activity page (iOS f5d34f4). An indexer reports both
-     * (`GET /names/activity/stats`, else `GET /stats/names`: fees = what each transaction paid
-     * miners, the registry's price included, since that is how the price is paid). Neither
-     * answering (mainnet's `/stats/names` is a 503 today), or read from the chain instead, the
-     * events are counted and each registration, extension and renewal priced at the registry's
-     * fixed prices (iOS 4a0f256). The fees are null where they can't be worked out (an indexer
-     * too old to record them).
-     */
-    suspend fun activityTotals(): Pair<Totals, Totals?> {
-        val m = prepare()
-        return when (val src = _source.value) {
-            is Source.Indexer -> {
-                // `/names/activity/stats` first: a proxy may send /stats/* to a server without the
-                // names module (mainnet today). Neither answering, the activity feed is counted.
-                suspend fun stats(path: String): IndexerApi.StatsJson? = try {
-                    IndexerApi.StatsJson.parse(get(src.base, path))
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-                val j = stats("/names/activity/stats") ?: stats("/stats/names")
-                    ?: return totals(allIndexerEvents(src.base), m.params)
-                val fees = j.fees?.let { f ->
-                    val t = f.total.toLongOrNull()
-                    val d = f.last24h.toLongOrNull()
-                    val w = f.last7d.toLongOrNull()
-                    if (t != null && d != null && w != null) Totals(last24h = d, last7d = w, total = t) else null
-                }
-                val t = j.transactions
-                if (t != null) {
-                    Totals(last24h = t.last24h, last7d = t.last7d, total = t.total) to fees
-                } else {
-                    // an indexer from before `transactions`: the per-kind figures, added up
-                    val kinds = j.activity.orEmpty().values
-                    Totals(
-                        last24h = kinds.sumOf { it.last24h },
-                        last7d = kinds.sumOf { it.last7d },
-                        total = kinds.sumOf { it.total },
-                    ) to fees
-                }
-            }
-            else -> totals(readChainState().events, m.params)
-        }
-    }
-
-    /** Every registry event an indexer's `/names/activity` holds, newest first, page by page (at
-     *  most 50 pages of 200; iOS 4a0f256). */
-    private suspend fun allIndexerEvents(base: String): List<Event> {
-        val events = ArrayList<Event>()
-        var cursor: String? = null
-        for (i in 0 until 50) {
-            var path = "/names/activity?length=200"
-            if (cursor != null) path += "&cursor=$cursor"
-            val (page, next) = IndexerApi.EventJson.parseEventsPage(get(base, path))
-            events += page
-            if (next.isNullOrEmpty() || page.isEmpty()) break
-            cursor = next
-        }
-        return events
-    }
-
-    /**
-     * The fixed prices (registry v4, baked into the pinned templates; iOS c8f1086): sompi for a
-     * name's first period, and for every further one, by length 1, 2, 3, 4, 5+ bytes. Null until a
-     * manifest loads.
-     */
-    val registerPrices: List<Long>? get() = service.manifest.value?.params?.registerPrices
-    val renewPrices: List<Long>? get() = service.manifest.value?.params?.renewPrices
-
-    /**
-     * The free gap a lapsed name's reclaim reopens - the two gaps around it, merged: where a claim
-     * of it registers. The claim sheet prices with it; the registration driver reclaims the old
-     * record first and then looks the gap up again (iOS eea52b2).
-     */
-    suspend fun claimGap(n: NameInfo): GapInfo {
-        val (below, above) = exitGaps(n)
-        return mergedGap(below, above)
-    }
-
-    /**
-     * [lookup] as the app shows a name to someone who wants it: a lapsed name is free to claim
-     * (claiming it frees the old record and registers it in one go - see the registration driver),
-     * in the gap its reclaim reopens (iOS eea52b2).
-     */
-    suspend fun claimLookup(raw: String): Lookup {
-        val found = lookup(raw)
-        val lapsed = lapsedRecord(found, graceMs) ?: return found
-        val gap = try {
-            claimGap(lapsed)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            null
-        }
-        return Lookup.Free(lapsed.name, gap)
-    }
-
-    /** The two gaps around a registered name (what release and reclaim spend): below, above. */
-    suspend fun exitGaps(n: NameInfo): Pair<GapInfo, GapInfo> {
-        prepare()
-        return when (val src = _source.value) {
-            is Source.Indexer -> {
-                val down = KachatNames.step(n.key, -1)
-                val up = KachatNames.step(n.key, 1)
-                if (down == null || up == null) throw KachatNames.Failure("no gaps around ${n.name}")
-                val below = IndexerApi.GapJson.parse(get(src.base, "/names/gap/${hex(down)}")).info
-                val above = IndexerApi.GapJson.parse(get(src.base, "/names/gap/${hex(up)}")).info
-                if (below == null || above == null || !below.hi.contentEquals(n.key) || !above.lo.contentEquals(n.key)) {
-                    throw KachatNames.Failure("the indexer has no gaps around ${n.name}")
-                }
-                below to above
-            }
-            else -> {
-                val nb = readChainState().neighbours(n.key) ?: throw KachatNames.Failure("no gaps around ${n.name} yet - refresh")
-                RegistryState.info(nb.first) to RegistryState.info(nb.second)
-            }
-        }
     }
 
     // Identity and profiles
@@ -1546,17 +1329,6 @@ class KachatNamesRegistry @Inject constructor(
         }
     }
 
-    /** An offer this wallet just created: tracked by the walker from now on. */
-    suspend fun trackOffer(offer: OfferInfo) {
-        withContext(Dispatchers.IO) { stateMutex.withLock {
-            val st = _chainState.value?.copy() ?: return@withLock
-            st.trackOffer(offer, System.currentTimeMillis())
-            _chainState.value = st
-            saveCache(st)
-        } }
-        bump()
-    }
-
     // HTTP
 
     private suspend fun get(base: String, path: String): JsonElement = withContext(Dispatchers.IO) {
@@ -1698,35 +1470,13 @@ class KachatNamesRegistry @Inject constructor(
         }
 
         /** The names an owner still holds: active ones and expired ones in grace (still renewable).
-         *  A lapsed name is no longer theirs - it's in the marketplace's Available tab (iOS e26562e, eea52b2). */
+         *  A lapsed name is no longer theirs (iOS e26562e, eea52b2). */
         fun held(names: List<NameInfo>, graceMs: Long, nowMs: Long = KachatNames.nowMs()): List<NameInfo> =
             names.filter { it.status(graceMs, nowMs) != Status.LAPSED }
 
-        /** The gap a reclaim of the name between [below] and [above] reopens: the two merged,
-         *  at the lower one's outpoint (iOS eea52b2 `claimGap`). */
-        fun mergedGap(below: GapInfo, above: GapInfo): GapInfo = GapInfo(below.lo, above.hi, below.outpoint)
-
-        /** The registered record [l] holds when it has lapsed (expired past grace): that name is
-         *  free to claim (iOS eea52b2 `claimLookup`); null for a live record or a free name. */
-        fun lapsedRecord(l: Lookup, graceMs: Long, nowMs: Long = KachatNames.nowMs()): NameInfo? =
-            (l as? Lookup.Registered)?.info?.takeIf { it.status(graceMs, nowMs) == Status.LAPSED }
-
         /** When the next of [names] lapses (unix ms), null when none is left to lapse ([dropLapsed]). */
         fun nextLapse(names: List<NameInfo>, graceMs: Long, nowMs: Long = KachatNames.nowMs()): Long? =
-            names.map { it.expiresAt + graceMs }.filter { it > nowMs }.minOrNull()
-
-        /** Expired names still in their grace period, soonest release first (iOS cb3c27d `inGrace`). */
-        fun inGracePeriod(names: List<NameInfo>, graceMs: Long, nowMs: Long = KachatNames.nowMs()): List<NameInfo> =
-            names.filter { it.status(graceMs, nowMs) == Status.GRACE }.sortedBy { it.expiresAt }
-
-        /** Lapsed names anyone may claim, oldest expiry first (the Available tab, iOS eea52b2). */
-        fun reclaimable(names: List<NameInfo>, graceMs: Long, nowMs: Long = KachatNames.nowMs()): List<NameInfo> =
-            names.filter { it.status(graceMs, nowMs) == Status.LAPSED }.sortedBy { it.expiresAt }
-
-        /** Listings that still stand: a listing only means something while the name is active
-         *  (an expired name can't be bought, only renewed or reclaimed; iOS ba1a734). */
-        fun forSale(listings: List<NameInfo>, graceMs: Long, nowMs: Long = KachatNames.nowMs()): List<NameInfo> =
-            listings.filter { it.isListed && it.status(graceMs, nowMs) == Status.ACTIVE }
+            names.map { KachatNames.clampedSum(it.expiresAt, graceMs) }.filter { it > nowMs }.minOrNull()
 
         // The display rules (iOS e52357d): testnet identity is .kachat everywhere
 
@@ -1736,40 +1486,6 @@ class KachatNamesRegistry @Inject constructor(
         /** Testnet: `<label>.kachat` for an address with an active name (its primary one), null
          *  otherwise or while it is looked up; always null on mainnet. */
         fun kachatName(address: String): String? = cachedIdentityOf(address)?.label?.let { com.kachat.app.models.KachatNameLabel.display(it) }
-
-        /** Counts and prices registry events ([activityTotals] without an indexer's figures), one
-         *  per transaction: registrations, extensions and renewals at the registry's fixed prices
-         *  (iOS f5d34f4, 4a0f256 `totals(of:params:)`). */
-        fun totals(
-            events: List<Event>,
-            params: Params,
-            nowMs: Long = KachatNames.nowMs(),
-        ): Pair<Totals, Totals?> {
-            val d1 = nowMs - 86_400_000L
-            val d7 = nowMs - 7 * 86_400_000L
-            val at = HashMap<String, Long>()
-            val paid = HashMap<String, Long>()
-            for (e in events) {
-                at[e.txId] = maxOf(at[e.txId] ?: 0L, e.at ?: 0L)
-                val name = e.name ?: continue
-                val years = e.years ?: continue
-                if (years <= 0) continue
-                val length = name.toByteArray(Charsets.UTF_8).size
-                when (e.op) {
-                    "register" -> paid[e.txId] = (paid[e.txId] ?: 0L) + params.registerCost(forLength = length, years = years)
-                    "extend", "renew" -> paid[e.txId] = (paid[e.txId] ?: 0L) + params.renewPrice(forLength = length) * years
-                }
-            }
-            var txTotal = 0L; var tx7 = 0L; var tx1 = 0L
-            var feeTotal = 0L; var fee7 = 0L; var fee1 = 0L
-            for ((tx, time) in at) {
-                val fee = paid[tx] ?: 0L
-                txTotal += 1; feeTotal += fee
-                if (time > d7) { tx7 += 1; fee7 += fee }
-                if (time > d1) { tx1 += 1; fee1 += fee }
-            }
-            return Totals(last24h = tx1, last7d = tx7, total = txTotal) to Totals(last24h = fee1, last7d = fee7, total = feeTotal)
-        }
 
         // Addresses
 
@@ -1786,19 +1502,6 @@ class KachatNamesRegistry @Inject constructor(
             val (version, payload) = runCatching { KaspaAddress.decode(a) }.getOrNull() ?: return null
             if (version.toInt() != 0 || payload.size != 32) return null
             return payload
-        }
-
-        /**
-         * The network prefix plus both ends of the address on one line: `kaspatest:qr4x7k...a9z2pq`.
-         * Used where the full address doesn't fit (the name detail's Owner card, iOS 71448d8).
-         */
-        fun compactAddress(address: String): String {
-            val colon = address.indexOf(':')
-            if (colon < 0) return address
-            val prefix = address.substring(0, colon + 1)
-            val body = address.substring(colon + 1)
-            if (body.length <= 14) return address
-            return "$prefix${body.take(6)}...${body.takeLast(6)}"
         }
 
         /** `kaspatest:qr...xyz4`. */

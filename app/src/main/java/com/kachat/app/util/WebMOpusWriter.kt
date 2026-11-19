@@ -108,6 +108,37 @@ object WebMOpusWriter {
     }
 
     /**
+     * [build] with each packet timed by its own length ([packetSamples], 48 kHz samples, one per
+     * packet): a SimpleBlock's timecode is the audio before it, and a Cluster holds the packets
+     * that end within a second of its first - for a room voice note whose 60 ms packets may be
+     * mixed with 20 ms ones (a run the platform encoder's frames couldn't be joined in). With one
+     * packet length throughout, the bytes are [build]'s at that frame length (iOS `buildWebM`).
+     */
+    fun buildTimed(
+        packets: List<ByteArray>,
+        packetSamples: List<Int>,
+        opusHead: ByteArray,
+        sampleRate: Double,
+        durationSeconds: Double,
+        trackUid: Long
+    ): ByteArray {
+        require(packets.size == packetSamples.size) { "One length per packet" }
+        val ebmlHeader = ebmlHeader()
+        val info = info(durationSeconds)
+        val tracks = tracks(opusHead, sampleRate, channels = 1, trackUid = trackUid)
+        val clusters = timedClusters(packets, packetSamples)
+        val segmentPayloadSize = info.size + tracks.size + clusters.size
+        val out = ByteArrayOutputStream(ebmlHeader.size + 12 + segmentPayloadSize)
+        out.write(ebmlHeader)
+        out.write(ID_SEGMENT)
+        out.write(encodeVint(segmentPayloadSize.toLong()))
+        out.write(info)
+        out.write(tracks)
+        out.write(clusters)
+        return out.toByteArray()
+    }
+
+    /**
      * The exact length [build] would write, kept packet by packet - a recording stops before the
      * packet that would carry it past its byte ceiling, without rebuilding the file each time.
      */
@@ -217,6 +248,34 @@ object WebMOpusWriter {
             val end = minOf(index + perCluster, packets.size)
             out.write(cluster(index.toLong() * frameDurationMs, packets.subList(index, end), frameDurationMs))
             index = end
+        }
+        return out.toByteArray()
+    }
+
+    /** [buildTimed]'s Clusters: a packet joins the open Cluster while it ends within a second
+     *  of the Cluster's start (iOS's 1000 / frame-length packets when they are all one length). */
+    private fun timedClusters(packets: List<ByteArray>, packetSamples: List<Int>): ByteArray {
+        val out = ByteArrayOutputStream()
+        var index = 0
+        var start = 0L // samples before packets[index]
+        while (index < packets.size) {
+            val clusterStart = start
+            val clusterMs = clusterStart * 1000L / SAMPLE_RATE_HZ
+            val payload = ByteArrayOutputStream()
+            payload.write(element(ID_CLUSTER_TIMECODE, clusterMs))
+            var first = true
+            while (index < packets.size) {
+                val samples = packetSamples[index].coerceAtLeast(0).toLong()
+                if (!first && start - clusterStart + samples > SAMPLE_RATE_HZ) break
+                // relative to the Cluster's timecode: under a second, inside the signed 16 bits
+                val relative = (start * 1000L / SAMPLE_RATE_HZ - clusterMs)
+                    .coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toInt()
+                payload.write(simpleBlock(packets[index], relative))
+                start += samples
+                index++
+                first = false
+            }
+            out.write(element(ID_CLUSTER, payload.toByteArray()))
         }
         return out.toByteArray()
     }

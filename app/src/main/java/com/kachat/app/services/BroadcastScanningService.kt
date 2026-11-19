@@ -19,6 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import protowire.Rpc
@@ -144,6 +145,17 @@ class BroadcastScanningService @Inject constructor(
                 if (address != null) refreshIndexerTrackedRooms()
             }
         }
+        // An account switch stops the sweep where it is - a room's fetch still out drops its
+        // answer (BroadcastRepository.isCurrentWallet) - and the new account's starts afresh
+        // (iOS b78fdb0 setCurrentWallet: "every room's poll stops here, and the sweep with it").
+        scope.launch {
+            broadcastRepository.activeAddressFlow.drop(1).collect { address ->
+                stopForegroundSweep()
+                // Recorded first (idempotent), so the sweep starts again as the new account.
+                broadcastRepository.onActiveWalletChanged(address)
+                if (notificationHelper.isAppInForeground) startForegroundSweep()
+            }
+        }
         // A room the indexer turned out to track (or stopped tracking): the metered gate's
         // "any wanted room without another delivery path?" answer may have flipped. The screens
         // collect the same flow for their wording.
@@ -230,6 +242,7 @@ class BroadcastScanningService @Inject constructor(
      * the indexer for its newest rows instead (one small request per room, sequential); the open
      * room keeps its own 8s poll and the block scan stays the fast path (iOS 3c14b46).
      */
+    @Synchronized
     private fun startForegroundSweep() {
         if (sweepJob?.isActive == true) return
         sweepJob = scope.launch {
@@ -240,6 +253,7 @@ class BroadcastScanningService @Inject constructor(
         }
     }
 
+    @Synchronized
     private fun stopForegroundSweep() {
         sweepJob?.cancel()
         sweepJob = null
@@ -252,10 +266,12 @@ class BroadcastScanningService @Inject constructor(
     private fun myAddressOrNull(): String? = runCatching { broadcastRepository.myAddress() }.getOrNull()
 
     private suspend fun sweepClosedRooms() {
+        // Signed out: no rooms to sweep (iOS b78fdb0 `startForegroundSweep`).
+        if (!broadcastRepository.isSignedIn()) return
         val targets = synchronized(this) { notifyEnabledChannelNames.toList() }
             .filter { it !in ChessTournamentService.SERVICE_CHANNELS && !notificationHelper.isViewingChannel(it) }
         for (channel in targets) {
-            if (!notificationHelper.isAppInForeground) return
+            if (!notificationHelper.isAppInForeground || !broadcastRepository.isSignedIn()) return
             val fresh = runCatching { broadcastRepository.fetchNewestFromIndexer(channel) }.getOrDefault(emptyList())
             val firstPass = sweptChannels.add(channel)
             // Rows older than a few minutes are backlog, not a message that just arrived - and
@@ -447,6 +463,12 @@ class BroadcastScanningService @Inject constructor(
             }
             senderVerifier.rememberOutputs(txId, outputAddresses)
             if (!isChannelWanted(parsed.channel)) continue
+            // A sender hidden in this room is dropped before the author is checked: checking can
+            // cost REST lookups, and every room on the network posts (iOS 369794e
+            // `hitsWorthVerifying`). The posting address is output 0's, which a verified post's
+            // input 0 must match; storing checks the verified sender again.
+            val postingAddress = outputAddresses.firstOrNull()
+            if (postingAddress != null && isSenderHidden(postingAddress, parsed.channel)) continue
 
             val input0 = tx.inputsList.firstOrNull()
             val hit = BroadcastSenderVerifier.LiveHit(

@@ -56,6 +56,8 @@ fun WholeBanner(
             contentDescription = null,
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
+            // Capped at 5 MB, as iOS's BoundedDownload for profile pictures.
+            imageLoader = avatarImageLoader(context),
             // While a rescanned banner reloads, the cached picture stays up rather than the
             // placeholder (its placeholder is the picture itself).
             loading = { state ->

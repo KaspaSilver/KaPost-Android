@@ -22,6 +22,32 @@ object KaspaUtxoSelector {
     const val TOO_MANY_INPUTS_MESSAGE =
         "This send needs more than $MAX_INPUTS_PER_TRANSACTION inputs. Compound (consolidate) this address's UTXOs first, then try again."
 
+    /** A post or room message whose coins don't fit one transaction (iOS 369794e
+     *  `selectUtxosForContextualMessage`): the English text of `R.string.wallet_53_too_many_small_coins`. */
+    const val TOO_MANY_SMALL_COINS_MESSAGE =
+        "Your balance is spread over too many small coins for one transaction. Compound UTXOs in Manage Addresses, then try again."
+
+    /**
+     * Whether [inputCount] coins still fit one transaction: at most [MAX_INPUTS_PER_TRANSACTION]
+     * of them and [KaspaMass.MAX_STANDARD_MASS] grams; past either the node rejects it (iOS
+     * 369794e: a wallet of many small coins sending a 31 KB voice part needed more than that, the
+     * balance precheck passed, and every part failed). The shared check for a post or room
+     * message, which [selectUtxosAndCalculateFee] applies with `stopAtTransactionLimit`.
+     */
+    fun fitsOneTransaction(
+        inputCount: Int,
+        outputScriptLens: List<Int>,
+        payloadSize: Int,
+        signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
+    ): Boolean =
+        inputCount <= MAX_INPUTS_PER_TRANSACTION &&
+            KaspaMass.calculateMass(
+                numInputs = inputCount,
+                outputScriptLens = outputScriptLens,
+                payloadSize = payloadSize,
+                sigScriptLens = KaspaMass.sigScriptLensFor(inputCount, signatureScriptSize),
+            ) <= KaspaMass.MAX_STANDARD_MASS
+
     /** Coin control picked more than [MAX_INPUTS_PER_TRANSACTION] coins (iOS
      *  selectManualUtxosForPayment's wording). */
     fun tooManySelectedMessage(count: Int): String =
@@ -73,7 +99,11 @@ object KaspaUtxoSelector {
         /** The no-change shape (iOS `emitChange: false`): [estimatedFee] is priced on the
          *  recipient's output alone, so no change output may be added - [changeAmount] goes to
          *  the fee whole. */
-        val noChangeShape: Boolean = false
+        val noChangeShape: Boolean = false,
+        /** `stopAtTransactionLimit`: the next coin would not have fit one transaction
+         *  ([fitsOneTransaction]), so selection stopped there. Short of the amount, the send is
+         *  refused with [TOO_MANY_SMALL_COINS_MESSAGE] (iOS 369794e). */
+        val hitTransactionLimit: Boolean = false,
     ) {
         /**
          * Change too small to keep: there is no output for it, so it goes to the fee, and the
@@ -105,9 +135,14 @@ object KaspaUtxoSelector {
         /** Each input's signature-script size: [KaspaMass.KIP22_SIGNATURE_SCRIPT_LEN] for a
          *  quantum-safe (KIP-22) source, whose bigger inputs every estimate must price (iOS
          *  `signatureScriptSize`). */
-        signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN
+        signatureScriptSize: Int = KaspaMass.SCHNORR_SIGNATURE_SCRIPT_LEN,
+        /** A post or room message (iOS 369794e `selectUtxosForContextualMessage`): stop before a
+         *  coin that would take the transaction past [fitsOneTransaction], and say so in
+         *  [SelectionResult.hitTransactionLimit]. */
+        stopAtTransactionLimit: Boolean = false,
     ): SelectionResult {
         var totalSelected = 0L
+        var hitTransactionLimit = false
         val selectedUtxos = mutableListOf<UtxoEntry>()
         var estimatedFee = 0L
 
@@ -136,6 +171,11 @@ object KaspaUtxoSelector {
         for (utxo in utxos.sortedByDescending { it.utxoEntry.amount }) {
             // Hit the input cap holding a fold: that fold it is.
             if (foldIfNothingBetter != null && selectedUtxos.size >= MAX_INPUTS_PER_TRANSACTION) break
+            if (stopAtTransactionLimit &&
+                !fitsOneTransaction(selectedUtxos.size + 1, outputScriptLens, payloadSize, signatureScriptSize)) {
+                hitTransactionLimit = true
+                break
+            }
             selectedUtxos.add(utxo)
             // Node-supplied: a nonsense amount is refused, never wrapped into a total (IOS-020).
             totalSelected = UtxoMath.add(totalSelected, utxo.utxoEntry.amount)
@@ -223,7 +263,8 @@ object KaspaUtxoSelector {
             changeAmount = changeAmount,
             requiredAmount = requiredAmount,
             storageMassBlocked = storageMassBlocked,
-            noChangeShape = noChangeShape
+            noChangeShape = noChangeShape,
+            hitTransactionLimit = hitTransactionLimit,
         )
     }
 

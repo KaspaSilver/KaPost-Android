@@ -657,6 +657,16 @@ class NodePoolManager @Inject constructor(
             }
         }
 
+        // Only the nodes the app keeps (Active) hold a connection between cycles (iOS 369794e
+        // `GRPCConnectionPool.endLease` / `releaseIdleConnections`): a probe's connection to any
+        // other node is closed once it has answered, where it used to stay open and redial
+        // itself whenever it dropped. The next cycle opens it again to probe it. With no Active
+        // node at all, the one [getBroadcastConnection] falls back to stays: subscriptions may
+        // be on it.
+        val keep = registry.snapshot().filter { registry.statusOf(it) == "Active" }.mapTo(HashSet()) { it.address }
+        if (keep.isEmpty()) (dnsResolvedEndpoints.firstOrNull() ?: seeds.firstOrNull())?.let { keep += it }
+        connections.keys.filter { it !in keep }.forEach { addr -> connections.remove(addr)?.close() }
+
         publish()
 
         // Remember today's best Active nodes for tomorrow's cold start / pinned->automatic
@@ -744,10 +754,12 @@ class NodePoolManager @Inject constructor(
                         amount = entry.utxoEntry.amount,
                         scriptPublicKey = ScriptPublicKey(entry.utxoEntry.scriptPublicKey.scriptPublicKey),
                         blockDaaScore = entry.utxoEntry.blockDaaScore,
-                        isCoinbase = entry.utxoEntry.isCoinbase
+                        isCoinbase = entry.utxoEntry.isCoinbase,
+                        covenantId = entry.utxoEntry.covenantId.takeIf { it.isNotEmpty() },
                     )
                 )
-            }
+            }.distinctBy { it.outpoint } // a node can list one coin twice: the first wins, so coin
+            // control's keyed list can't crash and the selector can't spend one input twice (iOS ee5ec98)
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             // The node's own request timeout: a failed node, so REST is asked instead.
             Log.w("NodePoolManager", "Node UTXO fetch timed out, falling back to REST: ${e.message}")
@@ -789,37 +801,79 @@ class NodePoolManager @Inject constructor(
     ): String {
         val txId = expectedTxId.lowercase()
         // Whatever it spends is held back from the next send, here rather than at each caller (iOS
-        // 33095ac `reserveInputs`), once the submit is known to have gone. An unknown outcome is
-        // deliberately not held (iOS ee5ec98): a resend then picks these same coins, so only one
-        // of the two can land, where held it would pick other coins and both could.
-        val sent = SubmitConfirmation.submitOrConfirmKnown(
-            txId = txId,
-            isKnown = { isTransactionKnown(it, rest) },
-            onRecovered = { e ->
-                Log.w("NodePoolManager", "Submit of ${txId.take(12)} reported \"${e.message}\" but the network has it: treated as sent")
-            },
-            onForeignAnswer = { Log.w("NodePoolManager", "A node answered a submit with a different id than ${txId.take(12)}") },
-            onAnswered = { resendIfNetworkCantSee(txId, rest, submit) },
-            lookup = { id -> isInAnyMempool(id) || (rest != null && isAcceptedViaRest(rest, id)) },
-            // a node turned it down: only a mempool or the built-in REST server can call it sent
-            isKnownAfterRejection = { isTransactionKnown(it, rest, builtInServerOnly = true) },
-            submit = submit,
-        )
+        // 33095ac `reserveInputs`): held from before the submit, so a send running alongside
+        // outside the engine's send queue (.kachat, KNS, scheduled posts) can't pick the same
+        // coins, and given back if nothing went out (iOS 369794e `holdOutpointKeysForSubmit`). An
+        // unknown outcome is deliberately not held (iOS ee5ec98): a resend then picks these same
+        // coins, so only one of the two can land, where held it would pick other coins and both
+        // could.
+        val held = submittedInputs.holdForSubmit(SUBMITTED_INPUTS_KEY, inputs)
+        // Nodes whose word doesn't count: one that answered with a wrong id (iOS 369794e).
+        var excluded: Set<String> = emptySet()
+        val sent = try {
+            SubmitConfirmation.submitOrConfirmKnown(
+                txId = txId,
+                isKnown = { isTransactionKnown(it, rest, excluding = excluded) },
+                onRecovered = { e ->
+                    Log.w("NodePoolManager", "Submit of ${txId.take(12)} reported \"${e.message}\" but the network has it: treated as sent")
+                },
+                onForeignAnswer = {
+                    Log.w("NodePoolManager", "A node answered a submit with a different id than ${txId.take(12)}")
+                    excluded = setOfNotNull(KaspadConnection.takeSubmitAnsweredBy(txId))
+                },
+                // the node that said "sent" isn't asked whether it has it: if it kept the
+                // transaction to itself, its own mempool would say yes and the resend would never
+                // happen (iOS 369794e)
+                onAnswered = {
+                    resendIfNetworkCantSee(txId, rest, setOfNotNull(KaspadConnection.takeSubmitAnsweredBy(txId)), submit)
+                },
+                lookup = { id -> isInAnyMempool(id, excluding = excluded) || (rest != null && isAcceptedViaRest(rest, id)) },
+                // a node turned it down: only two nodes' mempools or the built-in REST server can
+                // call it sent
+                isKnownAfterRejection = { isTransactionKnown(it, rest, builtInServerOnly = true) },
+                submit = submit,
+            )
+        } catch (unknown: SendOutcomeUnknownException) {
+            // Not held, so a resend picks these same coins and only one of the two can land.
+            submittedInputs.release(SUBMITTED_INPUTS_KEY, held)
+            KaspadConnection.takeSubmitAnsweredBy(txId)
+            throw unknown
+        } catch (e: Exception) {
+            releaseUnlessSpent(held, e)
+            KaspadConnection.takeSubmitAnsweredBy(txId)
+            throw e
+        }
         submittedInputs.record(SUBMITTED_INPUTS_KEY, inputs)
         return sent
     }
 
+    /** Nothing went out: the coins go back, unless the node said they're already spent (gone
+     *  either way, and the node goes on listing them for a while; iOS 369794e
+     *  `releaseUnlessSpent`). */
+    private fun releaseUnlessSpent(held: List<String>, error: Exception) {
+        val message = (error.message ?: "").lowercase()
+        if (message.contains("spent") || message.contains("double spend")) return
+        submittedInputs.release(SUBMITTED_INPUTS_KEY, held)
+    }
+
     /**
      * Every submitted transaction's inputs, held back from the next send (iOS 33095ac
-     * `NodePoolService.reserveInputs` -> `ChatService.reserveOutpointKeys`), once the submit went
-     * through (an unknown outcome is not held, iOS ee5ec98). Kept here rather than at each caller, so no path (posts,
-     * tips, room messages, scheduled posts, KNS, `.kachat`) can skip it, and [KaspaWalletEngine]
-     * leaves them out of every coin fetch it builds, prices or counts from. For 120 s
-     * ([PendingSpentOutpoints.TTL_MS], iOS `pendingMessageUtxoTTL`).
+     * `NodePoolService.reserveInputs` -> `ChatService.reserveOutpointKeys`): held from before the
+     * submit and kept once it went through (iOS 369794e; an unknown outcome is not held, iOS
+     * ee5ec98). Kept here rather than at each caller, so no path (posts, tips, room messages,
+     * scheduled posts, KNS, `.kachat`) can skip it, and [KaspaWalletEngine] leaves them out of
+     * every coin fetch it builds, prices or counts from. For 10 min ([PendingSpentOutpoints.TTL_MS],
+     * iOS `reservedOutpointTTL`).
      */
     private val submittedInputs = PendingSpentOutpoints()
 
-    /** [utxos] without the coins a transaction submitted in the last 120 s spent ([submittedInputs]). */
+    /** Holds [outpoints] back from the next send like a submit's (iOS `ChatService.reserveOutpointKeys`):
+     *  a scheduled post's coins, from its build until the scheduled store records them. */
+    fun reserveOutpoints(outpoints: List<Outpoint>) {
+        submittedInputs.record(SUBMITTED_INPUTS_KEY, outpoints)
+    }
+
+    /** [utxos] without the coins a transaction submitted in the last 10 min spent ([submittedInputs]). */
     fun withoutSubmittedInputs(utxos: List<UtxoEntry>): List<UtxoEntry> =
         submittedInputs.filter(SUBMITTED_INPUTS_KEY, utxos)
 
@@ -830,13 +884,14 @@ class NodePoolManager @Inject constructor(
     /**
      * In the background, a transaction the network can't see a moment after a node took it goes out
      * again, in case that node kept it to itself (iOS e5a9b11 `checkedSubmit`). [submit] carries the
-     * same signed transaction, with the same id, so sending it again can't pay twice.
+     * same signed transaction, with the same id, so sending it again can't pay twice. [answeredBy],
+     * the node that said "sent", isn't asked (iOS 369794e).
      */
-    private fun resendIfNetworkCantSee(txId: String, rest: KaspaRestApi?, submit: suspend () -> String) {
+    private fun resendIfNetworkCantSee(txId: String, rest: KaspaRestApi?, answeredBy: Set<String>, submit: suspend () -> String) {
         scope.launch {
             repeat(SubmitConfirmation.RESEND_CHECKS) {
                 kotlinx.coroutines.delay(SubmitConfirmation.RESEND_DELAY_MS)
-                if (isTransactionKnown(txId, rest)) return@launch
+                if (isTransactionKnown(txId, rest, excluding = answeredBy)) return@launch
                 Log.w("NodePoolManager", "The network can't see ${txId.take(12)} yet: sending it again")
                 try {
                     submit()
@@ -846,6 +901,8 @@ class NodePoolManager @Inject constructor(
                     throw e
                 } catch (e: Exception) {
                     Log.w("NodePoolManager", "Sending ${txId.take(12)} again: ${e.message}")
+                } finally {
+                    KaspadConnection.takeSubmitAnsweredBy(txId)
                 }
             }
         }
@@ -930,14 +987,20 @@ class NodePoolManager @Inject constructor(
 
     /** Whether the network already has [txId]: in a mempool (up to three nodes), or accepted
      *  (REST API) - asked twice, 1.5 s apart (iOS NodePoolService.isTransactionKnown).
-     *  [builtInServerOnly]: a node turned the transaction down, so a REST server typed into
-     *  Settings isn't enough to call it sent - only a mempool, or the built-in REST server (iOS
-     *  33095ac `isTransactionKnown(afterRejection:)`). */
-    suspend fun isTransactionKnown(txId: String, rest: KaspaRestApi?, builtInServerOnly: Boolean = false): Boolean {
+     *  [builtInServerOnly]: a node turned the transaction down, so one node's mempool or a REST
+     *  server typed into Settings isn't enough to call it sent - only two nodes' mempools, or the
+     *  built-in REST server (iOS 369794e `isTransactionKnown(afterRejection:)`). [excluding]:
+     *  nodes whose word doesn't count. */
+    suspend fun isTransactionKnown(
+        txId: String,
+        rest: KaspaRestApi?,
+        builtInServerOnly: Boolean = false,
+        excluding: Set<String> = emptySet(),
+    ): Boolean {
         val restUsable = rest != null && (!builtInServerOnly || isBuiltInRestServer())
         return SubmitConfirmation.isKnown(
             txId = txId,
-            inMempool = { isInAnyMempool(it) },
+            inMempool = { isInAnyMempool(it, excluding = excluding, minSources = if (builtInServerOnly) 2 else 1) },
             acceptedViaRest = { id -> restUsable && rest != null && isAcceptedViaRest(rest, id) },
         )
     }
@@ -954,18 +1017,23 @@ class NodePoolManager @Inject constructor(
      *  that isn't on chain yet is waiting there, or was dropped (iOS b219bb0 `getMempoolEntry`). */
     suspend fun isInMempool(txId: String): Boolean = isInAnyMempool(txId)
 
-    /** Whether any of up to three nodes (the trusted node alone, when one is set) holds [txId]
-     *  in its mempool, orphan pool included. Asked in parallel, 2 s each. */
-    private suspend fun isInAnyMempool(txId: String): Boolean {
-        val connections = trustedNodeAddress.value?.let { listOf(connectionFor(it)) }
-            ?: registry.snapshot()
-                .filter { registry.statusOf(it) == "Active" }
-                .sortedBy { it.lastProbe?.latencyMs ?: Long.MAX_VALUE }
-                .take(3)
-                .map { connectionFor(it.address) }
-                .ifEmpty { listOf(getBroadcastConnection()) }
+    /** Whether at least [minSources] of up to three nodes (the trusted node alone, when one is
+     *  set), leaving out [excluding], hold [txId] in their mempool. Asked in parallel, 2 s each.
+     *  An entry counts only if its transaction hashes to [txId] here and it isn't an orphan
+     *  ([KaspadConnection.hasMempoolEntry], iOS 369794e `getMempoolEntry`). */
+    private suspend fun isInAnyMempool(txId: String, excluding: Set<String> = emptySet(), minSources: Int = 1): Boolean {
+        val connections = (
+            trustedNodeAddress.value?.let { listOf(connectionFor(it)) }
+                ?: registry.snapshot()
+                    .filter { registry.statusOf(it) == "Active" && it.address !in excluding }
+                    .sortedBy { it.lastProbe?.latencyMs ?: Long.MAX_VALUE }
+                    .take(3)
+                    .map { connectionFor(it.address) }
+                    .ifEmpty { listOf(getBroadcastConnection()) }
+            ).filter { it.address !in excluding }
+        if (connections.size < minSources) return false
         return coroutineScope {
-            connections.map { connection -> async { connection.hasMempoolEntry(txId) } }.awaitAll().any { it }
+            connections.map { connection -> async { connection.hasMempoolEntry(txId) } }.awaitAll().count { it } >= minSources
         }
     }
 
@@ -1028,7 +1096,13 @@ class NodePoolManager @Inject constructor(
      * instead of waiting for the next 5-30s probe cycle to notice and replace them.
      */
     fun reconnectStaleConnections() {
-        connections.values.filter { !it.isConnected }.forEach { it.connect() }
+        // Only the nodes the app keeps (iOS 369794e `reconnectDisconnected`): the rest reconnect
+        // when something uses them.
+        val keep = trustedNodeAddress.value?.let { setOf(it) }
+            ?: registry.snapshot().filter { registry.statusOf(it) == "Active" }.mapTo(HashSet()) { it.address }
+                .ifEmpty { setOfNotNull(dnsResolvedEndpoints.firstOrNull() ?: seeds.firstOrNull()) }
+        connections.filter { (address, connection) -> address in keep && !connection.isConnected }
+            .values.forEach { it.connect() }
     }
 
     /** Adds and immediately probes a user-supplied "host:port" endpoint — "Add Custom Endpoint". */

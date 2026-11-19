@@ -35,7 +35,8 @@ internal class OpusWebMRecorder private constructor(
     private val packets = ArrayList<ByteArray>()
     private var preSkip = WebMOpusWriter.DEFAULT_PRE_SKIP
     private var sizer = WebMOpusWriter.Sizer(WebMOpusWriter.opusHead(preSkip), trackUid)
-    private var pcmSamples = 0L
+    /** Written by the capture thread; read for the recording bar's clock ([capturedMs]). */
+    @Volatile private var pcmSamples = 0L
     private var packetsFull = false
     private val bytesSoFar = AtomicInteger(sizer.totalBytes)
 
@@ -47,6 +48,16 @@ internal class OpusWebMRecorder private constructor(
 
     /** The file length the packets kept so far make. */
     val currentBytes: Int get() = bytesSoFar.get()
+
+    /** Audio captured so far, in ms: the recorder's own clock (iOS b78fdb0 `currentTime`). */
+    val capturedMs: Long get() = pcmSamples * 1000L / WebMOpusWriter.SAMPLE_RATE_HZ
+
+    /** Stops capture where it got to and keeps what was captured, for [finish] or [cancel]
+     *  (a call or another app took the microphone, iOS b78fdb0 `handleInterruption`). */
+    fun stopCapture() {
+        stopRequested = true
+        thread.join(JOIN_TIMEOUT_MS)
+    }
 
     private fun start() {
         thread.start()
@@ -276,10 +287,11 @@ internal class OpusWebMRecorder private constructor(
  * most [VoiceNotePolicy.Path.partSeconds] each (one part when it is that short), every part a
  * complete WebM-Opus file at 16 kbps CBR in 60 ms frames ([VoiceNotePolicy]).
  *
- * The platform Opus encoder only makes 20 ms frames, so each run of three is joined into one
- * 60 ms Opus packet (RFC 6716 code 3, three frames of one config) - the packet iOS's libopus
- * writes at 60 ms, a byte or so apart. A part whose frames can't be joined (the encoder changed
- * its bandwidth mid-run, a rare case) keeps its 20 ms packets, still a valid file.
+ * The platform Opus encoder only makes 20 ms frames (padded to the CBR size, so code 3), so each
+ * run of three is joined into one 60 ms Opus packet (RFC 6716 code 3, three frames of one config,
+ * the padding dropped) - the packet iOS's libopus writes at 60 ms. A run whose frames can't be
+ * joined (the encoder changed its mode or bandwidth inside it) keeps its three 20 ms packets, and
+ * every SimpleBlock is timed by its own packet's length, so the file stays valid.
  *
  * Each part's encoder is also fed the codec's look-ahead (the OpusHead pre-skip, 312 samples) from
  * the next part, and its Info Duration says the part's real length: a reader that cuts each
@@ -310,6 +322,17 @@ internal class OpusWebMPartsRecorder private constructor(
         stopRequested = true
         thread.join(JOIN_TIMEOUT_MS)
         chunks.clear()
+    }
+
+    /** Audio captured so far, in ms: the recorder's own clock, which the recording bar and its
+     *  2:50 cut-off go by (iOS b78fdb0 `currentTime`). */
+    val capturedMs: Long get() = sampleCount.toLong() * 1000L / WebMOpusWriter.SAMPLE_RATE_HZ
+
+    /** Stops capture where it got to and keeps what was captured, for [finishParts] or [cancel]
+     *  (a call or another app took the microphone, iOS b78fdb0 `handleInterruption`). */
+    fun stopCapture() {
+        stopRequested = true
+        thread.join(JOIN_TIMEOUT_MS)
     }
 
     /**
@@ -486,22 +509,24 @@ internal class OpusWebMPartsRecorder private constructor(
         // Only the frames that were fed: the encoder may flush one more at the end of the stream.
         val fedPackets = fed20(target())
         val twenty = if (packets.size > fedPackets) packets.subList(0, fedPackets) else packets
-        val joined = joinIntoSixtyMs(twenty)
-        val outPackets: MutableList<ByteArray> = ArrayList(joined ?: twenty)
-        val frameDurationMs: Long = if (joined != null) com.kachat.app.util.VoiceNotePolicy.FRAME_MS.toLong()
-            else (OpusPacket.samples(twenty[0]).coerceAtLeast(1) * 1000L / WebMOpusWriter.SAMPLE_RATE_HZ).coerceAtLeast(1L)
+        val outPackets: MutableList<ByteArray> = ArrayList(joinIntoSixtyMs(twenty))
+        // Each packet's own length: a run that couldn't be joined is three 20 ms packets.
+        val outSamples: MutableList<Int> = outPackets.mapTo(ArrayList<Int>(outPackets.size)) { OpusPacket.samples(it) }
 
         val head = WebMOpusWriter.opusHead(preSkip)
         val trackUid = WebMOpusWriter.randomTrackUid()
-        val durationSeconds = contentCount.toDouble() / WebMOpusWriter.SAMPLE_RATE_HZ
+        val sampleRate = WebMOpusWriter.SAMPLE_RATE_HZ.toDouble()
+        val durationSeconds = contentCount.toDouble() / sampleRate
         // The Info duration is what the packets actually hold - if the byte ceiling below ever
         // trims the tail, the header no longer claims the full part.
-        fun keptDuration(): Double = minOf(durationSeconds, outPackets.size.toDouble() * frameDurationMs / 1000.0)
-        var webm = WebMOpusWriter.build(outPackets, head, WebMOpusWriter.SAMPLE_RATE_HZ.toDouble(), keptDuration(), frameDurationMs, trackUid)
-        // The hard guard: never a file over the ceiling, whatever the codec did.
+        fun keptDuration(): Double = minOf(durationSeconds, outSamples.sumOf { it.toLong() }.toDouble() / sampleRate)
+        var webm = WebMOpusWriter.buildTimed(outPackets, outSamples, head, sampleRate, keptDuration(), trackUid)
+        // The hard guard: never a file over the ceiling, whatever the codec did. Only when it
+        // really is over: the 60 ms packets keep a full part well inside it.
         while (webm.size > policy.maxBytes && outPackets.size > 1) {
             outPackets.removeAt(outPackets.size - 1)
-            webm = WebMOpusWriter.build(outPackets, head, WebMOpusWriter.SAMPLE_RATE_HZ.toDouble(), keptDuration(), frameDurationMs, trackUid)
+            outSamples.removeAt(outSamples.size - 1)
+            webm = WebMOpusWriter.buildTimed(outPackets, outSamples, head, sampleRate, keptDuration(), trackUid)
         }
         return webm
     }
@@ -509,17 +534,24 @@ internal class OpusWebMPartsRecorder private constructor(
     private fun fed20(targetSamples: Int): Int = targetSamples / WebMOpusWriter.FRAME_SAMPLES
 
     /**
-     * Every three 20 ms packets as one 60 ms packet, or null when any run can't be joined: not a
-     * whole number of runs, a packet that isn't one 20 ms frame, or frames of different configs.
+     * Every three 20 ms packets as one 60 ms packet ([OpusPacket.joinThree]). A run that can't be
+     * joined (a packet that isn't one 20 ms frame, or the encoder changed its mode or bandwidth
+     * inside it), and any packets past the last whole run, stay 20 ms packets, their padding
+     * dropped - only that run, not the whole part.
      */
-    private fun joinIntoSixtyMs(packets: List<ByteArray>): List<ByteArray>? {
-        if (packets.isEmpty() || packets.size % 3 != 0) return null
-        val out = ArrayList<ByteArray>(packets.size / 3)
+    private fun joinIntoSixtyMs(packets: List<ByteArray>): List<ByteArray> {
+        val out = ArrayList<ByteArray>(packets.size / 3 + 2)
         var i = 0
-        while (i < packets.size) {
-            out.add(OpusPacket.joinThree(packets[i], packets[i + 1], packets[i + 2]) ?: return null)
+        while (i + 3 <= packets.size) {
+            val joined = OpusPacket.joinThree(packets[i], packets[i + 1], packets[i + 2])
+            if (joined != null) {
+                out.add(joined)
+            } else {
+                for (k in i until i + 3) out.add(OpusPacket.withoutPadding(packets[k]))
+            }
             i += 3
         }
+        while (i < packets.size) out.add(OpusPacket.withoutPadding(packets[i++]))
         return out
     }
 
@@ -570,23 +602,146 @@ internal object OpusPacket {
         return frames * frameSamples(toc)
     }
 
-    /** Three single-frame 20 ms packets of one config as one code 3 packet: CBR when the frames
-     *  are one size, else VBR with the first two lengths. Null when they can't be joined. */
+    /** RFC 6716 section 3.2.1: the most bytes one frame may hold. */
+    private const val MAX_FRAME_BYTES = 1275
+
+    /** RFC 6716 section 3.2.5: a packet holds at most 120 ms of audio. */
+    private const val MAX_PACKET_SAMPLES = 5760
+
+    /** A packet's TOC byte and its frames, any padding dropped. */
+    class Frames(val toc: Int, val frames: List<ByteArray>)
+
+    /**
+     * A packet's frames, for any frame-count code (RFC 6716 section 3.2: code 0 one frame, 1 two
+     * of one size, 2 two sized by a length, 3 up to 48 frames, CBR or VBR, with or without
+     * padding - the platform encoder pads every CBR packet it makes shorter than the bitrate,
+     * which makes it code 3). Null for a packet RFC 6716 calls malformed.
+     */
+    fun parse(packet: ByteArray): Frames? {
+        if (packet.isEmpty()) return null
+        val toc = packet[0].toInt() and 0xFF
+        val n = packet.size
+        val frames = ArrayList<ByteArray>(3)
+        when (toc and 3) {
+            0 -> {
+                if (n - 1 > MAX_FRAME_BYTES) return null
+                frames.add(packet.copyOfRange(1, n))
+            }
+            1 -> {
+                val body = n - 1
+                if (body % 2 != 0 || body / 2 > MAX_FRAME_BYTES) return null
+                val half = body / 2
+                frames.add(packet.copyOfRange(1, 1 + half))
+                frames.add(packet.copyOfRange(1 + half, n))
+            }
+            2 -> {
+                val (first, used) = readLength(packet, 1, n) ?: return null
+                val start = 1 + used
+                if (start + first > n) return null
+                if (n - start - first > MAX_FRAME_BYTES) return null
+                frames.add(packet.copyOfRange(start, start + first))
+                frames.add(packet.copyOfRange(start + first, n))
+            }
+            else -> {
+                if (n < 2) return null
+                val countByte = packet[1].toInt() and 0xFF
+                val vbr = (countByte and 0x80) != 0
+                val padded = (countByte and 0x40) != 0
+                val count = countByte and 0x3F
+                if (count == 0 || count * frameSamples(toc) > MAX_PACKET_SAMPLES) return null
+                var at = 2
+                // The padding length: each 255 means 254 bytes and another length byte.
+                var padding = 0
+                if (padded) {
+                    while (true) {
+                        if (at >= n) return null
+                        val value = packet[at++].toInt() and 0xFF
+                        padding += if (value == 255) 254 else value
+                        if (value != 255) break
+                    }
+                }
+                // The padding bytes themselves sit at the end of the packet.
+                val end = n - padding
+                if (end < at) return null
+                if (vbr) {
+                    val lengths = IntArray(count)
+                    var sum = 0
+                    for (i in 0 until count - 1) {
+                        val (length, used) = readLength(packet, at, end) ?: return null
+                        at += used
+                        lengths[i] = length
+                        sum += length
+                    }
+                    val last = end - at - sum
+                    if (last < 0 || last > MAX_FRAME_BYTES) return null
+                    lengths[count - 1] = last
+                    for (length in lengths) {
+                        frames.add(packet.copyOfRange(at, at + length))
+                        at += length
+                    }
+                } else {
+                    val body = end - at
+                    if (body % count != 0 || body / count > MAX_FRAME_BYTES) return null
+                    val size = body / count
+                    repeat(count) {
+                        frames.add(packet.copyOfRange(at, at + size))
+                        at += size
+                    }
+                }
+            }
+        }
+        return Frames(toc, frames)
+    }
+
+    /** RFC 6716 section 3.2.1's one- or two-byte frame length at [at], before [end]: the length
+     *  and the bytes it took, or null when it runs past [end]. */
+    private fun readLength(packet: ByteArray, at: Int, end: Int): Pair<Int, Int>? {
+        if (at >= end) return null
+        val first = packet[at].toInt() and 0xFF
+        if (first < 252) return first to 1
+        if (at + 1 >= end) return null
+        return (4 * (packet[at + 1].toInt() and 0xFF) + first) to 2
+    }
+
+    /**
+     * Three 20 ms packets as one 60 ms code 3 packet (iOS's libopus at 60 ms writes one packet of
+     * three frames): each must hold exactly one 20 ms frame, all of the same config and stereo
+     * flag. The padding is dropped; CBR when the frames are one size, else VBR with the first two
+     * lengths. Null when they can't be joined.
+     */
     fun joinThree(a: ByteArray, b: ByteArray, c: ByteArray): ByteArray? {
-        val parts = listOf(a, b, c)
-        if (parts.any { it.isEmpty() || (it[0].toInt() and 3) != 0 }) return null
-        val toc = a[0].toInt() and 0xFF
-        if (parts.any { (it[0].toInt() and 0xFC) != (toc and 0xFC) }) return null
+        val parsed = listOf(a, b, c).map { parse(it) ?: return null }
+        if (parsed.any { it.frames.size != 1 }) return null
+        // The config (bits 7-3) and the stereo flag (bit 2): everything but the frame-count code.
+        val toc = parsed[0].toc and 0xFC
+        if (parsed.any { (it.toc and 0xFC) != toc }) return null
         if (frameSamples(toc) != 960) return null
-        val frames = parts.map { it.copyOfRange(1, it.size) }
-        if (frames.any { it.size > 1275 }) return null
-        val out = java.io.ByteArrayOutputStream(3 + frames.sumOf { it.size } + 4)
-        out.write((toc and 0xFC) or 3)
+        return pack(toc, parsed.map { it.frames[0] })
+    }
+
+    /** The same audio without its padding (a code 3 packet as code 0 when it holds one frame), or
+     *  [packet] itself when it has none to drop or can't be read. */
+    fun withoutPadding(packet: ByteArray): ByteArray {
+        if (packet.isEmpty() || (packet[0].toInt() and 3) != 3) return packet
+        val parsed = parse(packet) ?: return packet
+        return pack(parsed.toc and 0xFC, parsed.frames)
+    }
+
+    /** [frames] of one config as one packet without padding: code 0 for one frame, else code 3
+     *  (CBR when they are one size, else VBR). */
+    private fun pack(tocConfig: Int, frames: List<ByteArray>): ByteArray {
+        val out = java.io.ByteArrayOutputStream(2 + frames.sumOf { it.size } + 2 * frames.size)
+        if (frames.size == 1) {
+            out.write(tocConfig and 0xFC) // code 0
+            out.write(frames[0])
+            return out.toByteArray()
+        }
+        out.write((tocConfig and 0xFC) or 3)
         if (frames.all { it.size == frames[0].size }) {
-            out.write(3) // v = 0 (CBR), p = 0, M = 3
+            out.write(frames.size) // v = 0 (CBR), p = 0, M
         } else {
-            out.write(0x80 or 3) // v = 1 (VBR), p = 0, M = 3
-            for (frame in frames.subList(0, 2)) writeLength(out, frame.size)
+            out.write(0x80 or frames.size) // v = 1 (VBR), p = 0, M
+            for (frame in frames.subList(0, frames.size - 1)) writeLength(out, frame.size)
         }
         frames.forEach { out.write(it) }
         return out.toByteArray()

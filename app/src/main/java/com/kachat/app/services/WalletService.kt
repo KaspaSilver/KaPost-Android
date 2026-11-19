@@ -230,18 +230,22 @@ class WalletService @Inject constructor(
         expectedFeeSompi: Long? = null,
         madeAsAccount: String? = null,
     ): String {
-        val result = walletEngine.sendSpendingPayment(
-            toAddress = toAddress,
-            amountSompi = amountSompi,
-            sourceSpendingIndex = sourceSpendingIndex,
-            feeRateOverride = feeRateOverride,
-            payloadBytes = payloadBytes,
-            manualUtxos = manualUtxos,
-            extraFeeSompi = extraFeeSompi,
-            isAddressUsed = { spendingAddressUsedState(it) },
-            expectedFeeSompi = expectedFeeSompi,
-            madeAsAccount = madeAsAccount,
-        )
+        // Off the main thread, as [sendKaspa]: the source's address, redeem script and key are
+        // derived (PBKDF2) and every input signed in here.
+        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            walletEngine.sendSpendingPayment(
+                toAddress = toAddress,
+                amountSompi = amountSompi,
+                sourceSpendingIndex = sourceSpendingIndex,
+                feeRateOverride = feeRateOverride,
+                payloadBytes = payloadBytes,
+                manualUtxos = manualUtxos,
+                extraFeeSompi = extraFeeSompi,
+                isAddressUsed = { spendingAddressUsedState(it) },
+                expectedFeeSompi = expectedFeeSompi,
+                madeAsAccount = madeAsAccount,
+            )
+        }
 
         if (result.isSuccess) {
             refreshSpendingBalance()
@@ -581,10 +585,12 @@ class WalletService @Inject constructor(
     /** One batched balances call, degrading to a chunked-concurrent sweep when the configured REST
      *  host doesn't implement the batch endpoint. Missing/failed addresses simply come back absent
      *  (treated as zero by the caller). */
-    /** Address -> balance for an import's passphrase step; null when they couldn't be checked. */
+    /** Address -> balance for an import's passphrase step; null when they couldn't be checked.
+     *  Every address has to answer: a partial sweep could miss the funded one and pick #0 as if
+     *  the search had finished (iOS `findImportAccounts` treats no answer as not finished). */
     suspend fun balancesOrNull(addresses: List<String>): Map<String, Long>? {
         if (readyApi() == null) return null
-        return fetchBalancesBatched(addresses).takeIf { it.isNotEmpty() }
+        return fetchBalancesBatched(addresses, requireAll = true)?.takeIf { it.isNotEmpty() }
     }
 
     /**
@@ -608,17 +614,33 @@ class WalletService @Inject constructor(
         false
     }
 
-    private suspend fun fetchBalancesBatched(addresses: List<String>): Map<String, Long> = coroutineScope {
-        val api = readyApi() ?: return@coroutineScope emptyMap()
+    private suspend fun fetchBalancesBatched(addresses: List<String>): Map<String, Long> =
+        fetchBalancesBatched(addresses, requireAll = false) ?: emptyMap()
+
+    /** [requireAll]: null unless every address answered in the per-address sweep. */
+    private suspend fun fetchBalancesBatched(addresses: List<String>, requireAll: Boolean): Map<String, Long>? = coroutineScope {
+        val api = readyApi() ?: return@coroutineScope if (requireAll) null else emptyMap()
         try {
             api.getBalances(BalancesRequest(addresses)).associate { it.address to it.balance }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("WalletService", "Batched balances unavailable, falling back to per-address sweep", e)
             val out = mutableMapOf<String, Long>()
+            var missed = false
             for (chunk in addresses.chunked(8)) {
                 chunk.map { address ->
-                    async { address to (try { api.getBalance(address).balance } catch (e: Exception) { null }) }
-                }.awaitAll().forEach { (address, balance) -> if (balance != null) out[address] = balance }
+                    async {
+                        address to (try {
+                            api.getBalance(address).balance
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            null
+                        })
+                    }
+                }.awaitAll().forEach { (address, balance) -> if (balance != null) out[address] = balance else missed = true }
+                if (missed && requireAll) return@coroutineScope null
             }
             out
         }

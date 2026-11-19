@@ -5,6 +5,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -30,7 +31,26 @@ class KaPostsUnseenStore @Inject constructor(
     /** How many notifications have arrived since the user last opened the KaPosts bell. */
     val unseenCount: StateFlow<Int> = _unseenCount.asStateFlow()
 
+    /** The account [unseenCount] was loaded for. The count is read and saved under this address,
+     *  not whatever wallet is current at write time, so one account's number never lands under
+     *  another's key (iOS 369794e). */
     private var loadedWallet: String? = null
+
+    init {
+        // Log Out, sign-in, import and account switches all change the active address; none of
+        // them reloaded the count, so the last account's count stayed on the dock and the next
+        // poll added to it and saved it under the new account (iOS 369794e).
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default).launch {
+            walletManager.activeAddressFlow.collect { address -> load(address) }
+        }
+    }
+
+    @Synchronized
+    private fun load(address: String?) {
+        if (address == loadedWallet) return
+        loadedWallet = address
+        _unseenCount.value = address?.let { prefs.getInt(key(it), 0).coerceAtLeast(0) } ?: 0
+    }
 
     private fun walletAddressOrNull(): String? =
         try { walletManager.getAddress() } catch (_: Exception) { null }
@@ -49,10 +69,7 @@ class KaPostsUnseenStore @Inject constructor(
     /** Loads the active wallet's count; call before reading and on account switches. */
     @Synchronized
     fun reloadIfNeeded() {
-        val wallet = walletAddressOrNull() ?: return
-        if (loadedWallet == wallet) return
-        loadedWallet = wallet
-        _unseenCount.value = prefs.getInt(key(wallet), 0).coerceAtLeast(0)
+        load(walletAddressOrNull())
     }
 
     /**

@@ -14,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.coroutineScope
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import protowire.Rpc
 import java.io.EOFException
 import java.io.File
@@ -73,6 +75,12 @@ class KaPostsIndexerHealth @Inject constructor(
     private var probeJob: Job? = null
     private var failuresInARow = 0
     private var lastFailureAt = 0L
+    /** Probes answered in a row while down, with no failed read between them (iOS 369794e). The
+     *  probe is one tiny read: in a partial outage it can pass while real pages still fail, and
+     *  ending the outage on one pass reloaded everything, failed three times and went down again
+     *  about once a minute. Two passes in a row with no failure between (or one real read that
+     *  succeeds, [noteAnswered]) end it. */
+    private var probePassesInARow = 0
 
     /** A request that failed: counts against the indexer only if it says so ([meansDown]). */
     fun note(error: Throwable) {
@@ -81,6 +89,8 @@ class KaPostsIndexerHealth @Inject constructor(
 
     @Synchronized
     fun noteFailure() {
+        // A read that fails while down breaks the probe's run, even inside the spacing below.
+        probePassesInARow = 0
         val now = System.currentTimeMillis()
         if (now - lastFailureAt < MIN_FAILURE_SPACING_MS) return
         if (now - lastFailureAt > FAILURE_WINDOW_MS) failuresInARow = 0
@@ -111,6 +121,7 @@ class KaPostsIndexerHealth @Inject constructor(
     private fun markDown() {
         if (_isDown.value) return
         _isDown.value = true
+        probePassesInARow = 0
         Log.i(TAG, "The indexer isn't answering: saved pages and the chain from here")
         liveFeed.setActive(true)
         _availabilityChanged.tryEmit(Unit)
@@ -118,7 +129,17 @@ class KaPostsIndexerHealth @Inject constructor(
             while (isActive) {
                 delay(PROBE_INTERVAL_MS)
                 if (!notificationHelper.isAppInForeground) continue
-                if (service.get().probeIndexer()) noteAnswered()
+                val passed = service.get().probeIndexer()
+                if (!isActive || !_isDown.value) return@launch
+                if (!passed) {
+                    synchronized(this@KaPostsIndexerHealth) { probePassesInARow = 0 }
+                    continue
+                }
+                val recovered = synchronized(this@KaPostsIndexerHealth) {
+                    probePassesInARow += 1
+                    probePassesInARow >= PROBE_PASSES_TO_RECOVER
+                }
+                if (recovered) noteAnswered()
             }
         }
     }
@@ -144,6 +165,7 @@ class KaPostsIndexerHealth @Inject constructor(
         private const val TAG = "KaPostsIndexerHealth"
         private const val PROBE_INTERVAL_MS = 60_000L
         private const val FAILURES_TO_GO_DOWN = 3
+        private const val PROBE_PASSES_TO_RECOVER = 2
         /** Failures further apart than this aren't a run. */
         private const val FAILURE_WINDOW_MS = 120_000L
         /** A network handoff fails every request in flight at once: that's one failure, not three. */
@@ -185,10 +207,12 @@ object KaPostsPageCache {
             .joinToString("") { "%02x".format(it) }
     }
 
-    fun save(context: Context, data: ByteArray, key: String) {
+    /** [encode] runs on the cache's own queue: a page's JSON is too much work for Main. */
+    fun save(context: Context, key: String, encode: () -> ByteArray) {
         val directory = directory(context)
         queue.execute {
             try {
+                val data = encode()
                 directory.mkdirs()
                 val temp = File(directory, "$key.tmp")
                 temp.writeBytes(data)
@@ -235,20 +259,27 @@ class KaPostsChainPosts @Inject constructor(
         val repeatKey: String get() = xOnly(post.userPublicKey) + ":" + signature.lowercase()
     }
 
-    /** A verified `delete:` or `edit:` record, by the key `pubkey` only: the indexer applies these
-     *  the same way, and without them a deleted post comes back for as long as it's down. */
-    private sealed class Amendment {
+    /** A verified `delete:` or `edit:` record. It counts only on a post by the key that signed
+     *  it: the indexer applies these the same way, and without them a deleted post comes back for
+     *  as long as it's down. */
+    sealed class Amendment {
         data class Delete(val postId: String) : Amendment()
         data class Edit(val postId: String, val b64: String, val mentions: List<String>, val timestampMs: Long) : Amendment()
     }
+
+    /** A delete or edit and the key that signed it ([authorPubkey]). */
+    data class SignedAmendment(val authorPubkey: String, val amendment: Amendment)
 
     private data class LatestEdit(val b64: String, val mentions: List<String>, val timestampMs: Long)
 
     /**
      * One person's posts and replies from Kaspa REST, newest first (a node keeps no history by
-     * address). Null when REST didn't answer.
+     * address). Null when REST didn't answer. Off Main: a Schnorr verify for each of up to 200
+     * transactions, for up to 20 people at a time.
      */
-    suspend fun posts(ofPubkey: String): List<KPost>? {
+    suspend fun posts(ofPubkey: String): List<KPost>? = withContext(Dispatchers.Default) { postsOnChain(ofPubkey) }
+
+    private suspend fun postsOnChain(ofPubkey: String): List<KPost>? {
         val address = KaPostsService.kaspaAddressFromPubkey(ofPubkey) ?: return null
         val found = mutableListOf<VerifiedPost>()
         val deleted = mutableSetOf<String>()
@@ -293,37 +324,17 @@ class KaPostsChainPosts @Inject constructor(
             .map { verified ->
                 val post = verified.post
                 val edit = latestEdits[post.id]
-                if (edit == null || edit.timestampMs < post.timestamp ||
-                    edit.timestampMs - post.timestamp > KaPostsService.EDIT_WINDOW_MS
-                ) {
+                if (edit == null || !editApplies(post, edit.timestampMs)) {
                     post
                 } else {
-                    post.copy(postContent = edit.b64, mentionedPubkeys = edit.mentions, editedAt = edit.timestampMs)
+                    edited(post, edit.b64, edit.mentions, edit.timestampMs)
                 }
             }
             .sortedByDescending { it.timestamp }
     }
 
-    private fun verifiedAmendment(payload: String, timestampMs: Long, ofPubkey: String): Amendment? {
-        if (!payload.startsWith(KaPostsProtocol.PREFIX)) return null
-        val fields = payload.removePrefix(KaPostsProtocol.PREFIX).split(":")
-        if (fields.size < 4 || xOnly(fields[1]) != xOnly(ofPubkey)) return null
-        return when (fields[0]) {
-            "delete" -> {
-                if (!signatureIsValid(fields[2], KaPostsProtocol.deleteSigningString(fields[3]), fields[1])) return null
-                Amendment.Delete(fields[3])
-            }
-            "edit" -> {
-                if (fields.size < 6) return null
-                val mentions = decodedMentions(fields[5]) ?: return null
-                val text = decodedText(fields[4]) ?: return null
-                if (!KaPostsProtocol.isKaChatContent(text) || KaPostsProtocol.stripMarker(text).isBlank()) return null
-                if (!signatureIsValid(fields[2], KaPostsProtocol.editSigningString(fields[3], fields[4], fields[5]), fields[1])) return null
-                Amendment.Edit(fields[3], fields[4], mentions, timestampMs)
-            }
-            else -> null
-        }
-    }
+    private fun verifiedAmendment(payload: String, timestampMs: Long, ofPubkey: String): Amendment? =
+        signedAmendment(payload, timestampMs, onlyBy = ofPubkey)?.amendment
 
     companion object {
         private const val PAGES_PER_PERSON = 2
@@ -336,7 +347,45 @@ class KaPostsChainPosts @Inject constructor(
         fun xOnly(pubkey: String): String = pubkey.takeLast(64).lowercase()
 
         /**
-         * A post, reply or quote from a decoded payload, or null for anything else: another
+         * A delete or edit and the key that signed it, whoever that is: the block stream doesn't
+         * know a post's author until it is matched ([KaPostsLiveChainFeed]). [onlyBy] skips the
+         * signature check for anyone else's.
+         */
+        fun signedAmendment(payload: String, timestampMs: Long, onlyBy: String? = null): SignedAmendment? {
+            if (!payload.startsWith(KaPostsProtocol.PREFIX)) return null
+            val fields = payload.removePrefix(KaPostsProtocol.PREFIX).split(":")
+            if (fields.size < 4) return null
+            if (onlyBy != null && xOnly(fields[1]) != xOnly(onlyBy)) return null
+            return when (fields[0]) {
+                "delete" -> {
+                    if (!signatureIsValid(fields[2], KaPostsProtocol.deleteSigningString(fields[3]), fields[1])) return null
+                    SignedAmendment(fields[1], Amendment.Delete(fields[3]))
+                }
+                "edit" -> {
+                    if (fields.size < 6) return null
+                    val mentions = decodedMentions(fields[5]) ?: return null
+                    val text = decodedText(fields[4]) ?: return null
+                    if (!KaPostsProtocol.isKaChatContent(text) || KaPostsProtocol.stripMarker(text).isBlank()) return null
+                    if (!signatureIsValid(fields[2], KaPostsProtocol.editSigningString(fields[3], fields[4], fields[5]), fields[1])) return null
+                    SignedAmendment(fields[1], Amendment.Edit(fields[3], fields[4], mentions, timestampMs))
+                }
+                else -> null
+            }
+        }
+
+        /** Whether an edit made at [editedAtMs] counts on [post]: within the indexer's edit
+         *  window, and never on a poll (section 5.9: its options are what people voted on). */
+        fun editApplies(post: KPost, editedAtMs: Long): Boolean =
+            post.contentType != "poll" && post.poll == null &&
+                editedAtMs >= post.timestamp &&
+                editedAtMs - post.timestamp <= KaPostsService.EDIT_WINDOW_MS
+
+        /** [post] as a later edit left it. */
+        fun edited(post: KPost, b64: String, mentions: List<String>, atMs: Long): KPost =
+            post.copy(postContent = b64, mentionedPubkeys = mentions, editedAt = atMs)
+
+        /**
+         * A post, reply, quote or poll from a decoded payload, or null for anything else: another
          * action, another app's post (no KaChat marker), a repost with no text, or a bad signature.
          */
         fun verifiedPost(payload: String, txId: String, timestampMs: Long): VerifiedPost? {
@@ -350,11 +399,26 @@ class KaPostsChainPosts @Inject constructor(
             val signingString: String
             var parent: String? = null
             var mentionsJson = "[]"
+            var poll: KPoll? = null
             when (action) {
                 "post" -> {
                     b64 = fields[3]
                     mentionsJson = fields[4]
                     signingString = KaPostsProtocol.postSigningString(b64, mentionsJson)
+                }
+                "poll" -> {
+                    // A poll is a post whose text is the question (KAPOSTS_INDEXER.md section 5.9).
+                    // The votes are counted by the indexer only, so from the chain it shows its
+                    // options and closing time with nothing counted yet; a vote cast meanwhile
+                    // still goes on chain (iOS 369794e).
+                    if (fields.size < 7) return null
+                    val closesAtMs = fields[5].toLongOrNull() ?: return null
+                    val options = fields[4].split(",").filter { it.isNotEmpty() }
+                    if (options.size !in 2..4 || decodedMentions(fields[6]) == null) return null
+                    b64 = fields[3]
+                    mentionsJson = fields[6]
+                    signingString = KaPostsProtocol.pollSigningString(b64, fields[4], closesAtMs, mentionsJson)
+                    poll = KPoll(options = options, counts = null, total = null, closesAt = closesAtMs, myVote = null)
                 }
                 "reply" -> {
                     if (fields.size < 6) return null
@@ -393,13 +457,14 @@ class KaPostsChainPosts @Inject constructor(
                 isQuote = action == "quote",
                 quote = null,
                 editedAt = null,
-                poll = null,
+                poll = poll,
             )
             return VerifiedPost(post, signature)
         }
 
-        /** The real check: BIP-340 Schnorr over the keyed Blake2b of what the action signs. */
-        private fun signatureIsValid(signature: String, signingString: String, pubkey: String): Boolean {
+        /** The real check: BIP-340 Schnorr over the keyed Blake2b of what the action signs. Also
+         *  what a post opened by link is held to ([KaPostsProtocol.parseChainPayload]). */
+        fun signatureIsValid(signature: String, signingString: String, pubkey: String): Boolean {
             if (pubkey.length != 66) return false
             val key = decodeHex(pubkey.substring(2)) ?: return false
             if (key.size != 32) return false
@@ -464,12 +529,31 @@ class KaPostsLiveChainFeed @Inject constructor(
     /** Newest first. */
     val posts: StateFlow<List<KPost>> = _posts.asStateFlow()
 
+    /** A delete ([edit] null) or the latest edit of one post by one key (iOS 369794e). */
+    data class LiveAmendment(val edit: LiveEdit?, val seenAtMs: Long)
+
+    data class LiveEdit(val b64: String, val mentions: List<String>, val timestampMs: Long)
+
+    /** What one block held for this feed. */
+    private class Scan {
+        val posts = mutableListOf<KaPostsChainPosts.VerifiedPost>()
+        val amendments = mutableListOf<Pair<String, LiveAmendment>>()
+    }
+
+    private val _amendments = MutableStateFlow<Map<String, LiveAmendment>>(emptyMap())
+    /** Deletes and edits seen on the stream during the outage, keyed by [amendmentKey] (post id
+     *  and the x-only key that signed it): one counts only on a post by that key, as on the
+     *  indexer, so a stranger's signed "delete" of someone else's post is never matched. */
+    val amendments: StateFlow<Map<String, LiveAmendment>> = _amendments.asStateFlow()
+
     private var active = false
-    /** Every copy of a signed payload after the first is a replay ([KaPostsChainPosts.VerifiedPost.repeatKey]). */
+    /** Every copy of a signed payload after the first is a replay ([KaPostsChainPosts.VerifiedPost.repeatKey]).
+     *  Capped, oldest out first ([seenOrder]): during a long outage it grew by every post streamed
+     *  while [posts] stayed at [KEEP]. The cap is far past [KEEP], so a replay is only missed for
+     *  a post long gone from the stream. */
     private val seenPayloads = HashSet<String>()
+    private val seenOrder = ArrayDeque<String>()
     private var streamJob: Job? = null
-    @Volatile
-    private var subscribedConnection: KaspadConnection? = null
 
     init {
         scope.launch { notificationHelper.appForegroundFlow.collect { reevaluate() } }
@@ -482,7 +566,9 @@ class KaPostsLiveChainFeed @Inject constructor(
         if (!isActive) {
             // The indexer has these now.
             _posts.value = emptyList()
+            _amendments.value = emptyMap()
             seenPayloads.clear()
+            seenOrder.clear()
         }
         reevaluate()
     }
@@ -494,7 +580,11 @@ class KaPostsLiveChainFeed @Inject constructor(
 
     private fun start() {
         if (streamJob?.isActive == true) return
+        // A stopped job may still be sending its NOTIFY_STOP: this one waits, so that stop can't
+        // land after this START and silence it.
+        val previous = streamJob
         streamJob = scope.launch {
+            previous?.join()
             while (isActive) {
                 var conn: KaspadConnection? = null
                 try {
@@ -502,13 +592,14 @@ class KaPostsLiveChainFeed @Inject constructor(
                     // Captured BEFORE subscribing, as BroadcastScanningService does: a death or
                     // reconnect racing the NOTIFY_START must read as "generation moved" below.
                     val subscribedGeneration = conn.connectionGeneration.value
+                    // `conn` is set before subscribing: a stop mid-subscribe still takes the owner
+                    // off, in the finally below.
                     val blocks = conn.subscribeToBlockAdded(owner = CLIENT)
-                    subscribedConnection = conn
                     coroutineScope {
                         val collector = launch {
                             blocks.collect { block ->
-                                val found = extract(block)
-                                if (found.isNotEmpty()) add(found)
+                                val scan = extract(block)
+                                if (scan.posts.isNotEmpty() || scan.amendments.isNotEmpty()) add(scan)
                             }
                         }
                         conn.connectionGeneration.first { it != subscribedGeneration }
@@ -519,7 +610,18 @@ class KaPostsLiveChainFeed @Inject constructor(
                 } catch (e: Exception) {
                     Log.w(TAG, "Block stream interrupted, retrying", e)
                 } finally {
-                    if (subscribedConnection === conn) subscribedConnection = null
+                    // The job's own unsubscribe, so it runs before a restart's subscribe (which
+                    // joins this job). After a reconnect it's a no-op: that stream is gone.
+                    val subscribed = conn
+                    if (subscribed != null) {
+                        withContext(NonCancellable) {
+                            try {
+                                withTimeoutOrNull(UNSUBSCRIBE_TIMEOUT_MS) { subscribed.unsubscribeFromBlockAdded(owner = CLIENT) }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to send NOTIFY_STOP", e)
+                            }
+                        }
+                    }
                 }
                 delay(RETRY_DELAY_MS)
             }
@@ -527,49 +629,108 @@ class KaPostsLiveChainFeed @Inject constructor(
     }
 
     private fun stop() {
-        // Read before cancelling: the job's finally clears it.
-        val conn = subscribedConnection
-        subscribedConnection = null
+        // Kept, not nulled: the next start joins it, and its finally sends the NOTIFY_STOP.
         streamJob?.cancel()
-        streamJob = null
-        if (conn != null) {
-            scope.launch {
-                try {
-                    conn.unsubscribeFromBlockAdded(owner = CLIENT)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to send NOTIFY_STOP", e)
-                }
-            }
-        }
     }
 
-    private fun extract(block: Rpc.RpcBlock): List<KaPostsChainPosts.VerifiedPost> {
+    /**
+     * [post] as the stream last saw it: null once its author deleted it, their latest edit in
+     * place. Reads served while down (a saved page, Kaspa REST) go through this too, so a post
+     * deleted during the outage doesn't come back on the next refresh (iOS 369794e).
+     */
+    fun amended(post: KPost): KPost? {
+        val amendment = _amendments.value[amendmentKey(post.id, post.userPublicKey)] ?: return post
+        val edit = amendment.edit ?: return null
+        if (!KaPostsChainPosts.editApplies(post, edit.timestampMs) ||
+            edit.timestampMs <= (post.editedAt ?: Long.MIN_VALUE)
+        ) return post
+        return KaPostsChainPosts.edited(post, edit.b64, edit.mentions, edit.timestampMs)
+    }
+
+    fun amended(posts: List<KPost>): List<KPost> =
+        if (_amendments.value.isEmpty()) posts else posts.mapNotNull { amended(it) }
+
+    private fun extract(block: Rpc.RpcBlock): Scan {
         val blockTime = if (block.hasHeader()) block.header.timestamp else System.currentTimeMillis()
-        return block.transactionsList.mapNotNull { tx ->
-            if (!tx.hasVerboseData()) return@mapNotNull null
+        val scan = Scan()
+        for (tx in block.transactionsList) {
+            if (!tx.hasVerboseData()) continue
             val txId = tx.verboseData.transactionId
-            if (txId.isBlank()) return@mapNotNull null
-            if (PREFIXES.none { tx.payload.startsWith(it, ignoreCase = true) }) return@mapNotNull null
-            val payload = KaPostsChainPosts.hexToUtf8(tx.payload) ?: return@mapNotNull null
-            KaPostsChainPosts.verifiedPost(payload, txId, blockTime)
+            if (txId.isBlank()) continue
+            if (PREFIXES.none { tx.payload.startsWith(it, ignoreCase = true) }) continue
+            val payload = KaPostsChainPosts.hexToUtf8(tx.payload) ?: continue
+            val verified = KaPostsChainPosts.verifiedPost(payload, txId, blockTime)
+            if (verified != null) {
+                scan.posts += verified
+                continue
+            }
+            val signed = KaPostsChainPosts.signedAmendment(payload, blockTime) ?: continue
+            when (val amendment = signed.amendment) {
+                is KaPostsChainPosts.Amendment.Delete -> scan.amendments +=
+                    amendmentKey(amendment.postId, signed.authorPubkey) to LiveAmendment(edit = null, seenAtMs = blockTime)
+                is KaPostsChainPosts.Amendment.Edit -> scan.amendments +=
+                    amendmentKey(amendment.postId, signed.authorPubkey) to LiveAmendment(
+                        edit = LiveEdit(amendment.b64, amendment.mentions, amendment.timestampMs),
+                        seenAtMs = blockTime,
+                    )
+            }
         }
+        return scan
     }
 
     @Synchronized
-    private fun add(found: List<KaPostsChainPosts.VerifiedPost>) {
+    private fun add(scan: Scan) {
         if (!active) return
+        if (scan.amendments.isNotEmpty()) {
+            val updated = _amendments.value.toMutableMap()
+            for ((key, amendment) in scan.amendments) {
+                // A delete stands; a later edit replaces an earlier one.
+                val existing = updated[key]
+                if (existing != null) {
+                    val existingEdit = existing.edit ?: continue
+                    val edit = amendment.edit
+                    if (edit != null && edit.timestampMs < existingEdit.timestampMs) continue
+                }
+                updated[key] = amendment
+            }
+            if (updated.size > KEEP_AMENDMENTS) {
+                updated.entries.sortedBy { it.value.seenAtMs }
+                    .take(updated.size - KEEP_AMENDMENTS)
+                    .map { it.key }
+                    .forEach { updated.remove(it) }
+            }
+            _amendments.value = updated
+        }
         val known = _posts.value.mapTo(HashSet()) { it.id }
-        val fresh = found.filter { it.post.id !in known && seenPayloads.add(it.repeatKey) }.map { it.post }
-        if (fresh.isEmpty()) return
-        _posts.value = (fresh + _posts.value).sortedByDescending { it.timestamp }.take(KEEP)
+        val fresh = scan.posts.filter { it.post.id !in known && firstSighting(it.repeatKey) }.map { it.post }
+        val next = amended((fresh + _posts.value).sortedByDescending { it.timestamp }.take(KEEP))
+        if (fresh.isEmpty() && scan.amendments.isEmpty()) return
+        _posts.value = next
     }
 
-    private companion object {
-        const val TAG = "KaPostsLiveChainFeed"
-        const val CLIENT = "kaposts-chain-feed"
-        const val KEEP = 300
-        const val RETRY_DELAY_MS = 5_000L
-        val PREFIXES: List<String> = listOf("post:", "reply:", "quote:").map { action ->
+    /** False for a replay of a payload already streamed. */
+    private fun firstSighting(repeatKey: String): Boolean {
+        if (!seenPayloads.add(repeatKey)) return false
+        seenOrder.addLast(repeatKey)
+        while (seenOrder.size > KEEP_SEEN) {
+            seenPayloads.remove(seenOrder.removeFirst())
+        }
+        return true
+    }
+
+    companion object {
+        private const val TAG = "KaPostsLiveChainFeed"
+        private const val CLIENT = "kaposts-chain-feed"
+        private const val KEEP = 300
+        private const val KEEP_SEEN = 3000
+        private const val KEEP_AMENDMENTS = 1000
+
+        fun amendmentKey(postId: String, authorPubkey: String): String =
+            postId + ":" + KaPostsChainPosts.xOnly(authorPubkey)
+        private const val RETRY_DELAY_MS = 5_000L
+        /** A stop that hangs mustn't hold up the next start, which waits for it. */
+        private const val UNSUBSCRIBE_TIMEOUT_MS = 5_000L
+        private val PREFIXES: List<String> = listOf("post:", "reply:", "quote:", "poll:", "delete:", "edit:").map { action ->
             (KaPostsProtocol.PREFIX + action).toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it) }
         }
     }

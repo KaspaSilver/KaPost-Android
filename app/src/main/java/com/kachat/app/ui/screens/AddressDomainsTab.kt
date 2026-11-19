@@ -21,7 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBackIosNew
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -46,6 +46,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -104,7 +106,8 @@ class AddressDomainsViewModel @Inject constructor(
                 } catch (_: Exception) {
                     emptyList()
                 }
-                set(normalized, NameServiceTLD.KACHAT, kachat.map { it.display })
+                // the bare names, shown through KachatNameLabel when drawn (iOS 369794e)
+                set(normalized, NameServiceTLD.KACHAT, kachat.map { it.name })
             }
             launch {
                 val byService = nameServices.ownedNamesByService(normalized)
@@ -241,8 +244,8 @@ private fun AddressDomainServiceCard(tld: NameServiceTLD, count: Int?, failed: B
 }
 
 /**
- * A service's names on one address, opened from its Domains card: .kachat opens its cards and
- * detail screens as before ([KachatAddressDomainsList]); the others list the names (iOS fe52376).
+ * A service's names on one address, opened from its Domains card: the names, to look at only -
+ * .kachat ones with no detail screen (iOS fe52376, b78fdb0).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -250,7 +253,6 @@ fun AddressDomainServiceScreen(
     address: String,
     tld: NameServiceTLD,
     onBack: () -> Unit,
-    onOpenKachat: (com.kachat.app.services.kachatnames.NameInfo) -> Unit,
     vm: AddressDomainsViewModel = hiltViewModel(),
 ) {
     val colors = LocalAppColors.current
@@ -268,12 +270,7 @@ fun AddressDomainServiceScreen(
         }
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
-            if (tld == NameServiceTLD.KACHAT) {
-                // the .kachat cards and their detail screens, as before
-                KachatAddressDomainsList(address.takeIf { it.isNotEmpty() }, onOpen = onOpenKachat)
-            } else {
-                AddressDomainServiceNames(address, tld, vm)
-            }
+            AddressDomainServiceNames(address, tld, vm)
         }
     }
 }
@@ -310,21 +307,28 @@ private fun AddressDomainServiceNames(address: String, tld: NameServiceTLD, vm: 
                     modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                 )
             } else {
-                list.forEach { name -> DomainNameCard(title = name) }
+                // .kachat names are held bare and shown through KachatNameLabel (iOS 369794e)
+                list.forEach { name ->
+                    DomainNameCard(title = if (tld == NameServiceTLD.KACHAT) com.kachat.app.models.KachatNameLabel.display(name) else name)
+                }
             }
         }
         PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter))
     }
 }
 
-/** KaPay's app id (its debug build adds ".debug"), for the Domains tab's Open button. */
-private const val KACHAT_WALLET_PACKAGE = "kapay.kachat.app"
+/**
+ * Opens the account's own .kachat list (Wallet > Your Domains > .kachat), for the Domains tab's
+ * Open Your Domains button. Provided by the app's NavHost ([com.kachat.app.ui.KaChatApp]); null
+ * where nothing can open it, and the button isn't shown.
+ */
+val LocalOpenKachatYourDomains = androidx.compose.runtime.staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /**
  * A wallet's Domains tab in KaPost: the `.kachat` names the address holds, to look at only. Names
- * are registered, renewed, sold and edited in KaChat Wallet, not here, so the tab says so and
- * opens that app. `.kachat` is the only name service KaPost reads - no .kas, .k or .kaspa
- * (iOS KaPosts 4c0d5a8 `AddressDomainsTab`).
+ * are registered, renewed, sold and transferred in KaPay (owner's call, 2026-11-18); the tab links
+ * to the account's own list, Wallet > Your Domains > .kachat, which is display only too. `.kachat`
+ * is the only name service KaPost reads - no .kas, .k or .kaspa (iOS b78fdb0 `AddressDomainsTab`).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -334,9 +338,8 @@ fun KaPostAddressDomainsTab(
     vm: AddressDomainsViewModel = hiltViewModel(),
 ) {
     val colors = LocalAppColors.current
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val openYourDomains = LocalOpenKachatYourDomains.current
     val state by vm.state.collectAsState()
-    var walletAppMissing by remember { mutableStateOf(false) }
     LaunchedEffect(address) { vm.load(address) }
     val pullState = rememberPullToRefreshState()
     LaunchedEffect(pullState.isRefreshing) {
@@ -362,37 +365,30 @@ fun KaPostAddressDomainsTab(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(
-                        Icons.Filled.AccountBalanceWallet,
+                        Icons.Filled.AlternateEmail,
                         contentDescription = null,
                         tint = KaspaTeal,
                         modifier = Modifier.size(20.dp),
                     )
-                    Text("Manage your domains in KaChat Wallet", color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.kn53_manage_your_domains), color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                 }
                 Text(
-                    "KaPost shows the .kachat names on this address. To register, renew, sell or edit them, use the KaChat Wallet app.",
+                    stringResource(R.string.kn53_manage_your_domains_body),
                     color = colors.textSecondary,
                     fontSize = 15.sp,
                 )
-                Text(
-                    "Open KaChat Wallet",
-                    color = Color.Black,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(KaspaTeal)
-                        .clickable {
-                            val pm = context.packageManager
-                            val launch = pm.getLaunchIntentForPackage(KACHAT_WALLET_PACKAGE)
-                                ?: pm.getLaunchIntentForPackage("$KACHAT_WALLET_PACKAGE.debug")
-                            walletAppMissing = launch == null
-                            launch?.let { context.startActivity(it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                        }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                )
-                if (walletAppMissing) {
-                    Text("KaChat Wallet isn't installed on this phone.", color = colors.warning, fontSize = 13.sp)
+                if (com.kachat.app.services.kachatnames.KachatNamesService.isEnabled && openYourDomains != null) {
+                    Text(
+                        stringResource(R.string.kn53_open_your_domains),
+                        color = Color.Black,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(KaspaTeal)
+                            .clickable { openYourDomains() }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    )
                 }
             }
             when {
@@ -400,14 +396,43 @@ fun KaPostAddressDomainsTab(
                     com.kachat.app.ui.theme.IosActivityIndicator(color = KaspaTeal)
                 }
                 names.isEmpty() -> Text(
-                    "No .kachat names on this address.",
+                    stringResource(R.string.kachat_no_names_on_this_address),
                     color = colors.textSecondary,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                 )
-                else -> names.forEach { name -> DomainNameCard(title = name) }
+                else -> names.forEach { name -> DomainNameCard(title = com.kachat.app.models.KachatNameLabel.display(name)) }
             }
         }
         PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter))
+    }
+}
+
+/**
+ * The account's own .kachat list, opened by the Domains tab's Open Your Domains: the same screen as
+ * Wallet > Your Domains > .kachat, titled by its ending (iOS b78fdb0 `AddressDomainsTab`'s
+ * NavigationLink to `KachatLiveDomainsTab`). Display only: no detail screen, no offers, no actions.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun KachatYourDomainsScreen(walletAddress: String, onBack: () -> Unit) {
+    val colors = LocalAppColors.current
+    BackHandler(onBack = onBack)
+    Scaffold(
+        containerColor = colors.background,
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0),
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text(NameServiceTLD.KACHAT.suffix, color = colors.textPrimary, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    SheetBarBackButton(onClick = onBack, modifier = Modifier.padding(start = 12.dp))
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = colors.background)
+            )
+        },
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            KachatLiveDomainsTab(walletAddress = walletAddress)
+        }
     }
 }

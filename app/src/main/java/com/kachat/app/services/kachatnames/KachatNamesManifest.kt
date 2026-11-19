@@ -101,7 +101,9 @@ data class Params(
      * periods (ops.rs `extendable_years`).
      */
     fun extendableYears(periodStart: Long, expiresAt: Long): Long {
-        val room = periodStart + maxYears * periodMs - expiresAt
+        // overflow-safe: the times can come from a server (iOS 369794e)
+        val end = try { Math.addExact(periodStart, maxYears * periodMs) } catch (_: ArithmeticException) { return 0 }
+        val room = try { Math.subtractExact(end, expiresAt) } catch (_: ArithmeticException) { return 0 }
         return if (room < 0) 0 else minOf(room / periodMs, maxYears)
     }
 
@@ -111,7 +113,7 @@ data class Params(
      * When `renew` becomes valid: `expiresAt - renewWindowMs` (unix ms). The transaction is final
      * once the network's past median time passes its lock time, which is at least this.
      */
-    fun renewOpens(expiresAt: Long): Long = expiresAt - renewWindowMs
+    fun renewOpens(expiresAt: Long): Long = KachatNames.clampedSum(expiresAt, -renewWindowMs)
 
     /**
      * How close to expiry a name counts as "expires soon" (a buyer would have to renew it): 30

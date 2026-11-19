@@ -377,19 +377,22 @@ fun BroadcastListScreen(
                     onRead = {
                         picked.forEach { broadcastViewModel.markRoomRead(it.channelName) }
                         setSelecting(false)
-                        IosToasts.show("Marked ${picked.size} as read", durationMs = IosToastDuration.LONG)
+                        IosToasts.show(pinContext.getString(R.string.rooms53_marked_read, picked.size), durationMs = IosToastDuration.LONG)
                     },
                     onUnread = {
                         picked.forEach { broadcastViewModel.markRoomUnread(it.channelName) }
                         setSelecting(false)
-                        IosToasts.show("Marked ${picked.size} as unread", durationMs = IosToastDuration.LONG)
+                        IosToasts.show(pinContext.getString(R.string.rooms53_marked_unread, picked.size), durationMs = IosToastDuration.LONG)
                     },
                     onMute = { muted ->
                         // all off: turn them back on; else turn every picked room off
                         picked.forEach { broadcastViewModel.setNotifyEnabled(it.channelName, muted) }
                         setSelecting(false)
                         IosToasts.show(
-                            if (muted) "Notifications on for ${picked.size}" else "Notifications off for ${picked.size}",
+                            pinContext.getString(
+                                if (muted) R.string.rooms53_notifications_on_for else R.string.rooms53_notifications_off_for,
+                                picked.size,
+                            ),
                             durationMs = IosToastDuration.LONG,
                         )
                     },
@@ -411,8 +414,12 @@ fun BroadcastListScreen(
             val myAddressForRows = remember { runCatching { broadcastViewModel.myAddress() }.getOrNull() }
             // the app's one rule (addressDisplayName): your name for them, else their .kachat
             // name on testnet (KNS elsewhere), else the short address (iOS e52357d)
+            // Translated, as iOS b78fdb0's PublicChatRow.
+            val youLabel = stringResource(R.string.reactions_you)
+            val yesterdayLabel = stringResource(R.string.chat_day_yesterday)
+            val noMessagesYet = stringResource(R.string.no_messages_yet)
             fun senderName(address: String): String =
-                if (address == myAddressForRows) "You"
+                if (address == myAddressForRows) youLabel
                 else addressDisplayName(address, contactAliases[address], senderKnsNames[address])
 
             // The rooms arrive a moment after the list is laid out, and it could keep its place
@@ -512,8 +519,8 @@ fun BroadcastListScreen(
                             channelName = channel.channelName,
                             notifyOff = !channel.notifyEnabled,
                             preview = last?.let { "${senderName(it.senderAddress)}: ${publicRoomPreview(it.content, stringResource(R.string.kapost_link_shared))}" },
-                            emptyText = "No messages yet",
-                            timeText = last?.let { publicRoomTime(it.blockTimestamp) },
+                            emptyText = noMessagesYet,
+                            timeText = last?.let { publicRoomTime(it.blockTimestamp, yesterdayLabel) },
                             unread = summary?.unreadCount ?: 0,
                             // In Select mode a tap picks the room, as on the Chats and Group Chats pages.
                             onClick = {
@@ -642,7 +649,10 @@ fun BroadcastListScreen(
     if (showBulkDelete) {
         val names = listed.filter { it.channelName in ownSelection }.map { it.channelName }
         ActionSheetContainer(
-            title = "Delete ${names.size} Public Chat${if (names.size == 1) "" else "s"}?",
+            title = stringResource(
+                if (names.size == 1) R.string.rooms53_delete_public_chat_one else R.string.rooms53_delete_public_chats,
+                names.size,
+            ),
             subtitle = "Rooms you added are removed with their messages. Default rooms are only switched off - turn them back on any time in Public Chats settings.",
             onDismiss = { showBulkDelete = false },
         ) {
@@ -655,7 +665,7 @@ fun BroadcastListScreen(
                 names.forEach { broadcastViewModel.removeFromList(it) }
                 showBulkDelete = false
                 setSelecting(false)
-                IosToasts.show("Deleted ${names.size}", durationMs = IosToastDuration.LONG)
+                IosToasts.show(pinContext.getString(R.string.rooms53_deleted_count, names.size), durationMs = IosToastDuration.LONG)
             }
             ActionSheetRow(icon = Icons.Default.Close, title = "Keep", subtitle = "Leave the rooms as they are.") {
                 showBulkDelete = false
@@ -984,12 +994,12 @@ private fun publicRoomPreview(raw: String, sharedKaPostText: String): String {
 }
 
 /** A clock time today, "Yesterday", or the month and day, the way the chat lists read it. */
-private fun publicRoomTime(ms: Long): String {
+private fun publicRoomTime(ms: Long, yesterday: String): String {
     val now = System.currentTimeMillis()
     return when {
         // The clock the message time lines use (iOS SharedFormatting.chatTime, both places).
         com.kachat.app.util.ChatTimeFormat.isSameDay(ms, now) -> com.kachat.app.util.ChatTimeFormat.formatMessageTime(ms)
-        com.kachat.app.util.ChatTimeFormat.isSameDay(ms, now - 24L * 60 * 60 * 1000) -> "Yesterday"
+        com.kachat.app.util.ChatTimeFormat.isSameDay(ms, now - 24L * 60 * 60 * 1000) -> yesterday
         else -> java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()).format(java.util.Date(ms))
     }
 }
@@ -1088,7 +1098,24 @@ fun BroadcastChannelScreen(
     val translationOriginals by broadcastViewModel.showingOriginal.collectAsState()
     val translatableKeys by broadcastViewModel.translatable.collectAsState()
     LaunchedEffect(Unit) { broadcastViewModel.refreshTranslationLanguages() }
-    val reactionsByTxId = remember(channelReactions) { channelReactions.groupBy { it.targetTxId } }
+    // Reactions on a long voice note's hidden parts (sent by a client that shows parts one by one)
+    // are shown on the note's bubble, keyed by its anchor (iOS 369794e `reactions(forChannel:)`).
+    val anchorIdByPartId = messageWindow.anchorIdByPartId
+    val reactionsByTxId = remember(channelReactions, anchorIdByPartId) {
+        val byTarget = channelReactions.groupBy { it.targetTxId }
+        val merged = byTarget.toMutableMap()
+        for ((partId, anchorId) in anchorIdByPartId) {
+            val partReactions = byTarget[partId]
+            if (partReactions.isNullOrEmpty()) continue
+            merged.remove(partId)
+            val onAnchor = merged[anchorId].orEmpty().toMutableList()
+            for (reaction in partReactions) {
+                if (onAnchor.none { it.reactorAddress == reaction.reactorAddress }) onAnchor.add(reaction)
+            }
+            merged[anchorId] = onAnchor
+        }
+        merged
+    }
     val quickReactionEmojis by settingsViewModel.quickReactionEmojis.collectAsState()
     val myAddress by walletViewModel.address.collectAsState()
     // Zero-balance funding gate — same behavior as the 1:1/group chat threads (confirmed 0 KAS
@@ -1168,7 +1195,9 @@ fun BroadcastChannelScreen(
     // "Load earlier messages" is the list's first item while there is more: every message sits
     // one further down the list than its index in [messages].
     val listOffset = if (messageWindow.hasMore) 1 else 0
-    val jumpToReply: (String) -> Unit = { targetId ->
+    val jumpToReply: (String) -> Unit = { rawTargetId ->
+        // A reply to a hidden part of a long voice note goes to the note's one bubble (iOS 369794e).
+        val targetId = messageWindow.anchorIdByPartId[rawTargetId] ?: rawTargetId
         val index = messages.indexOfFirst { it.id == targetId }
         if (index < 0) {
             // A room's toast: up for 3 s, as iOS PublicChatChannelView.showToast.
@@ -1311,6 +1340,9 @@ fun BroadcastChannelScreen(
             broadcastViewModel.markRoomRead(channelName)
             broadcastViewModel.stopLiveViewing()
             broadcastViewModel.stopIndexerBackfill()
+            // Leaving the room mid-recording: nothing is sent, the file goes, and the audio is
+            // given back (iOS b78fdb0).
+            broadcastViewModel.cancelVoiceRecordingOnLeave()
         }
     }
     // Voice-note playback is owned per bubble; the room going away is what ends it.
@@ -1534,7 +1566,9 @@ fun BroadcastChannelScreen(
                                     } else 0f,
                                 )
                                 Text(
-                                    text = "${stringResource(R.string.room_voice_recording)} " +
+                                    // After a call or another app took the microphone: stopped
+                                    // where it got to, still there to send or throw away (iOS b78fdb0).
+                                    text = "${stringResource(if (voiceRecordingState.wasInterrupted) R.string.rooms54_recording_stopped else R.string.room_voice_recording)} " +
                                         "${formatRecordingTime(voiceRecordingState.elapsedMs)} / ${formatRecordingTime(voiceRecordingState.maxMs)}",
                                     color = LocalAppColors.current.textPrimary,
                                     fontSize = 17.sp,
@@ -1866,11 +1900,23 @@ fun BroadcastChannelScreen(
                     val isEntirelyLinkMessage = remember(displayContent, voiceContent) {
                         voiceContent == null && displayContent.length <= MESSAGE_TEXT_TRUNCATION_THRESHOLD && TextLinkify.isEntirelyLink(displayContent)
                     }
-                    val separateLinkPreviewUrl = remember(displayContent, voiceContent, isEntirelyLinkMessage) {
-                        if (voiceContent == null && !isEntirelyLinkMessage && displayContent.length <= MESSAGE_TEXT_TRUNCATION_THRESHOLD) {
-                            TextLinkify.findUrls(displayContent).firstOrNull()?.uri
+                    // Rooms follow KaPost's preview rules (owner's call, 2026-11-18; iOS b78fdb0
+                    // `PublicChatMessageRow.previews`): a link previews, by itself with no tap, only
+                    // when its sender has a .kachat name and it is the first link written as one, to
+                    // KaChat's own site or a popular site on the allowed list with no adult words.
+                    // Any other link stays plain text in the bubble, so an unknown server is never
+                    // contacted. The registry's identity cache is snapshot state: a sender's name
+                    // landing turns their previews on.
+                    val senderHasKachatName =
+                        com.kachat.app.services.kachatnames.KachatNamesRegistry.kachatName(message.senderAddress) != null
+                    val previewableLink = remember(displayContent, voiceContent, senderHasKachatName) {
+                        if (senderHasKachatName && voiceContent == null && displayContent.firstOrNull() != '{' &&
+                            displayContent.length <= MESSAGE_TEXT_TRUNCATION_THRESHOLD) {
+                            com.kachat.app.services.KaPostLinkPreviewPolicy.firstPreviewableLink(displayContent)
                         } else null
                     }
+                    val loneLinkPreviewUrl = previewableLink?.takeIf { isEntirelyLinkMessage }
+                    val separateLinkPreviewUrl = previewableLink?.takeIf { !isEntirelyLinkMessage }
                     // An in-app KaChat link (shared KaPosts post / broadcast room invite) takes
                     // priority over the generic link path: it previews from local data only and
                     // opens in-app. Detected separately from TextLinkify because the kachat://
@@ -2081,25 +2127,21 @@ fun BroadcastChannelScreen(
                                         kaspaExplorer = kaspaExplorer,
                                         onDoubleTap = { QuickReactionBarState.activeId = message.id }
                                     )
-                                } else if (isEntirelyLinkMessage) {
-                                    // Message is nothing but a link — the shared preview card
-                                    // (bare media for image/video, attachment card for
-                                    // audio/files) replaces the plain-text bubble entirely,
-                                    // exactly like 1:1/group bubbles. `fallbackText` keeps the
-                                    // raw link visible/tappable if no preview data is found.
-                                    // autoFetch = false for ALL broadcast messages (even own):
-                                    // channel posters are strangers by definition, and fetching
-                                    // their URL on render would leak every reader's IP to it.
-                                    // Tap-to-load instead (2026-08 audit, decision 5A).
+                                } else if (loneLinkPreviewUrl != null) {
+                                    // Message is nothing but a link the room may preview
+                                    // ([previewableLink]) — the shared preview card (bare media
+                                    // for image/video, attachment card for audio/files) replaces
+                                    // the plain-text bubble entirely, exactly like 1:1/group
+                                    // bubbles, and loads by itself. `fallbackText` keeps the raw
+                                    // link visible if no preview data is found.
                                     LinkPreviewCard(
-                                        url = TextLinkify.findUrls(displayContent).first().uri,
+                                        url = loneLinkPreviewUrl,
                                         txId = message.id,
                                         kaspaExplorer = kaspaExplorer,
                                         fallbackText = displayContent,
                                         onDoubleTap = { QuickReactionBarState.activeId = message.id },
                                         isOutgoing = isMine,
-                                        // Only KaChat's own site loads by itself (iOS f81c467).
-                                        autoFetch = KaChatSiteLink.isSiteLink(TextLinkify.findUrls(displayContent).first().uri)
+                                        autoFetch = true,
                                     )
                                 } else {
                                     // A plain tap on a link here does nothing: a room's senders are
@@ -2368,7 +2410,7 @@ fun BroadcastChannelScreen(
                                 // every platform shows on an edited message.
                                 if (editForRow != null) {
                                     Text(
-                                        text = "edited",
+                                        text = stringResource(R.string.l53_edited),
                                         color = LocalAppColors.current.textSecondary,
                                         fontSize = 10.sp,
                                         maxLines = 1,
@@ -2411,9 +2453,9 @@ fun BroadcastChannelScreen(
                             // An internal link is always claimed above as the message itself,
                             // so only an external link can still want a card down here.
                             separateLinkPreviewUrl?.takeIf { internalLinkMatch == null }?.let { url ->
-                                // Tap-to-load for all broadcast previews - see the entire-link
-                                // branch above for why.
-                                LinkPreviewCard(url = url, txId = message.id, kaspaExplorer = kaspaExplorer, onDoubleTap = { QuickReactionBarState.activeId = message.id }, isOutgoing = isMine, autoFetch = KaChatSiteLink.isSiteLink(url))
+                                // Only a link the room may preview ([previewableLink]), and it
+                                // loads by itself, with no tap.
+                                LinkPreviewCard(url = url, txId = message.id, kaspaExplorer = kaspaExplorer, onDoubleTap = { QuickReactionBarState.activeId = message.id }, isOutgoing = isMine, autoFetch = true)
                             }
 
 
@@ -2789,7 +2831,9 @@ private fun linkAt(layout: TextLayoutResult, text: AnnotatedString, position: Of
 
 /** "02:50", as KaChat's recording bar shows it (iOS 1b15521 `formatRecordingTime`). */
 private fun formatRecordingTime(durationMs: Long): String {
-    val totalSeconds = Math.round(durationMs.coerceAtLeast(0L) / 1000.0)
+    // Out of range shows "--:--" (iOS 369794e).
+    if (durationMs < 0L || durationMs >= 360_000_000L) return "--:--"
+    val totalSeconds = Math.round(durationMs / 1000.0)
     return "%02d:%02d".format(java.util.Locale.US, totalSeconds / 60, totalSeconds % 60)
 }
 

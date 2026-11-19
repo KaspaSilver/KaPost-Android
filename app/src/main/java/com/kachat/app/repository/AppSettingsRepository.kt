@@ -208,8 +208,10 @@ class AppSettingsRepository @Inject constructor(
         val KEY_KAPOSTS_DEFAULT_TIP_SOURCE_INDEX = androidx.datastore.preferences.core.intPreferencesKey("kaposts_default_tip_source_index")
         /** KaPost Settings > Cool down before post: every KaPosts action (post, comment, like,
          *  repost, vote, edit, delete) waits 5 seconds with an Undo before it goes on chain. Off,
-         *  they go at once. On by default (iOS `kaPostsCooldownEnabled`). */
-        val KEY_KAPOSTS_COOLDOWN_ENABLED = booleanPreferencesKey("kaposts_cooldown_enabled")
+         *  they go at once. Off by default since 2026-11-18 (iOS b78fdb0 `kaPostsCooldownEnabled`),
+         *  and turned off once on existing installs: saved under a new name (iOS `kaPostsCooldownOn`),
+         *  so the old "kaposts_cooldown_enabled" (mostly the old default of on) is ignored. */
+        val KEY_KAPOSTS_COOLDOWN_ENABLED = booleanPreferencesKey("kaposts_cooldown_on")
         /** Portfolio's eye button: every amount on that screen reads as dots. */
         val KEY_PORTFOLIO_VALUES_HIDDEN = booleanPreferencesKey("portfolio_values_hidden")
 
@@ -740,7 +742,7 @@ class AppSettingsRepository @Inject constructor(
     val kaPostsDefaultTipSourceIndex: Flow<Int?> = dataStore.data.map { it[KEY_KAPOSTS_DEFAULT_TIP_SOURCE_INDEX] }
 
     /** See [KEY_KAPOSTS_COOLDOWN_ENABLED]. */
-    val kaPostsCooldownEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_COOLDOWN_ENABLED] ?: true }
+    val kaPostsCooldownEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_KAPOSTS_COOLDOWN_ENABLED] ?: false }
 
     /**
      * Whether a KaPosts notification event should post, per the K API's contentType/voteType

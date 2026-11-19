@@ -150,7 +150,7 @@ fun NextcloudPdfViewerDialog(
     LaunchedEffect(downloadUrl) {
         pages = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val file = com.kachat.app.services.LinkPreviewService.downloadToCacheFile(context, downloadUrl)
+                val file = com.kachat.app.services.LinkPreviewService.downloadToCacheFile(context, downloadUrl, referer = shareUrl)
                     ?: return@withContext null
                 android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                     android.graphics.pdf.PdfRenderer(pfd).use { renderer ->

@@ -107,6 +107,10 @@ class AddressActivityNotifier @Inject constructor(
 
     private fun walletAddressOrNull(): String? = try { walletManager.getAddress() } catch (e: Exception) { null }
 
+    /** [walletAddress] is still the account signed in: not logged out, not switched (iOS 369794e). */
+    private fun isSignedIn(walletAddress: String): Boolean =
+        !walletManager.isLoggedOut && walletAddressOrNull() == walletAddress
+
     /** Cold-storage addresses whose account has receive notifications switched off. Still ours
      *  for the self-send check, and still watched for the UI refresh; never notified. */
     @Volatile
@@ -137,7 +141,16 @@ class AddressActivityNotifier @Inject constructor(
 
     // --- Core diff pass ---------------------------------------------------------------
 
+    /** Always off in KaPosts: its notifications are about posts only, so an address receiving
+     *  KAS never notifies (iOS KaPosts d37f64d). In KaChat this is Settings > Notifications >
+     *  Wallet plus the master switch. */
+    private val featureOn = false
+
     private suspend fun runDiffPass() = runMutex.withLock {
+        // With nothing to notify, the pass is only the wallet screens' refresh signal: with no
+        // screen collecting it, every address's balance was fetched on every foreground for
+        // nothing. A screen opened later refreshes itself, and the baselines catch up next pass.
+        if (!featureOn && _utxoActivityEvents.subscriptionCount.value == 0) return@withLock
         val walletAddress = walletAddressOrNull() ?: return@withLock
         val api = networkService.kaspaRestApi.value ?: return@withLock
 
@@ -163,14 +176,13 @@ class AddressActivityNotifier @Inject constructor(
             val balance = try { api.getBalance(address).balance } catch (e: Exception) { return@withLock }
             currentBalances[address] = balance
         }
+        // signed out or switched during a read: this account's catch-up is over (iOS 369794e)
+        if (!isSignedIn(walletAddress)) return@withLock
 
         val baselines = loadBaselines(walletAddress).toMutableMap()
         val isFirstRun = baselines.isEmpty()
-        // Always off in KaPosts: its notifications are about posts only, so an address receiving
-        // KAS never notifies (iOS KaPosts d37f64d). The baselines below still move, so the wallet
-        // screens' refresh signal is unaffected. In KaChat this is Settings > Notifications >
-        // Wallet plus the master switch.
-        val featureOn = false
+        // featureOn is always off in KaPosts; the baselines below still move, so the wallet
+        // screens' refresh signal is unaffected.
 
         var changed = false
         val changedAddresses = mutableSetOf<String>()
@@ -193,7 +205,9 @@ class AddressActivityNotifier @Inject constructor(
                 // the chatting address's balance moves with every message sent.
                 if (address != walletAddress) changedAddresses.add(address)
             }
-            if (balance > previous && !isFirstRun && address in notifiable) {
+            // The attribution fetches transactions only to decide on a notification: skipped
+            // when none can be posted.
+            if (featureOn && balance > previous && !isFirstRun && address in notifiable) {
                 attributeAndMaybeNotifyIncrease(
                     address = address,
                     delta = balance - previous,
@@ -203,6 +217,7 @@ class AddressActivityNotifier @Inject constructor(
                     featureOn = featureOn,
                     api = api
                 )
+                if (!isSignedIn(walletAddress)) return@withLock
             }
             baselines[address] = balance
         }
@@ -240,7 +255,7 @@ class AddressActivityNotifier @Inject constructor(
         }
         // That read takes a moment, and an account switch meanwhile makes this someone else's
         // receive: nothing below may record or announce it (iOS ee5ec98).
-        if (walletAddressOrNull() != walletAddress) return
+        if (!isSignedIn(walletAddress)) return
         // the chatting address: only plain transfers newer than what was already looked at
         val floorKey = chattingFloorKey(walletAddress)
         val floor = prefs.getLong(floorKey, 0L).coerceAtLeast(0L)

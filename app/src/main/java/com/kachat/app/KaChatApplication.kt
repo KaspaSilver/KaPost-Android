@@ -108,8 +108,9 @@ class KaChatApplication : Application(), Configuration.Provider {
     @Inject
     lateinit var hiltWorkerFactory: HiltWorkerFactory
 
-    // .kachat registrations in flight (testnet only) resume on every foreground, like iOS's
-    // app-active (KaChat 5df42b4). Lazy, so a mainnet launch never even builds the names stack.
+    // Your own .kachat profile syncs on every foreground (iOS b78fdb0 `handleScenePhaseChange`):
+    // KaPost claims nothing and refunds nothing by itself. Lazy, so a mainnet launch never even
+    // builds the names stack.
     @Inject
     lateinit var kachatNamesActions: dagger.Lazy<com.kachat.app.services.kachatnames.KachatNamesActions>
 
@@ -282,7 +283,9 @@ class KaChatApplication : Application(), Configuration.Provider {
                 // iOS KaPostsApp refreshRegistrationIfNeeded on every return to the front: a
                 // registration that failed earlier is tried again. The fingerprint skip keeps an
                 // unchanged one free, and register() does nothing while signed out or with
-                // notifications off.
+                // notifications off. It also re-reads Android's notification permission here:
+                // granted in the system's settings, push registers; taken away, a recorded
+                // registration is withdrawn (iOS registers only while authorized).
                 startupStep("push: refresh registration") { pushRegistrationManager.get().registerAsync() }
                 // A batch of gRPC connections can die silently while backgrounded/asleep (the OS
                 // tears down sockets, and each KaspadConnection's own self-reconnect can be
@@ -312,9 +315,8 @@ class KaChatApplication : Application(), Configuration.Provider {
                     }
                 }
                 // This wallet's own profile follows the chain on every network (a profile saved
-                // on another device shows here; iOS 5d4ce87), and .kachat registrations in flight
-                // (where names are live) resume after a relaunch: commit -> wait ->
-                // register continues by itself.
+                // on another device shows here; iOS 5d4ce87). Nothing else: claiming is KaPay's
+                // (iOS b78fdb0).
                 startupStep(".kachat resume") {
                     if (com.kachat.app.services.kachatnames.KachatNamesService.profilesEnabled) {
                         kachatNamesActions.get().resume()

@@ -63,12 +63,16 @@ data class KaPlayBotChallenge(
 ) {
     /** "Beat Coderofstuff (Level 3) in 14 moves", or "Challenge: beat Coderofstuff (Level 3)"
      *  without a move count. */
-    val title: String
-        get() {
-            val bot = botName?.let { "$it (Level $level)" } ?: "the Level $level bot"
-            val count = moves ?: return "Challenge: beat $bot"
-            return "Beat $bot in $count ${if (count == 1) "move" else "moves"}"
-        }
+    fun title(context: Context): String {
+        // in the app's language (iOS 369794e)
+        val bot = botName?.let { context.getString(com.kachat.app.R.string.kn53_kaplay_bot_named, it, level) }
+            ?: context.getString(com.kachat.app.R.string.kn53_kaplay_bot_level, level)
+        val count = moves ?: return context.getString(com.kachat.app.R.string.kn53_kaplay_challenge_beat, bot)
+        return context.getString(
+            if (count == 1) com.kachat.app.R.string.kn53_kaplay_beat_in_move else com.kachat.app.R.string.kn53_kaplay_beat_in_moves,
+            bot, count
+        )
+    }
 
     /** The first valid challenge in a post's text, and the exact substring it was found as. */
     data class Match(val challenge: KaPlayBotChallenge, val matchedText: String)
@@ -207,7 +211,7 @@ fun KaPostBotChallengeCard(challenge: KaPlayBotChallenge, modifier: Modifier = M
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("KAPLAY CHALLENGE", color = KaspaTeal, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                 Text(
-                    challenge.title,
+                    challenge.title(androidx.compose.ui.platform.LocalContext.current),
                     color = colors.textPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,

@@ -648,11 +648,9 @@ open class KachatNamesRegistryTest {
         r.eq(period(now, now + 1_200_000).extendableYears(tn), 0L, "20 min paid: no extend")
         r.check(!period(now, now + 1_200_000).renewOpen(tn, nowMs = now)) { "renewal closed 20 min before expiry" }
 
-        // offers: declined once the name has another owner (registry v3)
+        // offers name their seller (registry v3)
         val seller = ByteArray(32) { 3 }
         val offer = OfferInfo(Outpoint(KachatNames.ZERO32, 0), Codec.key("x"), "x", me, seller, 5, 100)
-        r.check(!offer.isDeclined(currentOwner = seller)) { "an offer to the current owner stands" }
-        r.check(offer.isDeclined(currentOwner = me)) { "an offer to an earlier owner is declined" }
         r.eq(hex(offer.fields.seller), hex(seller), "offer fields carry the seller")
 
         // a cache written before registry v4 (format 1 - 3) is dropped: Gson reads it (absent
@@ -880,15 +878,6 @@ open class KachatNamesRegistryTest {
         )
         val picked = KachatNamesService.fundingUtxos(all, me, virtualDaaScore = 10_000).map { it.outpoint.txid[0].toInt() }
         assertEquals(listOf(1, 5), picked)
-
-        // keys a name or an offer will be locked to must be on the curve
-        KachatNamesActions.validateKey(me, "mine")
-        assertTrue(runCatching { KachatNamesActions.validateKey(KachatNames.ZERO32, "zero") }.isFailure)
-        assertTrue(runCatching { KachatNamesActions.validateKey(ByteArray(31), "short") }.isFailure)
-        // x = 5 has no point on secp256k1 (5^3 + 7 = 132 is not a square mod p)
-        val noPoint = ByteArray(31) + byteArrayOf(5)
-        assertTrue(runCatching { KachatNamesActions.validateKey(noPoint, "x=5") }.isFailure)
-        assertTrue(runCatching { KachatNamesActions.validateKey(KachatNames.FF32, "ff") }.isFailure)
     }
 
     /**

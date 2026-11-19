@@ -131,7 +131,7 @@ fun CacheSettingsScreen(
                 }
             }
 
-            SettingsFormSection(title = "What's Cached") {
+            SettingsFormSection(title = stringResource(R.string.l53_whats_cached)) {
                 CacheManager.Category.entries.forEachIndexed { index, category ->
                     if (index > 0) SettingsDivider(54.dp)
                     val bytes = sizes[category] ?: 0L
@@ -183,9 +183,9 @@ fun CacheSettingsScreen(
 
     pendingClear?.let { category ->
         ConfirmActionSheet(
-            title = "Clear ${stringResource(category.title)}?",
+            title = stringResource(R.string.misc53_clear_category, stringResource(category.title)),
             confirmTitle = stringResource(R.string.clear),
-            confirmSubtitle = "${CacheManager.formatted(sizes[category] ?: 0L)} freed. ${stringResource(category.detail)}",
+            confirmSubtitle = stringResource(R.string.misc53_freed_detail, CacheManager.formatted(sizes[category] ?: 0L), stringResource(category.detail)),
             confirmIcon = Icons.Outlined.Delete,
             onConfirm = { scope.launch { cacheManager.clear(category); refresh() } },
             onDismiss = { pendingClear = null },
@@ -194,9 +194,9 @@ fun CacheSettingsScreen(
 
     if (showClearAll) {
         ConfirmActionSheet(
-            title = "Clear All Cache?",
-            confirmTitle = "Clear All",
-            confirmSubtitle = "Frees ${CacheManager.formatted(total)}. Your messages, contacts and keys are not touched.",
+            title = stringResource(R.string.misc53_clear_all_cache_question),
+            confirmTitle = stringResource(R.string.notification_center_clear_all),
+            confirmSubtitle = stringResource(R.string.misc53_frees_not_touched, CacheManager.formatted(total)),
             confirmIcon = Icons.Outlined.Delete,
             onConfirm = { scope.launch { cacheManager.clearAll(); refresh() } },
             onDismiss = { showClearAll = false },

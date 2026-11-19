@@ -79,7 +79,8 @@ fun parseNodeAddress(raw: String): ParsedNodeAddress? {
 class KaspadConnection internal constructor(
     private val scope: CoroutineScope,
     private val channel: ManagedChannel,
-    private val address: String = "unknown"
+    /** The "host:port" (or URL) this connection was opened for: the node pool's key for it. */
+    val address: String = "unknown"
 ) {
     constructor(address: String, scope: CoroutineScope) : this(
         scope,
@@ -88,6 +89,24 @@ class KaspadConnection internal constructor(
     )
 
     companion object {
+        /**
+         * Which node answered a submit, by the transaction's locally computed id (iOS 369794e
+         * `sent.endpoint`): the node that said "sent" isn't asked whether it has it, since a node
+         * keeping the transaction to itself would say yes from its own mempool
+         * ([com.kachat.app.services.NodePoolManager.submitConfirmingKnown] reads and clears it).
+         */
+        private val submitAnsweredBy = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        /** The node that answered a submit of [txId] (and forgets it), or null. */
+        internal fun takeSubmitAnsweredBy(txId: String): String? = submitAnsweredBy.remove(txId.lowercase())
+
+        private fun recordSubmitAnswer(txId: String?, address: String) {
+            if (txId.isNullOrEmpty()) return
+            // never more than a handful in flight: a forgotten entry can't pile up
+            if (submitAnsweredBy.size > 64) submitAnsweredBy.clear()
+            submitAnsweredBy[txId.lowercase()] = address
+        }
+
         private fun buildChannel(address: String): ManagedChannel {
             val parsed = parseNodeAddress(address)
             val target = if (parsed != null) "${parsed.host}:${parsed.port}" else address
@@ -459,13 +478,16 @@ class KaspadConnection internal constructor(
             // when it says the transaction itself is invalid (iOS 33095ac `isVerdict`)
             throw com.kachat.app.services.NodeRejectedTransactionException(response.error.message)
         }
+        recordSubmitAnswer(com.kachat.app.util.KaspaTransactionId.compute(rpcTx), address)
         return response.transactionId
     }
 
     /**
-     * Whether this node holds [transactionId] in its mempool, orphan pool included (iOS
-     * `queryMempoolEntryFromConnection`, 2 s). False for "not in the mempool" (an RPC error) and
-     * for any failure - this only ever answers "known here", never "unknown everywhere".
+     * Whether this node holds [transactionId] in its mempool (iOS `queryMempoolEntryFromConnection`,
+     * 2 s). False for "not in the mempool" (an RPC error) and for any failure - this only ever
+     * answers "known here", never "unknown everywhere". An orphan doesn't count: it can't land
+     * until its parents do (iOS 369794e). Nodes are unauthenticated, so the entry counts only if
+     * its transaction hashes to [transactionId] here ([com.kachat.app.util.KaspaTransactionId]).
      */
     suspend fun hasMempoolEntry(transactionId: String, timeoutMs: Long = 2000): Boolean {
         return try {
@@ -476,14 +498,24 @@ class KaspadConnection internal constructor(
                         this.id = id
                         getMempoolEntryRequest = getMempoolEntryRequestMessage {
                             txId = transactionId
-                            includeOrphanPool = true
+                            // an orphan can't land until its parents do: it doesn't count as sent
+                            includeOrphanPool = false
                             filterTransactionPool = false
                         }
                     }
                 },
                 extract = { it.getMempoolEntryResponse }
             )
-            !response.hasError() && response.hasEntry() && response.entry.hasTransaction()
+            if (response.hasError() || !response.hasEntry() || !response.entry.hasTransaction() || response.entry.isOrphan) {
+                return false
+            }
+            // the entry must really be the transaction asked about
+            val recomputed = com.kachat.app.util.KaspaTransactionId.compute(response.entry.transaction)
+            if (!recomputed.equals(transactionId, ignoreCase = true)) {
+                Log.w("KaspadConnection", "$address answered a mempool look-up for ${transactionId.take(12)} with another transaction")
+                return false
+            }
+            true
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             false
         } catch (e: CancellationException) {

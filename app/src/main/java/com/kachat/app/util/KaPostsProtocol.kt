@@ -180,6 +180,14 @@ object KaPostsProtocol {
         }
         if (fields.size <= messageIndex) return null
         val decoded = decodeB64(fields[messageIndex]) ?: return null
+        // A payload can name anyone as its author, so the signature must verify against the key
+        // it names - the same check the indexer makes before it shows a post. Without it, a
+        // shared link to a forged transaction would open as someone else's post, with their
+        // name, avatar, Tip and Follow. Only KaPost messages count, as in the feed fallback
+        // (iOS 369794e).
+        if (!isKaChatContent(decoded)) return null
+        val signingString = chainSigningString(action, fields) ?: return null
+        if (!com.kachat.app.services.KaPostsChainPosts.signatureIsValid(fields[2], signingString, fields[1])) return null
         return ChainPost(
             action = action,
             authorPubkey = fields[1],
@@ -187,6 +195,19 @@ object KaPostsProtocol {
             // Field 2 for both shapes that have one; a plain post references nothing.
             referencedId = if (action == "post" || action == "poll") null else fields[3].ifEmpty { null },
         )
+    }
+
+    /** What the author signed for a message-carrying payload, rebuilt from its fields; null when
+     *  the fields don't have the shape the action needs. */
+    private fun chainSigningString(action: String, fields: List<String>): String? = when (action) {
+        "post" -> if (fields.size >= 5) postSigningString(fields[3], fields[4]) else null
+        "reply" -> if (fields.size >= 6) replySigningString(fields[3], fields[4], fields[5]) else null
+        "quote" -> if (fields.size >= 6) quoteSigningString(fields[3], fields[4], fields[5]) else null
+        "poll" -> {
+            val closesAtMs = if (fields.size >= 7) fields[5].toLongOrNull() else null
+            if (closesAtMs != null) pollSigningString(fields[3], fields[4], closesAtMs, fields[6]) else null
+        }
+        else -> null
     }
 
     // Full payloads:

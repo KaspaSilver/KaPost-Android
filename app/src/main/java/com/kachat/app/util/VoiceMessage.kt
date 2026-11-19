@@ -21,9 +21,40 @@ object VoiceMessage {
     private val gson = Gson()
 
     /** Parsed voice messages by message text. Bubbles call [parseOrNull] far more often than a
-     *  message changes, and each uncached call was a full parse of the whole recording. */
+     *  message changes, and each uncached call was a full parse of the whole recording. Bounded by
+     *  size too (iOS 369794e, 16 MB of audio): a room of long voice notes fills it with 31 KB
+     *  parts, and a single voice message can be far larger. Guarded by itself. */
     private val parsedCache = object : LinkedHashMap<String, VoiceMessageContent>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, VoiceMessageContent>?) = size > 64
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, VoiceMessageContent>?): Boolean {
+            if (size > 64 && eldest != null) {
+                parsedCacheCost -= audioCost(eldest.value)
+                return true
+            }
+            return false
+        }
+    }
+
+    /** What [parsedCache] holds, in audio bytes (its entries' [audioCost]). */
+    private var parsedCacheCost = 0L
+    private const val PARSED_CACHE_COST_LIMIT = 16L * 1024 * 1024
+
+    /** About how many bytes of audio an entry carries: its base64 payload's decoded size. */
+    private fun audioCost(voice: VoiceMessageContent): Long = voice.content.length.toLong() * 3 / 4
+
+    private fun cacheParsed(text: String, parsed: VoiceMessageContent) {
+        synchronized(parsedCache) {
+            parsedCache.remove(text)?.let { parsedCacheCost -= audioCost(it) }
+            parsedCache[text] = parsed
+            parsedCacheCost += audioCost(parsed)
+            // Oldest first, until under the limit; the newest stays even when it alone is over.
+            val iterator = parsedCache.entries.iterator()
+            while (parsedCacheCost > PARSED_CACHE_COST_LIMIT && parsedCache.size > 1 && iterator.hasNext()) {
+                val eldest = iterator.next()
+                if (eldest.key == text) continue
+                parsedCacheCost -= audioCost(eldest.value)
+                iterator.remove()
+            }
+        }
     }
 
     fun encode(fileName: String, sizeBytes: Long, base64Audio: String, mimeType: String = "audio/webm"): String {
@@ -66,7 +97,7 @@ object VoiceMessage {
         return try {
             val parsed = gson.fromJson(text, VoiceMessageContent::class.java) ?: return null
             if (parsed.mimeType.startsWith("audio/") && parsed.content.startsWith("data:")) {
-                synchronized(parsedCache) { parsedCache[text] = parsed }
+                cacheParsed(text, parsed)
                 parsed
             } else null
         } catch (e: Exception) {
@@ -99,7 +130,10 @@ object VoiceMessage {
 
     /** "0:07", "1:03" — matches the mm:ss style used by the reveal/inscribe progress rows elsewhere in this app. */
     fun formatDuration(durationMs: Int): String {
-        val totalSeconds = (durationMs / 1000).coerceAtLeast(0)
+        // A length from the sender's file can be anything: out of range shows "--:--" (iOS
+        // 369794e `formattedDuration`; MediaPlayer says -1 for a length it doesn't know).
+        if (durationMs < 0 || durationMs >= 360_000_000) return "--:--"
+        val totalSeconds = durationMs / 1000
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
         return "%d:%02d".format(minutes, seconds)

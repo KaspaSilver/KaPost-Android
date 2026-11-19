@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -88,8 +89,18 @@ class BroadcastRepository @Inject constructor(
         // The message table is shared by every account on this device (iOS keeps one store per
         // account): the history goes only once no other account still has the room.
         if (database.broadcastDao().countJoinedAccounts(channelName) == 0) {
+            // Its messages, reactions and edits are all rows of this table, so they go together
+            // (iOS 369794e `leaveChannel`). Hidden senders stay, in case the room is joined again.
             database.broadcastDao().deleteMessagesForChannel(channelName)
         }
+        // A failed edit's text waits in memory for Retry, and what was fetched and applied is
+        // forgotten, so a rejoin this session pages the room in again (iOS 369794e).
+        _failedEdits.value = _failedEdits.value - channelName
+        deepBackfilledChannels.remove(channelName)
+        deepBackfillResume.remove(channelName)
+        deepBackfillFloor.remove(channelName)
+        indexerNewestSeen.remove(channelName)
+        deepUnverifiedRetries.remove(channelName)
     }
 
     /**
@@ -203,10 +214,13 @@ class BroadcastRepository @Inject constructor(
     data class RoomWindow(
         val messages: List<BroadcastMessageEntity>,
         val hasMore: Boolean,
-        /** Long voice notes in the window by their first part's id (iOS 1b15521
+        /** Long voice notes in the window by their lowest-index part's id (iOS 1b15521
          *  `voiceNotesByChannel`): one bubble each, worked out with the window so the room doesn't
          *  sniff every row on every pass. Their other parts are left out of [messages]. */
         val voiceNotes: Map<String, com.kachat.app.util.BroadcastVoiceNote> = emptyMap(),
+        /** Each hidden part's anchor id: a reply or reaction aimed at a hidden part (another
+         *  client that shows parts one by one) goes to the note's bubble (iOS 369794e). */
+        val anchorIdByPartId: Map<String, String> = emptyMap(),
     )
 
     /** Never includes messages from a sender hidden IN THIS ROOM (or via a legacy every-room hide) — including ones already cached from before the hide (see BroadcastScanningService for the future-side enforcement). Reaction messages (see [getReactions]) never render as a message row, so they're filtered out here too. */
@@ -241,12 +255,13 @@ class BroadcastRepository @Inject constructor(
                     it.senderAddress !in hiddenHere && MessageReaction.parseOrNull(it.content) == null &&
                     com.kachat.app.util.MessageEdit.parseOrNull(it.content) == null
             }
-            // A long voice note is one bubble at its first part; its other parts aren't drawn.
+            // A long voice note is one bubble at its lowest-index part; its other parts aren't drawn.
             val voiceNotes = com.kachat.app.util.BroadcastVoiceParts.group(fresh)
             RoomWindow(
                 messages = if (voiceNotes.hiddenIds.isEmpty()) fresh else fresh.filter { it.id !in voiceNotes.hiddenIds },
                 hasMore = limit != null && messages.size >= limit,
                 voiceNotes = voiceNotes.notesByAnchorId,
+                anchorIdByPartId = voiceNotes.anchorIdByPartId,
             )
         // The reaction/edit sniff runs over every row on every change - through a room's first
         // backfill that is once per page. Collected from the screen it ran on the main thread
@@ -530,13 +545,23 @@ class BroadcastRepository @Inject constructor(
     private suspend fun indexerBaseUrl(channelName: String): String =
         indexerBaseUrl(channelName, settings.broadcastIndexerUrl.first(), settings.broadcastIndexerOverrides.first())
 
+    /** Whether [base] is the app-wide public chat indexer, trailing slash and case aside (iOS
+     *  b78fdb0 `isAppWideIndexer`). */
+    private suspend fun isAppWideIndexer(base: String): Boolean {
+        fun canonical(url: String): String = url.trim().lowercase().trimEnd('/')
+        val appWide = canonical(settings.broadcastIndexerUrl.first())
+        return appWide.isNotEmpty() && canonical(base) == appWide
+    }
+
     /**
      * Every answer or failure from a room's indexer (iOS ee5ec98 `noteIndexerResult`). Null, or a
      * 4xx, means it answered: the count resets, and an indexer that was down has its rooms read
      * the outage again. Only a failure that says the indexer is at fault counts towards three.
      */
     private suspend fun noteIndexerResult(base: String, failed: Exception?) {
-        if (failed == null || isClientRejection(failed)) {
+        // A 4xx is the indexer answering, whatever it thinks of this request; so is a body that
+        // won't decode (iOS b78fdb0, CLAUDE.md "With the indexer down").
+        if (failed == null || isClientRejection(failed) || isUndecodableBody(failed)) {
             val since = synchronized(indexerHealthLock) {
                 indexerFailureRuns.remove(base)
                 val downSince = _unreachableIndexers.value[base] ?: return
@@ -568,11 +593,17 @@ class BroadcastRepository @Inject constructor(
     private fun isClientRejection(error: Exception): Boolean =
         (error as? retrofit2.HttpException)?.code()?.let { it in 400..499 && !statusMeansDown(it) } == true
 
+    /** The indexer answered with a body that won't decode (iOS `DecodingError`): Gson's parse
+     *  failures, which Retrofit's converter throws once the whole body is read. */
+    private fun isUndecodableBody(error: Exception): Boolean =
+        error is com.google.gson.JsonParseException || error is com.google.gson.stream.MalformedJsonException
+
     private fun isServerFailure(error: Exception): Boolean =
         (error as? retrofit2.HttpException)?.code()?.let { statusMeansDown(it) } == true
 
     /** A transport failure while the phone has a connection. A phone that's offline says nothing
-     *  about the indexer, and neither does a cancelled request or a body that won't decode. */
+     *  about the indexer, and neither does a cancelled request (a body that won't decode is an
+     *  answer, [isUndecodableBody]). */
     private fun meansDown(error: Exception): Boolean {
         if (error !is java.io.IOException) return false
         if (error is java.io.EOFException || error is com.google.gson.stream.MalformedJsonException) return false
@@ -649,8 +680,60 @@ class BroadcastRepository @Inject constructor(
     /** Rooms already checked for those rows, once per account per run (iOS e5a9b11). */
     private val settledPendingChannels = mutableSetOf<String>()
 
+    /** Rooms settled early because their indexer is down. They still get the full check once the
+     *  backfill finishes, which drops a "Not confirmed" row whose delivered copy then arrived
+     *  (iOS 369794e `settledWhileIndexerDown`). Guarded by [settledPendingChannels]' lock. */
+    private val settledWhileIndexerDown = mutableSetOf<String>()
+
     /** The account [settledPendingChannels] was filled for. */
     private var settledForWallet: String? = null
+
+    /** Bumped on every account change: work begun for one account checks it after each await
+     *  and drops its result when the account is no longer the open one (iOS b78fdb0). */
+    @Volatile
+    private var walletGeneration = 0
+
+    /** The account a fetch started under: [walletGeneration] and the address, with the phone
+     *  signed in. Log Out keeps the address, so it is read from [WalletManager.isLoggedOut]. */
+    private data class WalletTurn(val generation: Int, val address: String?)
+
+    private fun currentWalletTurn(): WalletTurn = WalletTurn(walletGeneration, myAddress())
+
+    /** Whether [turn]'s account is still the open one, signed in (iOS `isCurrentWallet`). */
+    private fun isCurrentWallet(turn: WalletTurn): Boolean =
+        turn.address != null && turn.generation == walletGeneration && myAddress() == turn.address &&
+            !walletManager.isLoggedOut
+
+    /** An account is open and signed in: the rooms' sweep and polls run only then (iOS b78fdb0,
+     *  "Signed out: no rooms to sweep"). */
+    fun isSignedIn(): Boolean = myAddress() != null && !walletManager.isLoggedOut
+
+    /**
+     * Whether a room push arriving while the app is in front is one this account still wants
+     * (iOS b78fdb0 `PublicChatService.wantsRoomPush`): a room it has joined, with its bell on, not
+     * a service room. A default room switched off in Public Chats settings has its bell off
+     * ([com.kachat.app.viewmodels.BroadcastViewModel.setCuratedRoomShown]). The push service can
+     * still send for a room deleted, muted or switched off until the registration update lands.
+     */
+    suspend fun wantsRoomPush(channelName: String): Boolean {
+        val name = MessageProtocol.normalizeChannelName(channelName)
+        if (name in com.kachat.app.services.ChessTournamentService.SERVICE_CHANNELS) return false
+        val address = myAddress() ?: return false
+        return name in database.broadcastDao().getNotifyEnabledChannelNames(address).first()
+    }
+
+    /**
+     * Whether [channelName] is in this account's room list - a tapped room push opens only such a
+     * room and never joins one (iOS b78fdb0 `openRoomFromPush`). On a cold start the account may
+     * still be landing, so this waits for it, up to 10 s, before deciding.
+     */
+    suspend fun isJoined(channelName: String): Boolean {
+        val address = kotlinx.coroutines.withTimeoutOrNull(10_000L) {
+            walletManager.activeAddressFlow.filterNotNull().first()
+        } ?: return false
+        val name = MessageProtocol.normalizeChannelName(channelName)
+        return database.broadcastDao().getJoinedChannels(address).first().any { it.channelName == name }
+    }
 
     /**
      * Called with the active account whenever it lands or changes. Another account's rows have
@@ -663,6 +746,10 @@ class BroadcastRepository @Inject constructor(
             if (normalized == settledForWallet) return
             settledForWallet = normalized
             settledPendingChannels.clear()
+            settledWhileIndexerDown.clear()
+            // A fetch, backfill or read still out for the account being left drops its answer
+            // ([isCurrentWallet]) instead of writing it into this one's state (iOS b78fdb0).
+            walletGeneration += 1
         }
         // iOS ee5ec98 setCurrentWallet. The backfilled set stays: Android's room messages are one
         // table shared by every account, so what was fetched still holds for the next one.
@@ -679,21 +766,59 @@ class BroadcastRepository @Inject constructor(
      * (same sender and content, sent, chain time no more than five minutes before the row's own).
      * The rest may have landed while the app was closed, so they show "Not confirmed" rather than
      * a Retry that could pay twice (iOS 33095ac `settlePendingMessages`).
+     *
+     * [indexerDown]: once while the room's indexer is confirmed down - no history is coming, and
+     * the rows would otherwise say "Sending" with no Retry all session (iOS 369794e).
+     *
+     * A long voice note's parts go out one at a time, in index order, so when a run ended mid-note
+     * only the earliest unsettled part can have been submitted. The parts after it never left the
+     * phone: Failed, so the note's Retry sends them, instead of "Not confirmed" for good with the
+     * room stuck on "Receiving 3 of 12" (iOS 369794e).
      */
-    suspend fun settlePendingSendsFromBeforeThisRun(channelName: String) {
+    suspend fun settlePendingSendsFromBeforeThisRun(channelName: String, indexerDown: Boolean = false) {
         synchronized(settledPendingChannels) {
-            if (!settledPendingChannels.add(channelName)) return
+            if (channelName in settledPendingChannels) return
+            if (indexerDown) {
+                if (!settledWhileIndexerDown.add(channelName)) return
+            } else {
+                settledPendingChannels.add(channelName)
+            }
         }
         val dao = database.broadcastDao()
-        for (row in dao.getUnsettledSends(channelName)) {
-            if (row.id in pendingSendsThisRun) continue
-            val delivered = dao.countDeliveredCopies(
+        val rows = dao.getUnsettledSends(channelName).filter { it.id !in pendingSendsThisRun }
+        val earliestIndexByNote = HashMap<String, Int>()
+        val partOf = HashMap<String, Pair<String, Int>>()
+        for (row in rows) {
+            if (row.content.firstOrNull() != '{') continue
+            val tag = com.kachat.app.util.VoicePartTag.sniff(row.content) ?: continue
+            val note = "${row.senderAddress.lowercase()}|${tag.id}|${tag.count}"
+            partOf[row.id] = note to tag.index
+            // Only parts still Sending count: one already "Not confirmed" (settled by an earlier
+            // run) wasn't what this run's sending had in flight. After a Retry of the later parts
+            // it is the earliest, and choosing it marked the part really in flight Failed - whose
+            // Retry could pay twice (iOS b78fdb0).
+            if (row.deliveryStatus != "pending") continue
+            earliestIndexByNote[note] = minOf(earliestIndexByNote[note] ?: tag.index, tag.index)
+        }
+        // A delivered copy settles one pending row, not every identical one: two sends of the same
+        // text with one copy on chain leave the other "Not confirmed" (iOS b78fdb0).
+        val matchedDelivered = HashSet<String>()
+        for (row in rows.sortedBy { it.blockTimestamp }) {
+            val part = partOf[row.id]
+            val earliest = part?.let { earliestIndexByNote[it.first] }
+            if (part != null && earliest != null && part.second > earliest && row.id.startsWith("pending_") &&
+                row.deliveryStatus == "pending") {
+                dao.updateMessageStatus(row.id, "failed")
+                continue
+            }
+            val copy = dao.deliveredCopyIds(
                 channelName = channelName,
                 senderAddress = row.senderAddress,
                 content = row.content,
                 sinceMillis = row.blockTimestamp - SETTLE_DELIVERED_WINDOW_MS,
-            )
-            if (delivered > 0) {
+            ).firstOrNull { it !in matchedDelivered }
+            if (copy != null) {
+                matchedDelivered.add(copy)
                 dao.deleteMessage(row.id)
             } else if (row.deliveryStatus != "unconfirmed") {
                 dao.updateMessageStatus(row.id, "unconfirmed")
@@ -740,10 +865,13 @@ class BroadcastRepository @Inject constructor(
         val override = roomIndexerOverride(channelName)
         val api = (override?.let { networkService.broadcastIndexerApiFor(it) }
             ?: networkService.broadcastIndexerApi.value) ?: return emptyList()
+        val turn = currentWalletTurn()
         val hidden = hiddenAddressesIn(channelName, getHiddenSenders().first())
         val base = indexerBaseUrl(channelName)
         val page = try {
             api.getBroadcasts(channel = channelName, limit = limit)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             noteIndexerResult(base, e)
             android.util.Log.w("BroadcastRepository", "Sweep fetch failed for $channelName", e)
@@ -751,7 +879,13 @@ class BroadcastRepository @Inject constructor(
         }
         noteIndexerResult(base, null)
         // An indexer only stores the rooms it tracks: rows back mean it keeps this room's history.
-        if (!page.messages.isNullOrEmpty()) com.kachat.app.services.IndexerTrackedRooms.markServed(channelName)
+        // Only the app-wide indexer's rows count: "tracked" also means the app-wide push service
+        // sends the room's pushes, which a room's own indexer says nothing about (iOS b78fdb0).
+        if (!page.messages.isNullOrEmpty() && isAppWideIndexer(base)) {
+            com.kachat.app.services.IndexerTrackedRooms.markServed(channelName)
+        }
+        // Asked for the account that has since logged out or switched: not this one's (iOS b78fdb0).
+        if (!isCurrentWallet(turn)) return emptyList()
         // Neither a reaction nor an edit is a message anyone reads; the room's own backfill is
         // what persists them.
         val wanted = page.messages.orEmpty().filter { message ->
@@ -759,7 +893,8 @@ class BroadcastRepository @Inject constructor(
             MessageReaction.parseOrNull(content) == null && com.kachat.app.util.MessageEdit.parseOrNull(content) == null
         }
         // Hidden is judged on the VERIFIED sender, never on the indexer's guess.
-        return admitIndexerRows(channelName, wanted, skipSender = { it in hidden }).inserted
+        val inserted = admitIndexerRows(channelName, wanted, skipSender = { it in hidden }, stillWanted = { isCurrentWallet(turn) }).inserted
+        return if (isCurrentWallet(turn)) inserted else emptyList()
     }
 
     /** What [admitIndexerRows] stored, and how many rows it could not verify yet. */
@@ -781,7 +916,11 @@ class BroadcastRepository @Inject constructor(
         channelName: String,
         rows: List<com.kachat.app.services.BroadcastHistoryRow>,
         skipSender: (String) -> Boolean = { false },
+        /** False once the account the page was asked for has logged out or switched: the rest
+         *  of the page is dropped (iOS b78fdb0 `mergeIndexerRows`' generation). */
+        stillWanted: () -> Boolean = { true },
     ): Admitted {
+        if (!stillWanted()) return Admitted(emptyList(), 0)
         val toVerify = ArrayList<com.kachat.app.services.BroadcastHistoryRow>()
         for (row in rows) {
             val txId = row.txId?.takeIf { it.isNotBlank() } ?: continue
@@ -803,6 +942,7 @@ class BroadcastRepository @Inject constructor(
         }
         if (toVerify.isEmpty()) return Admitted(emptyList(), 0)
         val verdicts = senderVerifier.verifyRows(toVerify.mapNotNull { it.txId }, channelName)
+        if (!stillWanted()) return Admitted(emptyList(), 0)
         val inserted = mutableListOf<BroadcastMessageEntity>()
         var unknown = 0
         for (row in toVerify) {
@@ -963,12 +1103,19 @@ class BroadcastRepository @Inject constructor(
         val base = indexerBaseUrl(channelName)
         var fetched = 0
         var unverified = 0
+        // Every answer below is for the account this started under: after a log out or switch it
+        // is dropped, not merged into the next account's backfill state (iOS b78fdb0
+        // `fetchFromIndexerAndMerge`). A cancelled poll throws at its next suspension.
+        val turn = currentWalletTurn()
+        fun stillWanted(): Boolean = isCurrentWallet(turn)
 
-        /** Merges one page: rows back mean the indexer keeps this room's history (iOS 21c480d),
-         *  and each is stored only with a verified sender (audit XP-012). */
+        val appWideServes = isAppWideIndexer(base)
+
+        /** Merges one page: rows back from the app-wide indexer mean it keeps this room's history
+         *  (iOS 21c480d, b78fdb0), and each is stored only with a verified sender (audit XP-012). */
         suspend fun merge(messages: List<com.kachat.app.services.BroadcastHistoryRow>) {
-            if (messages.isNotEmpty()) com.kachat.app.services.IndexerTrackedRooms.markServed(channelName)
-            unverified += admitIndexerRows(channelName, messages).unknown
+            if (messages.isNotEmpty() && appWideServes) com.kachat.app.services.IndexerTrackedRooms.markServed(channelName)
+            unverified += admitIndexerRows(channelName, messages, stillWanted = { stillWanted() }).unknown
             fetched += messages.size
         }
 
@@ -981,9 +1128,11 @@ class BroadcastRepository @Inject constructor(
                 limit = if (channelName in deepBackfilledChannels) 30 else 200,
             )
             noteIndexerResult(base, null)
+            if (!stillWanted()) return -1
             val newest = response.messages.orEmpty()
             // The newest page goes in FIRST, before any history is paged (iOS fetchFromIndexerAndMerge).
             merge(newest)
+            if (!stillWanted()) return -1
             val newestTimes = newest.mapNotNull { it.blockTime }
             // More arrived since the last poll than the page holds (a busy room, or the app away
             // for a while): page back to the rows already seen, through the backfill below and
@@ -1005,7 +1154,8 @@ class BroadcastRepository @Inject constructor(
                 // already in the store from the attempt that recorded it.
                 val resume = deepBackfillResume[channelName]
                 var hasMore = resume != null || response.hasMore == true
-                var oldest: Long? = resume?.first ?: oldestNewest
+                // From the oldest millisecond again (see the cursor in the loop below).
+                var oldest: Long? = resume?.first ?: oldestNewest?.let { it + 1 }
                 var pagesLeft = resume?.second ?: 50 // 50 × 200 = 10k rows, far beyond any real room
                 val floor = maxOf(cutoff, deepBackfillFloor[channelName] ?: cutoff)
                 while (hasMore && pagesLeft > 0) {
@@ -1017,17 +1167,26 @@ class BroadcastRepository @Inject constructor(
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
+                        if (!stillWanted()) return -1
                         // Keep what this attempt did get: the cursor recorded after each landed
                         // page is where the next 8s tick resumes, not page 1.
                         android.util.Log.w("BroadcastRepository", "Indexer backfill paused for $channelName at before=$before", e)
                         interrupted = true
                         break
                     }
+                    if (!stillWanted()) return -1
                     val messages = page.messages.orEmpty()
                     if (messages.isEmpty()) break
                     merge(messages)
+                    if (!stillWanted()) return -1
                     hasMore = page.hasMore == true
-                    oldest = messages.mapNotNull { it.blockTime }.minOrNull()
+                    // The indexer's `before` is exclusive (`block_time < before`), and rows of one
+                    // block share a millisecond: those cut off at a page's edge were skipped. So the
+                    // next page asks from the oldest millisecond again (rows dedupe by txid). A page
+                    // that is all that millisecond made no progress, and steps past it instead
+                    // (iOS 369794e).
+                    val pageOldest = messages.mapNotNull { it.blockTime }.minOrNull()
+                    oldest = if (pageOldest != null && pageOldest + 1 < before) pageOldest + 1 else pageOldest
                     val next = oldest
                     if (hasMore && next != null) deepBackfillResume[channelName] = next to pagesLeft
                 }
@@ -1058,6 +1217,11 @@ class BroadcastRepository @Inject constructor(
             // Best-effort on top of live scanning - the loop just tries again next tick.
             noteIndexerResult(base, e)
             android.util.Log.w("BroadcastRepository", "Indexer fetch failed for $channelName", e)
+            // Confirmed down: no history is coming, so leftover sends are settled now rather than
+            // saying "Sending" with no Retry all session (iOS 369794e).
+            if (stillWanted() && base in _unreachableIndexers.value) {
+                settlePendingSendsFromBeforeThisRun(channelName, indexerDown = true)
+            }
             -1
         }
     }
@@ -1068,28 +1232,30 @@ class BroadcastRepository @Inject constructor(
      * ChatViewModel.sendMessage's exact pattern for 1:1 chats. On success the placeholder is
      * swapped for the real message (real txId, "sent"); on failure it flips to "failed" in place
      * with a Retry option, rather than disappearing silently. [dropRowOnFailure]: an edit, whose
-     * row goes instead - see [sendEdit].
+     * row goes instead - see [sendEdit]. [deferNoCoinRetry]: a room message (iOS `sendPublicChat`)
+     * that finds no coin free yet stays pending and is sent again by itself after a wait
+     * ([scheduleNoCoinRetry]); null is returned then. Reactions and edits fail at once, as iOS.
      */
     suspend fun sendBroadcast(
         channelName: String,
         content: String,
         feeRateOverride: Long? = null,
         dropRowOnFailure: Boolean = false,
-    ): String {
+        deferNoCoinRetry: Boolean = false,
+    ): String? {
         val myAddress = walletManager.getAddress()
         val pendingId = "pending_${java.util.UUID.randomUUID()}"
         // This run is working on it, so the leftover-pending settle leaves it alone (iOS e5a9b11).
         pendingSendsThisRun.add(pendingId)
-        database.broadcastDao().insertMessage(
-            BroadcastMessageEntity(
-                id = pendingId,
-                channelName = channelName,
-                senderAddress = myAddress,
-                content = content,
-                blockTimestamp = System.currentTimeMillis(),
-                deliveryStatus = "pending"
-            )
+        val pendingRow = BroadcastMessageEntity(
+            id = pendingId,
+            channelName = channelName,
+            senderAddress = myAddress,
+            content = content,
+            blockTimestamp = System.currentTimeMillis(),
+            deliveryStatus = "pending"
         )
+        database.broadcastDao().insertMessage(pendingRow)
         try {
             val txId = walletService.sendBroadcast(channelName, content, feeRateOverride = feeRateOverride).txId
             // Signed here, so its sender is known when it comes back from the chain (XP-012).
@@ -1116,9 +1282,24 @@ class BroadcastRepository @Inject constructor(
             // Never "failed": it may have gone out, and a Retry could post and pay twice. Left
             // pending for the settle, like an unknown outcome.
             throw e
-        } catch (e: Exception) {
+        } catch (e: com.kachat.app.services.NoCoinFreeYetException) {
+            if (deferNoCoinRetry && !dropRowOnFailure) {
+                // Stays Sending and goes again once a coin is free (iOS `handleSendFailure`).
+                scheduleNoCoinRetry(pendingRow, keepTime = false, delayMs = nextNoCoinRetryDelayMs(pendingId))
+                return null
+            }
+            // No send is working on it any more, so its Retry may start one (iOS 369794e).
+            pendingSendsThisRun.remove(pendingId)
             if (dropRowOnFailure) {
-                pendingSendsThisRun.remove(pendingId)
+                database.broadcastDao().deleteMessage(pendingId)
+            } else {
+                database.broadcastDao().updateMessageStatus(pendingId, "failed")
+            }
+            throw e
+        } catch (e: Exception) {
+            // No send is working on it any more, so its Retry may start one (iOS 369794e).
+            pendingSendsThisRun.remove(pendingId)
+            if (dropRowOnFailure) {
                 database.broadcastDao().deleteMessage(pendingId)
             } else {
                 database.broadcastDao().updateMessageStatus(pendingId, "failed")
@@ -1127,8 +1308,8 @@ class BroadcastRepository @Inject constructor(
         }
     }
 
-    /** Re-attempts a failed broadcast, reusing its same "pending_<uuid>" id/content — the same placeholder resurrected, not a new message, matching ChatViewModel.retrySendMessage. */
-    suspend fun retryBroadcast(message: BroadcastMessageEntity) {
+    /** Re-attempts a failed broadcast, reusing its same "pending_<uuid>" id/content — the same placeholder resurrected, not a new message, matching ChatViewModel.retrySendMessage. [deferNoCoinRetry]: a room message's Retry waits for a coin as its first send does (iOS `retryPublicChat` > `resendPending`); a reaction's doesn't. */
+    suspend fun retryBroadcast(message: BroadcastMessageEntity, deferNoCoinRetry: Boolean = false) {
         // Only a failed send of this account's, and only once: a second tap before the list
         // re-emits would send it twice (iOS `retryPublicChatMessage` guards the same).
         if (message.senderAddress != walletManager.getAddress()) return
@@ -1136,29 +1317,16 @@ class BroadcastRepository @Inject constructor(
         pendingSendsThisRun.add(message.id)
         if (database.broadcastDao().claimFailedForRetry(message.id) == 0) return
         try {
-            val txId = walletService.sendBroadcast(message.channelName, message.content).txId
-            senderVerifier.rememberOwnBroadcast(txId, message.senderAddress)
-            database.broadcastDao().deleteMessage(message.id)
-            database.broadcastDao().insertMessage(
-                BroadcastMessageEntity(
-                    id = txId,
-                    channelName = message.channelName,
-                    senderAddress = message.senderAddress,
-                    content = message.content,
-                    blockTimestamp = System.currentTimeMillis(),
-                    deliveryStatus = "sent"
-                )
-            )
+            sendPendingRow(message.copy(deliveryStatus = "pending"), keepTime = false, deferNoCoin = deferNoCoinRetry)
         } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
             // May have landed: "Not confirmed" with no Retry (iOS 33095ac). Passed on so a room
             // message can say so; a reaction's retry says nothing, as iOS's `try?` does.
-            markMessageUnconfirmed(message.id, e.txId)
             throw e
         } catch (e: kotlinx.coroutines.CancellationException) {
             // Left pending, never "failed" (see [sendBroadcast]).
             throw e
         } catch (e: Exception) {
-            database.broadcastDao().updateMessageStatus(message.id, "failed")
+            // Failed again: [sendPendingRow] marked it, for the next Retry.
         }
     }
 
@@ -1170,11 +1338,13 @@ class BroadcastRepository @Inject constructor(
      *
      * The balance for every part is checked first. Every part then shows at once, Sending, a
      * millisecond apart so they keep their order, and they go out in index order, one after
-     * another, so each spends the change of the one before. When one fails the ones after it are
-     * marked Failed too, for one Retry to send them in order. Parts never carry a reply: the reply
-     * envelope would push a part past what one transaction holds. [onQueued] runs once the parts
-     * show (the caller drops its reply then). A note of one part goes as an ordinary voice
-     * message ([sendBroadcast]) instead.
+     * another, so each spends the change of the one before. A part that finds no coin free yet
+     * stays Sending and goes again by itself after a wait, the ones after it following the same way
+     * (iOS: `isNoConfirmedInputsError` > `handleSendFailure`, `schedulePublicChatRetry`). When one
+     * fails otherwise the ones after it are marked Failed too, for one Retry to send them in order.
+     * Parts never carry a reply: the reply envelope would push a part past what one transaction
+     * holds. [onQueued] runs once the parts show (the caller drops its reply then). A note of one
+     * part goes as an ordinary voice message ([sendBroadcast]) instead.
      */
     suspend fun sendVoiceParts(channelName: String, parts: List<ByteArray>, onQueued: () -> Unit = {}) {
         if (parts.size < 2 || parts.size > com.kachat.app.util.VoicePartTag.MAX_PARTS || parts.any { it.isEmpty() }) {
@@ -1183,20 +1353,23 @@ class BroadcastRepository @Inject constructor(
         val myAddress = walletManager.getAddress()
         val mimeType = "audio/webm"
         val noteId = com.kachat.app.util.VoicePartTag.newGroupId()
-        val contents = parts.mapIndexed { offset, data ->
-            val tag = com.kachat.app.util.VoicePartTag.of(noteId, offset + 1, parts.size)
-                ?: throw IllegalArgumentException("Audio file is empty")
-            com.kachat.app.util.MediaFileEnvelope.json(
-                name = tag.fileName,
-                size = data.size,
-                mimeType = mimeType,
-                dataUrlContent = "data:$mimeType;base64," + android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP),
-                voicePart = tag,
-            )
+        // About 1 MB of base64 and JSON for 2:50, and the fee of each: off the main thread.
+        val contents = kotlinx.coroutines.withContext(Dispatchers.Default) {
+            val built = parts.mapIndexed { offset, data ->
+                val tag = com.kachat.app.util.VoicePartTag.of(noteId, offset + 1, parts.size)
+                    ?: throw IllegalArgumentException("Audio file is empty")
+                com.kachat.app.util.MediaFileEnvelope.json(
+                    name = tag.fileName,
+                    size = data.size,
+                    mimeType = mimeType,
+                    dataUrlContent = "data:$mimeType;base64," + android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP),
+                    voicePart = tag,
+                )
+            }
+            // The whole note first, before a single part goes out.
+            ensureSufficientBalanceForVoiceParts(channelName, built, myAddress)
+            built
         }
-
-        // The whole note first, before a single part goes out.
-        ensureSufficientBalanceForVoiceParts(channelName, contents, myAddress)
 
         val dao = database.broadcastDao()
         val start = System.currentTimeMillis()
@@ -1217,13 +1390,29 @@ class BroadcastRepository @Inject constructor(
         onQueued()
 
         for ((offset, row) in pending.withIndex()) {
-            try {
-                sendPendingVoicePart(row)
+            // Logged out or switched away: the rest must not go out from this account under the
+            // new one's session (iOS 369794e `isStillSignedIn`). Failed, for a Retry once it is
+            // active again: the room table is shared, so a row left Sending would show so to the
+            // next account all session.
+            if (!isStillSignedIn(myAddress)) {
+                failRemainingParts(pending.drop(offset))
+                return
+            }
+            val sent = try {
+                sendPendingRow(row, keepTime = true, deferNoCoin = true)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 failRemainingParts(pending.drop(offset + 1))
                 throw e
+            }
+            if (!sent) {
+                // This part waits for a confirmed coin and retries itself; the rest follow it the
+                // same way (iOS `sendPublicChatVoiceParts`).
+                for (later in pending.drop(offset + 1)) {
+                    scheduleNoCoinRetry(later, keepTime = true, delayMs = nextNoCoinRetryDelayMs(later.id))
+                }
+                return
             }
         }
     }
@@ -1232,7 +1421,9 @@ class BroadcastRepository @Inject constructor(
      * Retry on a long voice note's bubble (iOS 1b15521 `retryPublicChatVoiceParts`): only its
      * failed parts, one after another in index order, so each spends the change of the one
      * before. All of them show Sending at once; when one fails again, the ones after it go back to
-     * Failed for the next Retry. Says nothing on a failure, as [retryBroadcast].
+     * Failed for the next Retry. One that finds no coin free yet waits and retries by itself, and
+     * the rest follow it through their own waits, in order (iOS `resendPending`, b78fdb0). Says
+     * nothing on a failure, as [retryBroadcast].
      */
     suspend fun retryVoiceParts(failedParts: List<BroadcastMessageEntity>) {
         val myAddress = walletManager.getAddress()
@@ -1245,8 +1436,13 @@ class BroadcastRepository @Inject constructor(
             if (dao.claimFailedForRetry(part.id) > 0) claimed.add(part.copy(deliveryStatus = "pending"))
         }
         for ((offset, part) in claimed.withIndex()) {
-            try {
-                sendPendingVoicePart(part)
+            // Sending stops between parts on log out or an account switch (iOS 369794e).
+            if (!isStillSignedIn(myAddress)) {
+                failRemainingParts(claimed.drop(offset))
+                return
+            }
+            val went = try {
+                sendPendingRow(part, keepTime = true, deferNoCoin = true)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1254,35 +1450,130 @@ class BroadcastRepository @Inject constructor(
                 failRemainingParts(claimed.drop(offset + 1))
                 return
             }
+            if (!went) {
+                // This part waits for a confirmed coin and retries itself: the rest follow it the
+                // same way, in order, as in [sendVoiceParts] - not straight away, ahead of it
+                // (iOS b78fdb0 `retryPublicChatVoiceParts`).
+                for (later in claimed.drop(offset + 1)) {
+                    scheduleNoCoinRetry(later, keepTime = true, delayMs = nextNoCoinRetryDelayMs(later.id))
+                }
+                return
+            }
         }
     }
 
-    /** Sends a part whose row is already pending, under its own id; the sent row keeps the
-     *  pending row's time, so the note keeps its order. Throws when it failed (the row is then
-     *  Failed, or Not confirmed for an unknown outcome). */
-    private suspend fun sendPendingVoicePart(row: BroadcastMessageEntity) {
+    /**
+     * Sends a row that is already pending, under its own id (iOS `resendPending`): true once it
+     * went. With [deferNoCoin], one that finds no coin free yet ([com.kachat.app.services.NoCoinFreeYetException])
+     * stays pending and is sent again by itself after a wait ([scheduleNoCoinRetry], iOS
+     * `handleSendFailure`): false. Throws when it failed (the row is then Failed, or Not confirmed
+     * for an unknown outcome). [keepTime]: the sent row keeps the pending row's time, so a voice
+     * note's parts keep their order; otherwise it takes the send's.
+     */
+    private suspend fun sendPendingRow(row: BroadcastMessageEntity, keepTime: Boolean, deferNoCoin: Boolean): Boolean {
         val dao = database.broadcastDao()
         try {
             val txId = walletService.sendBroadcast(row.channelName, row.content).txId
+            clearNoCoinRetryState(row.id)
             senderVerifier.rememberOwnBroadcast(txId, row.senderAddress)
             dao.deleteMessage(row.id)
-            dao.insertMessage(row.copy(id = txId, deliveryStatus = "sent"))
+            val sentAt = if (keepTime) row.blockTimestamp else System.currentTimeMillis()
+            dao.insertMessage(row.copy(id = txId, blockTimestamp = sentAt, deliveryStatus = "sent"))
+            return true
         } catch (e: com.kachat.app.services.SendOutcomeUnknownException) {
+            clearNoCoinRetryState(row.id)
             markMessageUnconfirmed(row.id, e.txId)
             throw e
         } catch (e: kotlinx.coroutines.CancellationException) {
             // Left pending, never "failed" (see [sendBroadcast]).
             throw e
+        } catch (e: com.kachat.app.services.NoCoinFreeYetException) {
+            if (deferNoCoin) {
+                scheduleNoCoinRetry(row, keepTime, nextNoCoinRetryDelayMs(row.id))
+                return false
+            }
+            clearNoCoinRetryState(row.id)
+            // No send is working on it any more, so its Retry may start one (iOS 369794e).
+            pendingSendsThisRun.remove(row.id)
+            dao.updateMessageStatus(row.id, "failed")
+            throw e
         } catch (e: Exception) {
+            clearNoCoinRetryState(row.id)
+            // No send is working on it any more, so its Retry may start one (iOS 369794e).
+            pendingSendsThisRun.remove(row.id)
             dao.updateMessageStatus(row.id, "failed")
             throw e
         }
     }
 
+    /** Tries so far per pending id of the wait for a free coin (iOS `noInputRetryCounts`). */
+    private val noCoinRetryCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Pending ids with a wait-and-retry scheduled (iOS `scheduledSendRetries`). */
+    private val scheduledNoCoinRetries: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+
+    /** iOS `nextNoInputRetryDelay`: 1, 2, 4 ... s, at most 60, each with 10-35 % added. */
+    private fun nextNoCoinRetryDelayMs(pendingId: String): Long {
+        val attempt = noCoinRetryCounts.merge(pendingId, 1) { old, one -> old + one } ?: 1
+        val base = minOf(60.0, Math.pow(2.0, maxOf(0, attempt - 1).toDouble()))
+        val jitter = kotlin.random.Random.nextDouble(0.10, 0.35)
+        return ((base + base * jitter) * 1000.0).toLong()
+    }
+
+    /** iOS `clearNoInputRetryState`. */
+    private fun clearNoCoinRetryState(pendingId: String) {
+        noCoinRetryCounts.remove(pendingId)
+        scheduledNoCoinRetries.remove(pendingId)
+    }
+
+    /**
+     * iOS `schedulePublicChatRetry`: after [delayMs], sends [row] again if it is still pending
+     * (nothing else settled it, and the same account is active, as iOS keeps the wallet it was
+     * sent from); finding no coin again waits longer. Says nothing on a failure, as iOS's `try?`.
+     * In [sendScope], so it outlives the room.
+     */
+    private fun scheduleNoCoinRetry(row: BroadcastMessageEntity, keepTime: Boolean, delayMs: Long) {
+        if (!scheduledNoCoinRetries.add(row.id)) return
+        android.util.Log.i("BroadcastRepository", "Deferred retry (no confirmed inputs) for ${row.id.take(12)} in ${delayMs / 1000}s")
+        sendScope.launch {
+            kotlinx.coroutines.delay(delayMs)
+            scheduledNoCoinRetries.remove(row.id)
+            val current = database.broadcastDao().getMessage(row.id)
+            if (current == null || current.deliveryStatus != "pending") {
+                clearNoCoinRetryState(row.id)
+                return@launch
+            }
+            if (!isStillSignedIn(row.senderAddress)) {
+                // Sent from another account, or logged out since (iOS 369794e
+                // `isStillSignedIn`): Failed, for a Retry once it is active again.
+                clearNoCoinRetryState(row.id)
+                pendingSendsThisRun.remove(row.id)
+                database.broadcastDao().updateMessageStatus(row.id, "failed")
+                return@launch
+            }
+            try {
+                sendPendingRow(current, keepTime, deferNoCoin = true)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("BroadcastRepository", "Deferred room send failed", e)
+            }
+        }
+    }
+
+    /**
+     * False once the account that started a send has logged out or been switched away from: the
+     * rest of a long voice note must not go out from the old account under the new one's session
+     * (iOS 369794e `isStillSignedIn`).
+     */
+    private fun isStillSignedIn(address: String): Boolean =
+        myAddress() == address && !walletManager.isLoggedOut
+
     /** The parts after one that failed never went: Failed too, so one Retry sends them in order. */
     private suspend fun failRemainingParts(parts: List<BroadcastMessageEntity>) {
         val dao = database.broadcastDao()
         for (part in parts) {
+            clearNoCoinRetryState(part.id)
             pendingSendsThisRun.remove(part.id)
             dao.updateMessageStatus(part.id, "failed")
         }

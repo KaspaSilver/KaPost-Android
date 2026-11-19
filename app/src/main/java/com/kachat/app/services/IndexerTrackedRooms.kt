@@ -15,9 +15,10 @@ import org.json.JSONObject
  * gets everything a default room gets - its 30 days of history kept on the phone, remote push,
  * the cellular savings - with no app update (iOS 21c480d, `IndexerTrackedRooms`). Learned two ways:
  *  - **Reported**: the app-wide indexer's `GET /broadcast-channels` (replaced on every answer).
- *  - **Served**: a room whose `/get-broadcasts` returned rows - an indexer stores only rooms it
- *    tracks. Counts for 30 days after the last rows came back (the indexer's own window), so this
- *    also works with an indexer that predates the endpoint, and with a room's own indexer.
+ *  - **Served**: a room whose `/get-broadcasts` on the app-wide indexer returned rows - an indexer
+ *    stores only rooms it tracks. Counts for 30 days after the last rows came back (the indexer's
+ *    own window), so this also works with an indexer that predates the endpoint. A room's own
+ *    indexer doesn't count: the app-wide push service knows nothing of what it serves (iOS b78fdb0).
  *
  * Per network, persisted. Thread-safe: the scanner's prune and the block loop read it off the main
  * thread. [init] runs from KaChatApplication.attachBaseContext; before it (or in unit tests that
@@ -98,7 +99,7 @@ object IndexerTrackedRooms {
         if (changed) postChange()
     }
 
-    /** [channel]'s indexer just returned rows for it. */
+    /** The app-wide indexer just returned rows for [channel] (never a room's own indexer). */
     fun markServed(channel: String) {
         val name = MessageProtocol.normalizeChannelName(channel)
         if (name.isEmpty()) return

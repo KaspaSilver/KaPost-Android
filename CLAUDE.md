@@ -18,8 +18,8 @@ The source started as a copy of KaChat-Android (`KaspaSilver/KaChat-Android`) at
 (5.2.2 build 7, 2026-10-22), the point where KaChat-Android matched KaChat-iPhone `8b31f71`, which
 KaPosts-iPhone was cut from. KaChat's other features are removed: 1:1 and group chat screens,
 calls (and WebRTC), Chess, Swap, Cold Storage, Portfolio, the Address Book screens, Child Mode,
-KaChat's Profile tab and notification bell, the Kaspa Hub, Stats, Bots, the welcome guide, the
-share-sheet target, Customize Dock.
+KaChat's Profile tab and notification bell, the Kaspa Hub, Stats, Bots, KaChat's own welcome guide
+(KaPost has its own since iOS b78fdb0), the share-sheet target, Customize Dock.
 
 What is still KaChat-shaped underneath:
 - The Kotlin package and namespace stay `com.kachat.app` (only the applicationId changed), and
@@ -28,12 +28,18 @@ What is still KaChat-shaped underneath:
   sync is switched off (`ChatRepository.ONE_TO_ONE_CHATS_ENABLED = false`, iOS
   `oneToOneChatsEnabled`), but the code behind it (handshakes, contextual messages, groups,
   Nextcloud backup) is still there, unreachable.
-- `.kachat` names: the services, the profile editor and the name screens are kept; only the
-  profile editor and the Wallet's Domains tab reach them. The Domains tab
-  (`KaPostAddressDomainsTab`) only lists the names: registering, renewing, selling and editing
-  them is KaChat Wallet's, which its button opens (KaPay, `kapay.kachat.app`, listed in the manifest's
-  `<queries>`). The Wallet's Your Domains (iOS 071e901, below) reaches the rest: the .kachat
-  list (`KachatLiveDomainsTab`), a name's live page and the marketplace (Inscribe). `.kachat` is the
+- `.kachat` names are display only (owner's call, 2026-11-18, iOS b78fdb0): the read services
+  (`KachatNamesRegistry`), Your Domains, the profile editor, its save sheet and receipt
+  (`ui/screens/KachatNamesLiveScreens.kt`). KaPost signs no registry transaction except saving the
+  profile or setting the primary name; your own profile syncs on every foreground
+  (`KachatNamesActions.resume`). Claiming is KaPay's: Your Domains ends with "Get a .kachat domain"
+  and Edit Profile has "Get a .kachat name", both opening home.kachat.app/kachat/
+  (`KachatNamesInfo.PAGE_URL`). The names are listed with no detail screen, no offers and no
+  actions, and nothing sends a .kachat transaction by itself (no claim resume, no offer refunds).
+  The marketplace, name detail, claim, offer and setup-guide screens are removed. The Domains tab
+  (`KaPostAddressDomainsTab`) lists the names under "Manage your domains", and its Open Your Domains
+  button opens the account's .kachat list (`kachat_your_domains`, `KachatYourDomainsScreen`, reached
+  through `LocalOpenKachatYourDomains`). `.kachat` is the
   only name service KaPosts reads: KNS (.kas), dotk (.k) and Kaspa Names (.kaspa) are switched
   off at their entry points (`KnsService.IS_ENABLED`, `NameServicesClient.OTHER_SERVICES_ENABLED`),
   so the Domains tab, address fields, mentions and search see .kachat names only. iOS 071e901
@@ -48,8 +54,8 @@ Every KaChat app has KaPay's full wallet (owner's call, 2026-11-07; it replaced 
 only" from 2026-11-05). Profile > Wallet (`KaPostWalletScreen`) is KaPay's Wallet tab: the total
 split into chatting and spending, Send, Receive and Request (iOS ee5ec98: Compound UTXOs and an
 address's keys are in Manage Addresses, under that address), Backup Hygiene when due, then the
-Manage Addresses and Chatting Address squares (`WalletAddressSquares`), Your Domains (below) and
-Help (`WalletHelpScreen`, the .kachat names guide). No transaction history on this screen (owner's
+Manage Addresses and Chatting Address squares (`WalletAddressSquares`) and Your Domains (below);
+no Help row since the .kachat guide went with claiming (iOS b78fdb0). No transaction history on this screen (owner's
 call, 2026-11-09). Each single-address page (the Chatting Address and a spending address) has one
 options icon at the top right (`AddressOptionsButton`), opening `AddressActionsSheet`: View Private
 Key, View Public Key (not for a quantum address, whose key stays hidden until it spends) and View
@@ -63,7 +69,8 @@ addresses): people use KaChat or KaPay for that (owner's call, 2026-11-07).
 Send has the From step (`SpendingAddressSendFlow`'s `lockedSource` is null unless an address's own
 Send opens it), Receive shows a fresh address (`WalletViewModel.resolveFreshReceiveAddress`, warmed
 when the Wallet opens, revealed when the QR shows), and Request Payment offers Fresh Address or
-Choose an Address. Ported from KaPay: keep these in unison with it, and port KaPay changes here.
+Choose an Address; its Review also has Show Request As QR (`PaymentRequestQrSheet`, as KaChat's:
+`kapay://pay/...`, or the kachat.app link for a chatting-address request, iOS b78fdb0). Ported from KaPay: keep these in unison with it, and port KaPay changes here.
 Spending addresses number from #1 (`WalletManager.addressNumber`; the quantum chain from #0).
 
 ## Your Domains (iOS 071e901)
@@ -72,8 +79,8 @@ Profile > Wallet > Your Domains (`WalletYourDomainsRow` on `KaPostWalletScreen`,
 `kns_domains`; `ui/screens/WalletDomainScreens.kt`, iOS `Views/Wallet/WalletDomainViews.swift`),
 ported from KaPay's: the row counts every name the account owns (.kachat, KNS, .k, .kaspa).
 `KnsDomainsScreen` is one square card per service, each opening its list; .kachat is
-`KachatLiveDomainsTab` (names, My Offers, Inscribe opening `KachatMarketScreen`; a name opens
-`KachatLiveNameDetailScreen`; the list shows the saved copy first, `KachatOwnedNamesCache`). A .kas
+`KachatLiveDomainsTab`: the names only, nothing opens (the saved copy first, `KachatOwnedNamesCache`),
+then "Get a .kachat domain" (iOS b78fdb0). A .kas
 domain opens `KnsDomainDetailScreen`: Asset ID, Primary Domain or Set as Primary (a failure is said in
 place, success is a toast) and Send, which opens `KnsDomainSendScreen` in a sheet (Cancel / Send,
 the phone's lock first, the progress sheet, then `SentConfirmationSheet`). No Customize Profile:
@@ -86,11 +93,11 @@ Status: Listed row has nothing to show.
 
 | Tab | Route | Screen |
 |---|---|---|
-| Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways |
+| Feed | `kaposts` | `KaPostsScreen` (`ui/screens/KaPostsScreens.kt`); the ☰ slides out a card (`KaPostsFeedDrawer`); Following, Feed and Popular swipe sideways; each touch locks to one direction, and only a clearly sideways one (more than 1.3x as wide as tall) changes pages, holding the lists still until the finger lifts (`feedPagerSwipe`, iOS 63c9861) |
 | Public Chats | `broadcasts` | `BroadcastListScreen` (`ui/screens/BroadcastScreens.kt`); every default room is listed, the customize button (top left) switches rooms off, or all language rooms at once; Select (top right) picks rooms for Read, Unread, Mute and Delete; rows swipe (`SwipeActionsRow`; left: Delete, Mute, Pin; right: read state), and a pinned room moves into the circles row above the list, saved per account (`KaPostRoomPins`); the tab's badge is the unread count across the rooms (`KaPostsDock.unreadPublicChats`) |
-| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Edit Profile opens `edit_kachat_profile`; Log Out (red, beside Wallet, iOS ee5ec98); Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and Request (iOS ee5ec98), the backup hygiene card, the Manage Addresses and Chatting Address squares, Your Domains and Help (iOS 071e901, see Full wallet)) |
+| Profile | `profile` | `KaPostsScreen(rootMode = MY_PROFILE)` - your KaPosts profile; Help (the question mark, top left) replays the Welcome Guide (`KaPostsProfileHelpOverlay`, iOS b78fdb0); Edit Profile opens `edit_kachat_profile`; Log Out (red, beside Wallet, iOS ee5ec98); Wallet pushes `wallet` (`KaPostWalletScreen`, iOS e5a9b11 `KaPostWalletView`: the total with Chatting and Spending, Send, Receive and Request (iOS ee5ec98), the backup hygiene card, the Manage Addresses and Chatting Address squares and Your Domains (iOS 071e901, see Full wallet)) |
 | Notifications | `notifications` | `KaPostsNotificationsTab`, with the unseen badge; a row opens its post on the Feed (a follow opens the follower's profile); the cog (top left) opens `settings_section/notifications` (post notifications only - no wallet ones) |
-| Settings | `settings` | `SettingsScreen`, alphabetical (iOS e5a9b11): About (version, Terms of Use, Open Source Licenses), Account Name, Back Up Account (Complete Your Backup, View 12 or 24 Words, Back Up to NFC Card), Connection (its tabs swipe; the .kachat names indexer URL is on Domains), Customization, Diagnostics, KaPost (`KaPostsSettingsOverlay`: Cool down before post, and a default tip in KAS or the app's currency; instant tips are capped at 10 KAS and ask for the phone's lock once when turned on; Tips From, iOS 071e901), Notifications, Security, Storage; then Delete Account (`DeleteAccountSheet`, the warning the opening screen's Delete also shows; both ask for the phone's lock first; `WalletViewModel.deleteCurrentAccount`). Log Out is on the Profile |
+| Settings | `settings` | `SettingsScreen`, alphabetical (iOS e5a9b11): About (version, Terms of Use, Open Source Licenses), Account Name, Back Up Account (Complete Your Backup, View 12 or 24 Words, Back Up to NFC Card), Connection (its tabs swipe; the .kachat names indexer URL is on Domains), Customization, Diagnostics, KaPost (`KaPostsSettingsOverlay`: Cool down before post, off by default since iOS b78fdb0 and turned off once on existing installs (new key `kaposts_cooldown_on`), and a default tip in KAS or the app's currency, saved on the inline checkmark, Done or when the field loses focus, never while typing; instant tips start at and need at least 0.2 KAS, are capped at 10 KAS, fail in a toast rather than opening the tip sheet, and turning them on doesn't ask for the phone's lock (iOS 369794e); Tips From, iOS 071e901), Notifications, Security, Storage; then Delete Account (`DeleteAccountSheet`, the warning the opening screen's Delete also shows; both ask for the phone's lock first; `WalletViewModel.deleteCurrentAccount`). Log Out is on the Profile |
 
 The dock stays in reach on every screen and steps aside for the keyboard. Pushed screens keep the
 real one (`AboveDock` lays them out above it; the Wallet, a room and the tabs run on under it
@@ -102,7 +109,12 @@ menu card have no dock. The connection dot sits top right on every screen, leavi
 Back.
 
 Account setup follows KaPay (iOS 9e22075): `OnboardingScreen` (create / import a seed) ->
-`MainShell`. There is no welcome guide: the shell lifts the onboarding sync hold itself. Create New
+`MainShell`. After a create or import, KaPost's Welcome Guide (`ui/screens/WelcomeGuideScreen.kt`,
+iOS b78fdb0, owner's call 2026-11-18) opens once over `MainShell`: welcome, language, currency, how
+KaPost uses Kaspa, funding the chatting address, what's in KaPost (Feed, Public Chats, Tips), the
+chatting address explained. That run has no Skip and comes back after a kill until Finish
+(`kaposts_onboarding_guide_pending`, `WelcomeGuidePending`); Profile's Help replays it with Skip
+(`LocalOpenWelcomeGuide`). The shell still lifts the onboarding sync hold itself. Create New
 Account makes an account in one tap: 24 words, no passphrase, the next free default name
 (`WalletManager.nextDefaultAccountName`). "Advanced: Create with a Passphrase" is the only other
 way. Import still takes 12 or 24 words. User-facing text says "12 or 24 words", never "seed phrase"
@@ -169,7 +181,9 @@ older saved "on" is switched off once per install (`KEY_ACCOUNT_LOGIN_BIOMETRICS
   iOS's key repair at launch has no Android counterpart: words and address are one record, written
   in one commit. The recovery screen tries the store again whenever it comes to the front
   (`WalletViewModel.retryKeyRecovery`, iOS `reloadOnceUnlocked`). Log Out and Delete never wait for the
-  push unregister (`unregisterAsync` snapshots the key first), which iOS now caps at 4 s.
+  push unregister (`unregisterAsync` snapshots the key first), which iOS now caps at 4 s. The
+  sign-out unregister is retried with backoff (15 s doubling to 10 min) until answered, across
+  relaunches (`pending_signout_unregister`, iOS 369794e).
 - A link that would add a room asks first (iOS ee5ec98 `confirmJoin`, in `MainShell`): a curated room
   or one already on the list opens, anything else shows Join #name?, with a warning when the name
   mixes alphabets. Cancel withdraws the join request.
@@ -191,9 +205,10 @@ scan sheet, so the app draws `NfcScanSheet` while reader mode runs.
 ## Rooms during an indexer outage (iOS ee5ec98)
 
 `BroadcastRepository.noteIndexerResult`, per indexer (a room can have its own), apart from the KaPost
-indexer's detector: three failures in a row inside two minutes confirm it down (offline, a cancelled
-request or a body that won't decode don't count; any answer, a 4xx too, resets it; failures inside 5 s
-are one). While down a room stays on the block stream on cellular too (`unreachableIndexers`, read by
+indexer's detector: three failures in a row inside two minutes confirm it down (offline or a cancelled
+request don't count; any answer, a 4xx or a body that won't decode too (iOS b78fdb0), resets it;
+failures inside 5 s are one). A log out or account switch cancels every room poll, backfill and the
+sweep, and late answers are dropped (`BroadcastRepository.walletGeneration`, `isCurrentWallet`). While down a room stays on the block stream on cellular too (`unreachableIndexers`, read by
 `BroadcastScanningService.hasIndexerDelivery`). On recovery each backfilled room pages that indexer again
 from ten minutes before the outage (`rewindRoomsAfterOutage`, `deepBackfillFloor`); a steady poll whose
 whole page is newer than anything seen pages back the same way (`indexerNewestSeen`). Older room history
@@ -210,11 +225,10 @@ Settings > Customization > Show .kachat Endings, on by default, with iOS's foote
 in `KaChatApplication.attachBaseContext`; snapshot state, so names on screen redraw when it flips):
 `KachatNamesRegistry.kachatName` (the display-name rule, posters, `AddressResolutionCard`),
 `NameInfo.display`, `NameResolution.display` for .kachat, the owned names, the name screens, the
-registration messages and the name notifications. Display only: typing, copying and anything sent
+and the profile editor. Display only: typing, copying and anything sent
 keep the full name. A post's @mention is written with `NameResolution.fullName`
 (`KaPostsViewModel.resolveMentionQuery`), and the @ suggestions list full names. The `.kachat`
-wordmark under a name tile and the one-page claim button ("Claim %1$s.kachat", no iOS counterpart)
-keep the ending.
+wordmark under a name tile keeps the ending.
 
 ## .kachat names with the indexer down (iOS ee5ec98)
 
@@ -225,13 +239,9 @@ doesn't drop a working indexer; a wrong covenant id, `synced == false` or too mu
 copy answers only if this session's walk reached the tip in the last 10 minutes (`chainTipAt`,
 `readChainState`), so saved names keep showing and a name never reads as free from a stale or partial
 copy. After a failover the indexer isn't asked for 60 s (`chainHoldUntil`). A failed read keeps what's on
-screen and never marks a pending claim failed. `confirmOnChain` always checks the live UTXO, whatever
-the source: no record is trusted to pay on its own. A commit from the chain copy forces a walk first
-(`lookupForCommit`), and a commit resend reuses its own coins (`PendingRegistration.commitInputs`), so it
-can't land twice. A walk repeats until the tip (`walkToTip`), the standby copy is walked every 30
+screen. A walk repeats until the tip (`walkToTip`), the standby copy is walked every 30
 minutes (2 hours on a metered network), and without an indexer a person's profile is read from their
-own chain record (`chainProfile`). `.kachat` funding leaves out the coins a send in flight spent
-(`KachatNamesService.unreservedFundingUtxos`).
+own chain record (`chainProfile`).
 
 Download caps (iOS ee5ec98): a link preview's page stops at 1 MB, its image at 5 MB, and Nextcloud's
 photo and PDF viewer at 15 MB (`BoundedImageFetcher`, `LinkPreviewService.downloadToCacheFile`), whatever
@@ -254,13 +264,20 @@ can't, and recovers by itself (`services/KaPostsChainFallback.kt`).
   (`KaPostsChainPosts`, through `KaPostChainReader.addressPayloads`), the Following feed from the people
   followed (the first 20), and new posts and replies from the block stream (`KaPostsLiveChainFeed`, only
   while down and in front, its own owner on the connection `BroadcastScanningService` streams from). Every
-  one must pass its Schnorr signature, since a payload can name anyone. Nothing but the indexer lists every post, or who reacted to yours, so the global
+  one must pass its Schnorr signature, since a payload can name anyone. So must a single post opened by
+  link or shown in a link card when the indexer doesn't have it yet (`KaPostChainReader`, via
+  `KaPostsProtocol.parseChainPayload`), and it must carry the KaChat marker (iOS 369794e). Polls, edits
+  and deletes come from the chain too (`KaPostsLiveChainFeed.amendments`, applied by
+  `KaPostsViewModel.applyLiveAmendments`). Nothing but the indexer lists every post, or who reacted to yours, so the global
   feed is the saved page plus what's new, and notifications are the saved page until it returns.
 - The feed says so while it lasts. When the indexer answers, the feed, your profile and notifications
   reload, and every load gate is cleared, so it has the final word.
 - Scheduled posts: only a node's rejection fails one. Offline, connecting or no answer leaves it
   scheduled with its coins held. Past its time, a post the indexer doesn't send within 150 s goes from
-  the phone. A Cancel the indexer didn't answer stays scheduled and says so.
+  the phone. A Cancel the indexer didn't answer stays scheduled and says so; for a post only on the
+  phone it is remembered and sent again (`rememberCancel`, `flushPendingCancels`). A node rejection
+  of a post already on chain marks it Submitted, not Failed, and coins the indexer spent stay held
+  10 minutes (`holdAfterServerSubmit`) (iOS 369794e).
 - Posts not on chain yet (`KaPostsHeldPostStore`): their words are kept until they land, and what a kill
   leaves comes back as a draft.
 
@@ -273,24 +290,39 @@ base64 JSON, which costs what KaChat's 1:1 ECIES + base64 does, so the numbers m
 most 14.5 s / 31,000 bytes (0.083 KAS each), 12 parts and 0.976 KAS at 2:50. The mic records PCM
 (`VoiceRecorderService.startVoiceNoteRecording`, `OpusWebMPartsRecorder`) and Stop encodes it into its
 parts ("Encoding…"): the platform encoder only makes 20 ms frames, so each three are joined into one
-60 ms code 3 packet (`OpusPacket.joinThree`; a part whose frames can't be joined keeps 20 ms packets),
-and each part is fed the next one's look-ahead. Without the platform Opus encoder MediaRecorder records
+60 ms code 3 packet (`OpusPacket.joinThree`, any RFC 6716 code read, padding dropped; a run of three
+that can't be joined keeps its 20 ms packets, and `WebMOpusWriter.buildTimed` times each SimpleBlock by
+its own packet's length), and each part is fed the next one's look-ahead. Without the platform Opus encoder MediaRecorder records
 one 14.5 s part. A note of one part or less is one ordinary voice message; a longer one goes as
 `voicePart`-tagged parts (`MediaFileEnvelope.json`, iOS's bytes), one transaction each
 (`BroadcastRepository.sendVoiceParts`: the balance for all parts first, then in order, never a reply).
 Parts belong together by (room, sender, id, count) (`BroadcastVoiceParts`, worked out in
 `getMessageWindow` into `RoomWindow.voiceNotes`, the other parts left out of the window): one bubble
-at the first part (`RoomVoiceNoteBubble`) with gapless playback and one scrubber (the parts decoded one
+at the lowest-index part present, not the earliest row (`RoomVoiceNoteBubble`; replies and
+reactions on a hidden part go to it, `anchorIdByPartId`) with gapless playback and one scrubber (the parts decoded one
 by one, pre-skip cut and trimmed to their Info Duration, joined into one WAV for `MediaPlayer`:
 `WebMOpusPartsDecoder`), "Receiving… N of M" until all are in, one status, Retry resends only the failed
-parts (`retryVoiceParts`), and unread counts the note once (`roomSummary`). The recording bar is
+parts (`retryVoiceParts`; a second tap while they resend does nothing), and unread counts the note
+once (`roomSummary`). Sending stops between parts on log out or account switch, and the parts left are
+marked Failed (iOS leaves them pending; Android's room table is shared by every account). On launch,
+parts after the one in flight show Failed and the one in flight "Not confirmed"
+(`settlePendingSendsFromBeforeThisRun`, iOS 369794e). The recording bar is
 KaChat's 1:1 one: a ring toward the limit, "Recording... 00:10 / 02:50", the trash on the right. Room
-pushes come from the indexer, one per part ("Voice message"), with no part tag. While the app is open,
+pushes come from the indexer, which since 2026-11-11 rings only for the first part of a note (or of
+a multi-part photo) to arrive (kachat-indexer `docs/ROOM_VOICE_PART_PUSHES.md`), with no part tag. While the app is open,
 `RoomVoicePushBursts` (`NotificationHelper.kt`) applies KaChat's burst rule: a voice or photo push from
 the same sender in the same room within 60 s of the last is listed quietly (silent, its own id per room
 and sender, so the quiet one before it is replaced). In the background or closed, the system shows every
-part's push. A failed part waiting for a confirmed coin isn't retried by itself: Android's room sends
-have no deferred retry, so it shows Failed and Retry sends the rest.
+part's push. A room message or part that finds no coin free yet (`NoCoinFreeYetException`) stays
+Sending and retries by itself after 1, 2, 4 ... 60 s plus 10-35 %, the later parts following it
+(`BroadcastRepository.scheduleNoCoinRetry`, iOS `handleSendFailure`); reactions and edits fail at once,
+as iOS. A voice note never takes the fee override (iOS). The decoder low-passes the 48 kHz decode
+(31-tap half-band) before writing 24 kHz. Retry stops after a part put off for unconfirmed coins, and
+the rest follow through `scheduleNoCoinRetry`, in order. On launch the part in flight is the earliest
+still pending, parts already "Not confirmed" are skipped, and each delivered copy settles one row. The
+recording time is the recorder's own clock (`VoiceRecorderService.recordedMs`); recording takes audio
+focus, and losing it (a call, another app) stops the recording with Send and the trash still working
+("Recording stopped"); leaving the room cancels it (iOS b78fdb0).
 
 ## KaPost links in rooms (as iOS 23920c8)
 
@@ -359,8 +391,7 @@ Android). Change those pieces, not one screen.
    sits at the bottom beside Continue (`SendContinueButton`); later steps have Back and Cancel in
    `SendStepHeader`.
 2. **From**: `SendFromStep` ("Where are you sending from?"): Chatting Address (iOS 7d8b258), or Choose an Address
-   with your addresses listed right there (`OwnAddressList`, the same cards `OwnAddressPicker`'s
-   sheet shows). Skipped when the From is fixed (an address's own Send). The tip sheet has its
+   with your addresses listed right there (`OwnAddressList`). Skipped when the From is fixed (an address's own Send). The tip sheet has its
    own From (`KaPostTipFromStep`, iOS 071e901).
 3. **Amount**: `KaspaKeypadAmountEntry`, the app's own number pad (`KaspaKeypad`,
    `KeypadAmountText`), so no system keyboard, under "To ..." and "From ..." chips
@@ -373,8 +404,11 @@ Android). Change those pieces, not one screen.
 5. **Fee**: Edit (`onEditFee`) opens `SendFeeEditorScreen` (the fee on the keypad, never under the
    network's minimum, a warning above ten times it); Confirm goes back to the review.
 
-Swipe up to Send asks for the phone's lock first (`authenticateWithDeviceCredential`, "Confirm
-sending Kaspa") and sends at 30% of the screen (120dp at least). Send and tips have the From step
+Sends don't ask for the phone's lock (owner's call, 2026-11-13, iOS 369794e): the swipe is the
+confirmation, and it switches to sending at once so a second swipe can't send twice
+(`SwipeUpController.startSending`). It sends at 30% of the screen (120dp at least). Still asking: saving the .kachat profile or
+setting the primary name (`KachatProfileSaveSheet`), Send Domain and setting a primary KNS domain
+(KNS is off), Delete Account, revealing the words or a private key. Send and tips have the From step
 again (iOS 071e901, KaPay's full wallet; see Full wallet and Tips).
 The fee total includes change too small to keep (`SendFeeModel` folded change).
 
@@ -385,7 +419,15 @@ instant tips marked `UNCONFIRMED` offer no Retry, which could post and pay twice
 whose outcome is unknown keeps its row as `deliveryStatus` "unconfirmed" under the transaction's
 id, and its delivered copy (indexer or block scan) makes it "sent"; a pending row an earlier run
 left is settled the same way, never marked failed (iOS 33095ac). What a send spent stays reserved
-(`NodePoolManager.submittedInputs`) until it is in a block, but an unknown outcome is deliberately
+(`NodePoolManager.submittedInputs`, `PendingSpentOutpoints.TTL_MS` 10 min) until it is in a block; the
+inputs are held from before the submit (`holdForSubmit`) and given back on a definite failure unless
+the node said they are spent. Coins carrying a covenant (`UtxoData.covenantId`) are never offered to
+plain sends. A post or room message uses at most 80 coins and 100,000 grams, past that
+`TooManySmallCoinsException` asks the person to compound. Whether a send went out is decided only from
+a non-orphan mempool entry whose recomputed id matches; after a rejection it takes two nodes or the
+built-in REST server. A scheduled post is built under `sendMutex` on the smallest single coin that
+carries it, splitting off 1 KAS first when it would hold every coin and the total is over 2 KAS
+(iOS 369794e). But an unknown outcome is deliberately
 not held (iOS ee5ec98): a send made after "Not confirmed" picks the same coins, so only one of the
 two can land. Coin Control lists every coin at
 the address and greys out, unselectable, the ones the send won't spend (spent by a send in flight,
@@ -399,9 +441,7 @@ Steps slide sideways (`SendStepTransition`). Where they are used:
   (`KaPostTipFromStep`, built from the From step's pieces, with a line under the pills saying what
   the choice means), set to Tips From, then the amount; the review also has the tip's encrypted
   memo and the small-amount warning.
-- Not ported: the .kachat sheets (`KachatTxSheet`, `KachatClaimSheet` in
-  `KachatNamesLiveScreens.kt`) keep their one-page form; Your Domains' .kachat list and
-  marketplace now open them (iOS 071e901). Request (`CreatePaymentRequestSheet`, the Wallet's More > Request
+- Request (`CreatePaymentRequestSheet`, the Wallet's More > Request
   Payment) is where (Fresh Address, reserved only once the link is copied or shared, or Choose an
   Address), amount, then review (iOS 071e901, as in KaPay).
 - `SpendingAddressSendFlow` from a spending address's page (`SpendingAddressTxHistoryScreen`) has
@@ -450,6 +490,12 @@ here by `primary_address`) are dropped, nothing runs `KachatNamesNotifier`, and 
 reminders an earlier build scheduled are cancelled at launch (`KachatNameReminders.cancelAll`). A
 name push FCM draws by itself (one sent with a `notification` block) can only be stopped by the
 push service skipping `name_event` for `kapost.kachat.app` (and the iPhone app's `com.kachat.kaposts`); a KaPosts push tap opens the Notifications tab, or the post it names on the Feed.
+Registration sends `kaposts_notify_mentions` (the Mentions setting), and a KaPosts push whose
+`actor_pubkey` is muted or blocked is dropped (iOS 369794e; the push service sends neither yet).
+A room push for a room not joined, with its bell off or switched off is dropped
+(`BroadcastRepository.wantsRoomPush`); tapping a room push opens only a joined room and never joins
+one (`BroadcastViewModel.openRoomFromPush`); a push's post id must be a txid; `IndexerTrackedRooms`
+counts a room as served only from the app-wide indexer (iOS b78fdb0).
 #kaspa and #kachat-bugs start with their bells on, once per account; an address receiving KAS
 never notifies (`AddressActivityNotifier`).
 
@@ -463,9 +509,27 @@ Without KaPay installed, the KaChat apps' install page opens (`KaPayHandoff.STOR
 challenge (`KaPlayChallengeViews.kt`) opens in KaPlay, and without it the same install page
 (iOS 33095ac `KaPlayHandoff`).
 
-Links to KaChat's own site (`home.kachat.app`, any page, `KaChatSiteLink`) preview by themselves: a
-post draws the page's card (`LinkPreviewCard`) in place of the link's text, and a room loads it
-without the tap other links wait for. Other web links in posts stay plain text.
+Links preview only when the poster or room sender has a `.kachat` name (owner's call, 2026-11-18,
+iOS b78fdb0; `KachatNamesRegistry.kachatName`); anyone else's links are plain text. For such a
+poster a KaChat site link (`home.kachat.app`, `KaChatSiteLink`) draws its card (`LinkPreviewCard`) in
+place of the link's text, and so does the first other link written as a link (http://, https:// or
+www.; a bare "x.com" stays text) to a site on iOS's allowed list with no adult words in the decoded URL
+(`KaPostLinkPreviewPolicy` in `services/LinkPreviewService.kt`: `firstLink`, `allows`,
+`firstPreviewableLink`). A room does the same with no tap; there is no tap-to-load card any more, so an
+unknown server is never contacted. Redirects are followed by hand only to an allowed https page
+(`executeHeld`, `allowsRedirect`); an image loads only over https from the site or its image servers
+(`allowsImage`, `imageCDNDomains`), and the Referer goes only to the page's own host. Nextcloud shares
+fall under the same list. A social network's card (X, Instagram, Facebook, LinkedIn, TikTok, Threads;
+not YouTube) shows the network's logo on its brand colour in place of the image (`SocialLinkLogo` in
+`LinkPreviewCard.kt`, drawables `social_*`, Simple Icons, CC0).
+
+Popular's deep sweep (`KaPostsViewModel.deepenPopularRanking`) runs with Popular open, or in the
+background on Feed only on an unmetered network (`MeteredNetwork`), stops when the feed leaves the
+screen or the dock leaves Feed, and starts again after a refresh; while it runs Popular keeps its row
+order but shows the live posts (iOS b78fdb0). With the cool-down off, a like, dislike or delete still
+submitting blocks more taps of that kind on the post (`KaPostsActionHolds`). Cancelling a scheduled
+post drops it only when the indexer cancels it or answers NOT_FOUND (`KaPostsApiException.isNotFound`).
+Logs give a transaction id's first 12 characters (`txIdForLog`).
 
 Links: KaPosts opens `kaposts://` (same targets as `kachat://`), and `kachat://kapost/`,
 `kachat://broadcast/` and `https://kachat.app/post|broadcast/`, which KaChat no longer handles.

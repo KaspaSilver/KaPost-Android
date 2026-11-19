@@ -66,14 +66,21 @@ data class PushRegistrationRequest(
      * The reader's per-kind KaPosts switches, so the server can skip a push at the source
      * (the iOS repo's PUSH_EXTENSIONS.md §3). A KaPosts push carries a `notification` block, so while the app
      * is in the background the OS shows it without this client ever running - registering the
-     * kinds is the only way a switched-off kind stops arriving there. Mentions are deliberately
-     * not switchable. Same five fields iOS sends.
+     * kinds is the only way a switched-off kind stops arriving there. Same six fields iOS sends
+     * (Mentions since iOS 369794e).
      */
     @SerializedName("kaposts_notify_likes") val kaPostsNotifyLikes: Boolean = true,
     @SerializedName("kaposts_notify_dislikes") val kaPostsNotifyDislikes: Boolean = true,
     @SerializedName("kaposts_notify_comments") val kaPostsNotifyComments: Boolean = true,
     @SerializedName("kaposts_notify_reposts") val kaPostsNotifyReposts: Boolean = true,
     @SerializedName("kaposts_notify_follows") val kaPostsNotifyFollows: Boolean = true,
+    /**
+     * Settings > KaPost > Mentions. The service doesn't read it yet (a mention push has action
+     * "mention", which its per-kind filter lets through); serde ignores the unknown field until
+     * then, and once it reads it a switched-off Mentions stops ringing in the background too
+     * (iOS 369794e).
+     */
+    @SerializedName("kaposts_notify_mentions") val kaPostsNotifyMentions: Boolean = true,
     /**
      * Authors whose new posts this device wants a push for - the bell beside Follow (the iOS
      * repo's PUSH_EXTENSIONS.md section 3a). Pubkeys, 66-hex compressed. Sent on every
@@ -97,17 +104,18 @@ data class PushRegistrationRequest(
     @SerializedName("auth") val auth: PushAuthRequest? = null,
 )
 
-/** The five switchable KaPosts kinds, as sent at registration. Order: likes, dislikes,
- *  comments, reposts, follows. */
+/** The six switchable KaPosts kinds, as sent at registration. Order: likes, dislikes,
+ *  comments, reposts, follows, mentions (iOS 369794e). */
 data class KaPostsNotifyKinds(
     val likes: Boolean = true,
     val dislikes: Boolean = true,
     val comments: Boolean = true,
     val reposts: Boolean = true,
     val follows: Boolean = true,
+    val mentions: Boolean = true,
 ) {
     /** Stable text for the registration fingerprint. */
-    fun fingerprint(): String = listOf(likes, dislikes, comments, reposts, follows).joinToString(",") { if (it) "1" else "0" }
+    fun fingerprint(): String = listOf(likes, dislikes, comments, reposts, follows, mentions).joinToString(",") { if (it) "1" else "0" }
 }
 
 /**

@@ -4,6 +4,7 @@ import android.util.Log
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 
@@ -31,6 +32,7 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
     @Inject lateinit var walletManager: WalletManager
     @Inject lateinit var settingsRepository: com.kachat.app.repository.AppSettingsRepository
     @Inject lateinit var notificationPoller: KaPostsNotificationPoller
+    @Inject lateinit var broadcastRepository: com.kachat.app.repository.BroadcastRepository
 
     override fun onNewToken(token: String) {
         // FCM rotated the token — re-register it with the indexer (signed with the wallet key).
@@ -74,7 +76,17 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
                     }
 
                     "broadcast" -> {
-                        val channel = data["channel"] ?: return@runBlocking
+                        // Through the same gate as a room link's name, before it can show anything.
+                        val channel = data["channel"]
+                            ?.let { com.kachat.app.ui.screens.KaChatLink.sanitizeChannelName(it) }
+                            ?: return@runBlocking
+                        // Nothing for a room that was deleted, muted or switched off: the push
+                        // service can still send for it until the registration update lands
+                        // (iOS b78fdb0 `PublicChatService.wantsRoomPush`).
+                        if (!broadcastRepository.wantsRoomPush(channel)) {
+                            Log.i(TAG, "Room push dropped: the room isn't joined, or its bell is off")
+                            return@runBlocking
+                        }
                         // An edit changes an earlier message in place - nothing to announce. The
                         // push service is asked not to send these at all (PUBLIC_CHATS_INDEXER.md);
                         // this is the backstop for one that arrives anyway.
@@ -111,9 +123,27 @@ class KaChatFirebaseMessagingService : FirebaseMessagingService() {
                         // No fallback to the ACTION's txid: that is a vote/follow/reply
                         // transaction, not a post, so opening it as one just produced a "post
                         // not found" toast. Null lands the tap on the Notifications list.
+                        // Only a transaction id: the payload is the push service's word, not ours
+                        // (iOS b78fdb0).
                         val postTxId = POST_ID_KEYS.firstNotNullOfOrNull { data[it]?.takeIf { v -> v.isNotBlank() } }
+                            ?.takeIf { com.kachat.app.ui.screens.KaPostsDeepLink.isTxId(it) }
+                            ?.lowercase()
                         // The five KaPosts switches governed only the local poller; a push
                         // arrived whatever they said. See shouldNotifyKaPostsPush.
+                        // Nothing from someone you blocked or muted, as in the in-app count, when the
+                        // push names who acted (`actor_pubkey`; until the push service sends it, only
+                        // turning off a blocked author's bell keeps their posts away; iOS 369794e).
+                        val actorHidden = data["actor_pubkey"]
+                            ?.let { KaPostsService.kaspaAddressFromPubkey(it) }
+                            ?.let { actor ->
+                                val wallet = try { walletManager.getAddress() } catch (_: Exception) { null }
+                                wallet != null && (actor in settingsRepository.kapostsMuted(wallet).first() ||
+                                    actor in settingsRepository.kapostsBlocked(wallet).first())
+                            } ?: false
+                        if (actorHidden) {
+                            Log.i(TAG, "KaPosts push from a muted or blocked account dropped")
+                            return@runBlocking
+                        }
                         if (!settingsRepository.shouldNotifyKaPostsPush(data["kaposts_kind"], body.ifEmpty { title })) {
                             Log.i(TAG, "KaPosts push suppressed by notification settings")
                             return@runBlocking

@@ -103,6 +103,9 @@ import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -400,10 +403,11 @@ private val KaPostsFeedTabs = listOf(
     KaPostsViewModel.FeedTab.POPULAR,
 )
 
+@Composable
 private fun KaPostsViewModel.FeedTab.label(): String = when (this) {
-    KaPostsViewModel.FeedTab.FOLLOWING -> "Following"
-    KaPostsViewModel.FeedTab.FEED -> "Feed"
-    KaPostsViewModel.FeedTab.POPULAR -> "Popular"
+    KaPostsViewModel.FeedTab.FOLLOWING -> stringResource(R.string.l53_feed_tab_following)
+    KaPostsViewModel.FeedTab.FEED -> stringResource(R.string.l53_feed_tab_feed)
+    KaPostsViewModel.FeedTab.POPULAR -> stringResource(R.string.l53_feed_tab_popular)
 }
 
 // MARK: - Endless scrolling
@@ -719,7 +723,8 @@ private fun KaPostsFeedScreen(
             restoredComposerText = draft.text
             restoredComposerSegments = draft.threadSegments
             restoredPollOptions = draft.pollOptions
-            val target = draft.quoteTargetId?.let { viewModel.findPost(it) }
+            // The target rides whole on the toast (iOS): it may have left memory since.
+            val target = draft.quoteTarget
             if (target != null) quoteTarget = target else showComposer = true
         }
         viewModel.clearRestoredDraft()
@@ -744,18 +749,25 @@ private fun KaPostsFeedScreen(
     // Tip sheet target: the poster, the post tipped (null only for something that isn't on the
     // network yet) and, when an instant tip failed, why (iOS fae6686 `TipTarget.failure`).
     var tipTarget by remember { mutableStateOf<KaPostTipTarget?>(null) }
-    val tipFromUnreadable = stringResource(R.string.kaposts_tips_from_unreadable)
     val defaultTipSompi by settingsViewModel.kaPostsDefaultTipSompi.collectAsState()
     val defaultTipFiat by settingsViewModel.kaPostsDefaultTipFiat.collectAsState()
     val tipPriceViewModel: com.kachat.app.viewmodels.PortfolioViewModel = hiltViewModel()
+    val tipHaptic = com.kachat.app.util.rememberHaptics()
     /**
      * Tipping a poster. With a default amount set (KaPosts Settings) it goes out at once,
      * through exactly the path the tip sheet's Send uses - the same contact creation, the same
      * funding source and destination rules as a payment in that person's chat. Without one, the
-     * amount screen opens. A send that fails falls back to the amount screen so the tip can
-     * still be made by hand.
+     * amount screen opens. An instant tip that doesn't go out says why in a toast
+     * ([instantTipFailed]), never the tip screen (iOS b78fdb0).
      */
     val tipFailedContext = LocalContext.current
+    /** An instant (default) tip that didn't go out says why in a toast, on the post: the tip
+     *  screen, whose From and amount steps the default already settled, stays shut (iOS b78fdb0
+     *  `instantTipFailed`). */
+    fun instantTipFailed(message: String) {
+        tipHaptic(com.kachat.app.util.IosHaptic.ERROR)
+        viewModel.showTipToast(message, "", isFailure = true)
+    }
     val tip: (KaPostDraft) -> Unit = tip@{ post ->
         // A second tap while this post's instant tip is going out would send a second tip, and
         // so would one while a tip that got no answer can still land (iOS ee5ec98).
@@ -769,7 +781,7 @@ private fun KaPostsFeedScreen(
         // A tip names the post it is for, so the post counts it (KAPOSTS_INDEXER.md 5.11).
         val target = com.kachat.app.models.KaPostTip.of(post)
         // A default tip set in a currency sends what it is worth in KAS right now (iOS KaPosts
-        // 4c0d5a8); with no price yet, the amount screen opens with the reason.
+        // 4c0d5a8); with no price yet, a toast says why.
         val fiat = defaultTipFiat
         val fiatText = fiat?.let { formatFiatAmount(it.first, it.second) }
         // Only a recent price: a tip that goes out without asking can't rest on an old one.
@@ -780,15 +792,16 @@ private fun KaPostsFeedScreen(
             else -> defaultTipSompi
         }
         if (fiat != null && fiatPrice == null) {
-            tipTarget = KaPostTipTarget(
-                address, name, target,
-                failure = "Tip didn't send: there is no recent KAS price to turn $fiatText into KAS.",
-            )
+            instantTipFailed(tipFailedContext.getString(R.string.feed54_tip_no_price, fiatText.orEmpty()))
         } else if (amount == null || amount <= 0) {
             tipTarget = KaPostTipTarget(address, name, target)
+        } else if (amount < KAPOST_INSTANT_TIP_MINIMUM_SOMPI) {
+            // Under what the network takes, say from an older build that saved any amount
+            // (iOS b78fdb0 `instantTipTooSmall`).
+            instantTipFailed(tipFailedContext.getString(R.string.feed54_tip_too_small, kaPostInstantTipMinimumText()))
         } else if (amount > KAPOST_INSTANT_TIP_LIMIT_SOMPI) {
-            // Instant tips skip the device lock, so they stay small: a bigger one goes through
-            // the swipe (iOS e5a9b11).
+            // Instant tips go on one tap, with no swipe, so they stay small: a bigger one goes
+            // through the swipe (iOS 369794e).
             tipTarget = KaPostTipTarget(address, name, target, failure = KAPOST_INSTANT_TIP_LIMIT_NOTICE)
         } else {
             chatViewModel.addContact(address, null)
@@ -801,9 +814,9 @@ private fun KaPostsFeedScreen(
                     val tipFrom = kaPostDefaultTipSource(walletViewModel.kaPostsTipSourceIndex(), walletViewModel)
                     if (tipFrom == null) {
                         // One that can't be read must not quietly become a public tip from the
-                        // chatting address: the person picks instead (iOS ee5ec98).
+                        // chatting address: nothing is sent, and a toast says why (iOS b78fdb0).
                         KaPostsTipHolds.finish(post.id)
-                        tipTarget = KaPostTipTarget(address, name, target, failure = tipFromUnreadable)
+                        instantTipFailed(tipFailedContext.getString(R.string.feed54_tip_from_unreadable))
                         return@launch
                     }
                     tipFrom.spendingIndex
@@ -811,9 +824,9 @@ private fun KaPostsFeedScreen(
                     KaPostsTipHolds.finish(post.id)
                     throw e
                 } catch (e: Exception) {
-                    // Tips From couldn't be read: the tip screen, rather than guessing the address.
+                    // Tips From couldn't be read: nothing is sent, rather than guessing the address.
                     KaPostsTipHolds.finish(post.id)
-                    tipTarget = KaPostTipTarget(address, name, target)
+                    instantTipFailed(tipFailedContext.getString(R.string.feed54_tip_from_unreadable))
                     return@launch
                 }
                 val countsOnPost = sourceIndex == null
@@ -825,23 +838,26 @@ private fun KaPostsFeedScreen(
                     if (!ok && error == com.kachat.app.services.SendOutcomeUnknownException.MESSAGE) {
                         // It may have gone through: no amount screen, which would invite a second
                         // tip, and the post stays blocked after the send has returned.
-                        KaPostsTipHolds.hold(post.id, error)
-                        viewModel.showTipToast(error, "")
+                        val unconfirmed = tipFailedContext.getString(R.string.l53_send_outcome_unknown)
+                        KaPostsTipHolds.hold(post.id, unconfirmed)
+                        viewModel.showTipToast(unconfirmed, "")
                     } else if (ok) {
                         KaPostsTipHolds.finish(post.id)
                         if (countsOnPost) viewModel.countTip(target)
                         val amountText = fiatText?.let { "$kasText ${KaspaUnit.symbol} ($it)" } ?: "$kasText ${KaspaUnit.symbol}"
                         viewModel.showTipToast(
-                            if (countsOnPost) "Tipped $amountText to $name" else "Tipped $amountText to $name privately",
+                            tipFailedContext.getString(
+                                if (countsOnPost) R.string.feed54_tipped else R.string.feed54_tipped_privately,
+                                amountText, name,
+                            ),
                             txId.orEmpty(),
                         )
                     } else {
                         KaPostsTipHolds.finish(post.id)
-                        // The amount screen opens with the reason ("Tip didn't send: " and the
-                        // reason, as UserFacingError words it), so the tip can be sent by hand.
-                        tipTarget = KaPostTipTarget(
-                            address, name, target,
-                            failure = tipFailedContext.getString(
+                        // "Tip didn't send: " and the reason, as UserFacingError words it, in a
+                        // toast (iOS b78fdb0).
+                        instantTipFailed(
+                            tipFailedContext.getString(
                                 R.string.kaposts_tip_didnt_send,
                                 com.kachat.app.util.UserFacingError.message(error, tipFailedContext.getString(R.string.something_went_wrong)),
                             ),
@@ -854,6 +870,8 @@ private fun KaPostsFeedScreen(
     var moderationKind by remember { mutableStateOf<Boolean?>(null) } // true = blocked
     var showBookmarks by remember { mutableStateOf(false) }
     var showKaPostsSettings by remember { mutableStateOf(false) }
+    /** Profile > Help (iOS b78fdb0 `ProfileHelpView`). */
+    var showProfileHelp by remember { mutableStateOf(false) }
     var showDrafts by remember { mutableStateOf(false) }
     var showScheduled by remember { mutableStateOf(false) }
     var editingDraft by remember { mutableStateOf<KaPostSavedDraft?>(null) }
@@ -996,7 +1014,22 @@ private fun KaPostsFeedScreen(
         }
     }
 
+    // Popular's sweep pages only while the Feed tab's feed is on screen and the dock is on Feed
+    // (iOS b78fdb0 `popularSweepAllowed`, checked between passes). Before the load below, which
+    // is what starts the sweep.
+    DisposableEffect(viewModel, rootMode) {
+        viewModel.setFeedOnScreen(rootMode == KaPostsRootMode.FEED)
+        onDispose { viewModel.setFeedOnScreen(false) }
+    }
+    LaunchedEffect(viewModel) {
+        KaPostsDock.selectedRoute.collect { route ->
+            viewModel.setDockOnFeed(route == com.kachat.app.ui.Screen.KaPosts.route)
+        }
+    }
     LaunchedEffect(Unit) {
+        // This view model shows a feed (Feed or Profile): it reloads on the indexer's return and
+        // merges the chain feed, which the Notifications tab's own instance never does (iOS).
+        viewModel.startFeedWork()
         // The Profile tab loads its own posts; the feed and the scheduled posts are the Feed tab's.
         if (rootMode == KaPostsRootMode.MY_PROFILE) {
             viewModel.loadMyProfile()
@@ -1121,7 +1154,20 @@ private fun KaPostsFeedScreen(
             if (rootMode == KaPostsRootMode.MY_PROFILE) {
                 // The Profile tab: your own profile at the root, under the dot and the balance.
                 Column(modifier = Modifier.fillMaxSize()) {
-                    KaPostsOverlayStatusBar()
+                    // Help at the top left (the dot is top right): opens Help, whose Welcome Guide
+                    // replays the guide (iOS b78fdb0 `ProfileHelpView`).
+                    KaPostsOverlayStatusBar(
+                        leading = {
+                            ToolbarGlassGroup {
+                                ToolbarIconButton(
+                                    Icons.AutoMirrored.Filled.HelpOutline,
+                                    stringResource(R.string.help),
+                                    onClick = { showProfileHelp = true },
+                                    iconSize = 20.dp,
+                                )
+                            }
+                        },
+                    )
                     KaPostsFixedTitle("Profile", onOpenBackup = { navController.navigate("account_backup") })
                     KaPostsProfilePage(
                         address = viewModel.myAddress() ?: "",
@@ -1213,13 +1259,19 @@ private fun KaPostsFeedScreen(
                 }
 
                 // Following, Feed and Popular side by side: swipe left and right between them, or
-                // tap the tab row (iOS KaPosts KaPostsFeedPager, 865c9ab). The pager locks each
-                // touch to one direction, so a vertical scroll never turns into a feed change, and
-                // always settles on a whole page; the underline in the tab row shows which feed
-                // you landed on.
+                // tap the tab row (iOS KaPosts KaPostsFeedPager, 865c9ab). Each touch locks to one
+                // direction until the finger lifts, and only a clearly sideways one (more than 1.3x
+                // as wide as tall) changes pages, holding the lists still while it does
+                // (`feedPagerSwipe`, iOS 63c9861); it always settles on a whole page, and the
+                // underline in the tab row shows which feed you landed on.
+                val feedPagerScope = rememberCoroutineScope()
                 HorizontalPager(
                     state = feedPagerState,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    userScrollEnabled = false,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .feedPagerSwipe(feedPagerState, feedPagerScope),
                     key = { KaPostsFeedTabs[it] },
                 ) { page ->
                     val tab = KaPostsFeedTabs[page]
@@ -1870,6 +1922,17 @@ private fun KaPostsFeedScreen(
     if (showKaPostsSettings) {
         KaPostsSettingsOverlay(onClose = { showKaPostsSettings = false })
     }
+    if (showProfileHelp) {
+        val openWelcomeGuide = LocalOpenWelcomeGuide.current
+        KaPostsProfileHelpOverlay(
+            onClose = { showProfileHelp = false },
+            onWelcomeGuide = {
+                // Help is its own window: it closes first, so the guide isn't drawn under it.
+                showProfileHelp = false
+                openWelcomeGuide()
+            },
+        )
+    }
 
     if (showBookmarks) {
         KaPostsBookmarksOverlay(
@@ -2431,22 +2494,24 @@ private fun KaPostPollCard(
             }
         }
         Text(
-            kaPostPollFooter(poll),
+            kaPostPollFooter(LocalContext.current, poll),
             color = colors.textSecondary,
             fontSize = 12.sp,
         )
     }
 }
 
-/** "12 votes · 2d left", or "· Final results" once voting has closed (iOS's footer, word for word). */
-private fun kaPostPollFooter(poll: KaPostDraft.KaPostPoll): String {
-    val votes = if (poll.total == 1) "1 vote" else "${poll.total} votes"
-    if (poll.isClosed) return "$votes · Final results"
+/** "12 votes · 2d left", or "· Final results" once voting has closed (iOS's footer, word for
+ *  word, each piece in the app's language: iOS 369794e). */
+private fun kaPostPollFooter(context: android.content.Context, poll: KaPostDraft.KaPostPoll): String {
+    val votes = if (poll.total == 1) context.getString(R.string.kaposts_poll_one_vote)
+    else context.getString(R.string.kaposts_poll_votes, poll.total)
+    if (poll.isClosed) return context.getString(R.string.kaposts_poll_final_results, votes)
     val left = poll.closesAtMs - System.currentTimeMillis()
     val remaining = when {
-        left >= 86_400_000L -> "${left / 86_400_000L}d left"
-        left >= 3_600_000L -> "${left / 3_600_000L}h left"
-        else -> "${kotlin.math.max(1L, left / 60_000L)}m left"
+        left >= 86_400_000L -> context.getString(R.string.kaposts_poll_days_left, (left / 86_400_000L).toInt())
+        left >= 3_600_000L -> context.getString(R.string.kaposts_poll_hours_left, (left / 3_600_000L).toInt())
+        else -> context.getString(R.string.kaposts_poll_minutes_left, kotlin.math.max(1L, left / 60_000L).toInt())
     }
     return "$votes · $remaining"
 }
@@ -2525,7 +2590,7 @@ fun KaPostCell(
     // On-device translation, X-style. Per-post slices like everything else in this cell, so one
     // reader translating one post never re-renders the viewport. Language identification is async,
     // so the cell asks once and the affordance appears when the answer arrives.
-    val translationKey = remember(post.remoteId, post.id) { viewModel.translationKey(post) }
+    val translationKey = remember(post.remoteId, post.id, post.editedAt, post.text) { viewModel.translationKey(post) }
     // One collector for the three translation slices rather than three.
     //
     // collectSelectedAsState builds a map+distinctUntilChanged flow and collects it, so every
@@ -2568,17 +2633,37 @@ fun KaPostCell(
     // A KaPlay bot challenge link in the post: drawn as a card (KaPostBotChallengeCard) under the
     // text, and left out of the text itself (iOS 9e22075).
     val botChallengeLink = remember(displayedText) { KaPlayBotChallenge.match(displayedText) }
+    // The poster has a .kachat name: only then do the post's links preview (owner's call,
+    // 2026-11-18; iOS b78fdb0 `posterHasKachatName`). Snapshot state, so a name landing redraws.
+    val posterHasKachatName = post.posterAddress.isNotEmpty() &&
+        com.kachat.app.services.kachatnames.KachatNamesRegistry.kachatName(post.posterAddress) != null
     // A link to KaChat's own site in the post: drawn as a preview card under the text, and left
-    // out of the text itself (iOS f81c467).
-    val siteLink = remember(displayedText) { KaChatSiteLink.match(displayedText) }
+    // out of the text itself (iOS f81c467). Only for a poster with a .kachat name: anyone else's
+    // links never preview.
+    val siteLink = remember(displayedText, posterHasKachatName) {
+        if (posterHasKachatName) KaChatSiteLink.match(displayedText) else null
+    }
+    // The post's first web link, drawn as its preview card in place of the link's text when the
+    // poster has a .kachat name and the site is on the allowed list (KaPostLinkPreviewPolicy); a
+    // preview that can't load shows the link itself. Links KaPost draws its own way (posts, rooms,
+    // payment requests) and KaChat's site are left to their own cards (iOS b78fdb0 `webLink`).
+    val webLink = remember(displayedText, posterHasKachatName, siteLink) {
+        if (!posterHasKachatName || siteLink != null) return@remember null
+        val link = com.kachat.app.services.KaPostLinkPreviewPolicy.firstLink(displayedText) ?: return@remember null
+        link.takeIf {
+            KaChatLink.parse(it.url) == null && com.kachat.app.services.KaPostLinkPreviewPolicy.allows(it.url)
+        }
+    }
     // The text as drawn: the post without the links drawn as cards.
-    val bodyText = remember(displayedText, paymentRequestLink, botChallengeLink, siteLink) {
+    val bodyText = remember(displayedText, paymentRequestLink, botChallengeLink, siteLink, webLink) {
         var text = displayedText
         paymentRequestLink?.let { text = text.replace(it.raw, "") }
         botChallengeLink?.let { text = text.replace(it.matchedText, "") }
         // Only this one: the same text can also be the start of a longer link to another page.
         siteLink?.let { text = text.replaceFirst(it.matchedText, "") }
-        if (paymentRequestLink != null || botChallengeLink != null || siteLink != null) text.trim() else displayedText
+        // the previewed link: its card stands in for it
+        webLink?.let { text = text.replaceFirst(it.matchedText, "") }
+        if (paymentRequestLink != null || botChallengeLink != null || siteLink != null || webLink != null) text.trim() else displayedText
     }
 
     // Measured on what is actually rendered, so a translation that runs longer than its original
@@ -2893,6 +2978,12 @@ fun KaPostCell(
                     Spacer(modifier = Modifier.height(10.dp))
                     LinkPreviewCard(url = link.url, txId = post.remoteId.orEmpty(), fallbackText = link.matchedText, loadingHeight = 190.dp)
                 }
+                // Another site's link from a poster with a .kachat name: its preview in place of
+                // the link, or the link itself if the preview can't load (iOS b78fdb0).
+                webLink?.let { link ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    LinkPreviewCard(url = link.url, txId = post.remoteId.orEmpty(), fallbackText = link.matchedText, loadingHeight = 190.dp)
+                }
                 TranslateAffordance(
                     state = translationState,
                     canTranslate = canTranslate,
@@ -2916,20 +3007,39 @@ fun KaPostCell(
                 }
                 post.quoted?.let { quoted ->
                     Spacer(modifier = Modifier.height(6.dp))
-                    // Same per-address slices for the quoted author as for the cell's own.
-                    val quotedAvatarUrl by viewModel.senderProfiles
-                        .collectSelectedAsState(quoted.posterAddress) { it[quoted.posterAddress] }
-                    val quotedName = posterDisplayNameState(viewModel, quoted.posterAddress)
-                    Box(
-                        modifier = Modifier.clickable(enabled = quoted.remoteId != null) {
-                            quoted.remoteId?.let(onOpenQuoted)
-                        },
-                    ) {
-                        QuotedEmbedCard(
-                            quoted = quoted,
-                            displayName = quotedName,
-                            avatarUrl = quotedAvatarUrl,
+                    // The feeds drop a hidden person's own posts, but someone else quoting them
+                    // put their text and avatar back in front of you (iOS 369794e). Changes only
+                    // on a mute or block.
+                    val quotedMuted by viewModel.muted.collectSelectedAsState(quoted.posterAddress) { quoted.posterAddress in it }
+                    val quotedBlocked by viewModel.blocked.collectSelectedAsState(quoted.posterAddress) { quoted.posterAddress in it }
+                    if (quotedMuted || quotedBlocked) {
+                        // Someone you muted or blocked: no text, name or avatar, and no way in.
+                        Text(
+                            stringResource(R.string.kaposts_quoted_hidden),
+                            color = colors.textSecondary,
+                            fontSize = 15.sp,
+                            modifier = Modifier
+                                .padding(top = 2.dp)
+                                .fillMaxWidth()
+                                .border(1.dp, colors.textSecondary.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                                .padding(10.dp),
                         )
+                    } else {
+                        // Same per-address slices for the quoted author as for the cell's own.
+                        val quotedAvatarUrl by viewModel.senderProfiles
+                            .collectSelectedAsState(quoted.posterAddress) { it[quoted.posterAddress] }
+                        val quotedName = posterDisplayNameState(viewModel, quoted.posterAddress)
+                        Box(
+                            modifier = Modifier.clickable(enabled = quoted.remoteId != null) {
+                                quoted.remoteId?.let(onOpenQuoted)
+                            },
+                        ) {
+                            QuotedEmbedCard(
+                                quoted = quoted,
+                                displayName = quotedName,
+                                avatarUrl = quotedAvatarUrl,
+                            )
+                        }
                     }
                 }
                 // iOS: the stack's 6pt plus the row's 2pt top padding (applied inside the row) -
@@ -3683,8 +3793,8 @@ fun KaPostComposerDialog(
     // drafts exist.
     var showCloseOptions by remember { mutableStateOf(false) }
     val limit = KaPostDraft.POST_CHARACTER_LIMIT
-    // Counted in grapheme clusters, as iOS counts Characters: an emoji is one, not two.
-    val charCount = remember(text.text) { graphemeCount(text.text) }
+    // Counted in UTF-8 bytes: a post is paid for and capped by its bytes (iOS 369794e postLength).
+    val charCount = remember(text.text) { KaPostDraft.postLength(text.text) }
     val totalSegments = threadSegments.size + (if (text.text.isNotBlank()) 1 else 0)
     // A poll is offered on a fresh post only - never a reply, a quote, an edit or a thread.
     val pollAvailable = onSubmitPoll != null && quoted == null && !isReply && threadSegments.isEmpty()
@@ -4252,8 +4362,10 @@ fun KaPostComposerDialog(
             // Live network-fee estimate while typing (Settings > Show Fee Estimate), matching
             // the chat composer's behaviour (iOS feeEstimateRow).
             val trimmedForFee = text.text.trim()
-            if (showFeeEstimate && trimmedForFee.isNotEmpty() && viewModel != null) {
-                val fee = remember(trimmedForFee) { viewModel.estimatePostFeeSompi(trimmedForFee) }
+            val fee = if (showFeeEstimate && trimmedForFee.isNotEmpty() && viewModel != null) {
+                remember(trimmedForFee) { viewModel.estimatePostFeeSompi(trimmedForFee) }
+            } else null
+            if (fee != null) {
                 Text(
                     "Est. fee: ${"%.8f".format(java.util.Locale.US, fee / 100_000_000.0)} ${KaspaUnit.symbol}",
                     color = colors.textSecondary,
@@ -4301,32 +4413,26 @@ fun KaPostComposerDialog(
     }
 }
 
-/** Characters as a reader counts them: grapheme clusters, the way iOS's `String.count` does. */
-private fun graphemeCount(text: String): Int {
-    if (text.isEmpty()) return 0
-    // Pure ASCII cannot contain a multi-unit cluster, so skip the iterator for the common case.
-    if (text.all { it.code < 0x80 }) return text.length
-    val iterator = java.text.BreakIterator.getCharacterInstance()
-    iterator.setText(text)
-    var count = 0
-    while (iterator.next() != java.text.BreakIterator.DONE) count++
-    return count
-}
-
-/** Clips [value] to its first [limit] grapheme clusters, keeping the caret inside the text. */
+/** Clips [value] to the post limit in UTF-8 bytes ([KaPostDraft.postLength]), at a character
+ *  boundary (no half characters), keeping the caret inside the text (iOS 369794e
+ *  `clampedToPostLimit`). */
 private fun clampToCharacterLimit(value: TextFieldValue, limit: Int): TextFieldValue {
     val text = value.text
-    if (text.length <= limit) return value
-    if (graphemeCount(text) <= limit) return value
+    // A UTF-16 unit is at most 3 UTF-8 bytes: anything this short can't be over.
+    if (text.length * 3 <= limit) return value
+    if (KaPostDraft.postLength(text) <= limit) return value
     val iterator = java.text.BreakIterator.getCharacterInstance()
     iterator.setText(text)
-    var count = 0
+    var bytes = 0
+    var start = 0
     var end = 0
-    while (count < limit) {
+    while (true) {
         val next = iterator.next()
-        if (next == java.text.BreakIterator.DONE) { end = text.length; break }
+        if (next == java.text.BreakIterator.DONE) break
+        bytes += KaPostDraft.postLength(text.substring(start, next))
+        if (bytes > limit) break
         end = next
-        count++
+        start = next
     }
     val clipped = text.substring(0, end)
     return TextFieldValue(
@@ -4427,8 +4533,9 @@ private fun MarkdownFormattingToolbar(onAction: (KaPostsMarkdown.ToolbarAction) 
 }
 
 /**
- * X-style ring meter: fills toward the 25,000-character limit, flips orange in the final 10%
- * with a live remaining count, red at the wall. Hidden while empty.
+ * X-style ring meter: fills toward the 25,000 limit, flips orange in the final 10% with a live
+ * remaining count, red at the wall. Hidden while empty. [count] is [KaPostDraft.postLength] of
+ * the text: bytes, one per English character.
  */
 @Composable
 fun KaPostCharacterMeter(count: Int) {
@@ -4587,6 +4694,9 @@ fun KaPostThreadOverlay(
     val muted by viewModel.muted.collectAsState()
     val blocked by viewModel.blocked.collectAsState()
     val hidden = remember(muted, blocked) { muted + blocked }
+    // Not a muted or blocked person's posts: the reply lists already leave them out, and the
+    // chain above put them back (iOS 369794e).
+    val visibleAncestors = remember(ancestors, hidden) { ancestors.filter { it.posterAddress !in hidden } }
     // The author's own continuation renders as a connected Thread section under the root;
     // its segments are excluded from the comment list (segment 2 IS a direct reply).
     // Sliced per post: another thread's chain landing no longer recomposes this overlay.
@@ -4640,11 +4750,11 @@ fun KaPostThreadOverlay(
     // LazyColumn below: ancestors, root-context, root, the optional chain section (header +
     // segments + divider), the comments header, then the comments.
     if (focusReplyRemoteId != null) {
-        LaunchedEffect(visibleComments, threadChain, ancestors.size, focusReplyRemoteId) {
+        LaunchedEffect(visibleComments, threadChain, visibleAncestors.size, focusReplyRemoteId) {
             val commentIndex = visibleComments.indexOfFirst { it.remoteId == focusReplyRemoteId }
             if (commentIndex >= 0) {
                 val chainItems = if (threadChain.isEmpty()) 0 else threadChain.size + 2
-                val target = ancestors.size + 2 + chainItems + 1 + commentIndex
+                val target = visibleAncestors.size + 2 + chainItems + 1 + commentIndex
                 delay(500)
                 runCatching { threadListState.animateScrollToItem(target) }
                 onFocusReplyHandled()
@@ -4694,7 +4804,7 @@ fun KaPostThreadOverlay(
                 // summaries: the parents ARE posts, so they behave like posts and the screen
                 // reads as one conversation. Long ones truncate so the post you actually opened
                 // still owns the screen.
-                items(ancestors, key = { "ancestor-${it.id}" }) { ancestor ->
+                items(visibleAncestors, key = { "ancestor-${it.id}" }) { ancestor ->
                     // X's thread line, and no divider: a rule between two posts separates them,
                     // while the line running down the avatar column from one into the next is
                     // what makes the chain read as one conversation. Drawn over the cell rather
@@ -4958,7 +5068,10 @@ private fun KaPostsActionErrorAlert(viewModel: KaPostsViewModel) {
     // Part of a thread the network didn't confirm: offer what's left of it as a draft (iOS ee5ec98).
     if (unconfirmedThreadId != null) {
         com.kachat.app.ui.theme.IosAlertDialog(
-            onDismissRequest = { viewModel.settleUnconfirmedThread(saveDraft = false) },
+            // Only its buttons close it, as iOS's alert: Back or a stray tap outside would drop
+            // the held rest of the thread.
+            onDismissRequest = {},
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
             title = { Text("KaPost", color = colors.textPrimary) },
             text = { Text(stringResource(R.string.kaposts_thread_not_confirmed), color = colors.textSecondary) },
             confirmButton = {
@@ -5025,7 +5138,7 @@ private fun ThreadReplyComposer(
 ) {
     val colors = LocalAppColors.current
     val replyText = text.text
-    val charCount = remember(replyText) { graphemeCount(replyText) }
+    val charCount = remember(replyText) { KaPostDraft.postLength(replyText) }
     val canSend = replyText.isNotBlank()
     val hapticView = LocalView.current
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
@@ -5228,7 +5341,7 @@ private fun ThreadCommentNode(
                                             modifier = Modifier.clickable { viewModel.loadReplies(comment, force = true) },
                                         )
                                     }
-                                    else -> Text("No replies", color = colors.textSecondary, fontSize = 12.sp)
+                                    else -> Text(stringResource(R.string.l53_no_replies), color = colors.textSecondary, fontSize = 12.sp)
                                 }
                             }
                         } else {
@@ -5267,9 +5380,9 @@ private fun ThreadCommentNode(
                         }
                     }
                 }
-                ThreadToggleButton("Hide replies") { onToggleExpand(comment.id) }
+                ThreadToggleButton(stringResource(R.string.l53_hide_replies)) { onToggleExpand(comment.id) }
             } else {
-                ThreadToggleButton(if (replyCount == 1) "View 1 reply" else "View $replyCount replies") {
+                ThreadToggleButton(stringResource(if (replyCount == 1) R.string.l53_view_one_reply else R.string.l53_view_replies, replyCount)) {
                     viewModel.expandReplies(comment)
                     onToggleExpand(comment.id)
                 }
@@ -5716,7 +5829,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.KaPostsProfilePage(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            if (repliesPage) "No replies yet" else "No posts yet",
+                            stringResource(if (repliesPage) R.string.l53_no_replies_yet else R.string.l53_no_posts_yet),
                             color = colors.textPrimary,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 17.sp,
@@ -5915,7 +6028,7 @@ fun KaPostsSearchOverlay(
                                     fontSize = 15.sp,
                                 )
                                 Text(
-                                    if (person.postCount == 1) "1 post found" else "${person.postCount} posts found",
+                                    if (person.postCount == 1) stringResource(R.string.l53_one_post_found) else stringResource(R.string.l53_posts_found, person.postCount),
                                     color = colors.textSecondary,
                                     fontSize = 12.sp,
                                 )
@@ -6068,7 +6181,15 @@ private fun KaPostsNotificationsList(
     bottomInset: Dp,
 ) {
     val colors = LocalAppColors.current
-    val items by viewModel.notifications.collectAsState()
+    val loadedItems by viewModel.notifications.collectAsState()
+    val mutedSet by viewModel.muted.collectAsState()
+    val blockedSet by viewModel.blocked.collectAsState()
+    // Without anyone muted or blocked since they loaded: a load already leaves them out, and
+    // this takes their rows away at once rather than at the next reload (iOS b78fdb0
+    // `visibleItems`).
+    val items = remember(loadedItems, mutedSet, blockedSet) {
+        loadedItems.filterNot { viewModel.isHidden(it.actorAddress, mutedSet, blockedSet) }
+    }
     val isLoading by viewModel.isLoadingNotifications.collectAsState()
     val haptic = com.kachat.app.util.rememberHaptics()
 
@@ -6911,7 +7032,7 @@ internal fun TranslateAffordance(
     val colors = LocalAppColors.current
     when (state) {
         null -> if (canTranslate) {
-            TranslateLink("Translate post", onTranslate)
+            TranslateLink(stringResource(R.string.l53_translate_post), onTranslate)
         }
         PostTranslationService.TranslationState.Translating -> {
             Spacer(modifier = Modifier.height(4.dp))
@@ -6923,25 +7044,25 @@ internal fun TranslateAffordance(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Translating...",
+                    text = stringResource(R.string.l53_translating),
                     color = colors.textSecondary,
                     fontSize = 13.sp,
                 )
             }
         }
         is PostTranslationService.TranslationState.Translated -> if (showingOriginal) {
-            TranslateLink("Show translation", onShowTranslation)
+            TranslateLink(stringResource(R.string.l53_show_translation), onShowTranslation)
         } else {
             Spacer(modifier = Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Translated from ${state.sourceName} -",
+                    stringResource(R.string.l53_translated_from, state.sourceName) + " -",
                     color = colors.textSecondary,
                     fontSize = 13.sp,
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    "Show original",
+                    stringResource(R.string.l53_show_original),
                     color = KaspaTeal,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 13.sp,
@@ -6952,13 +7073,20 @@ internal fun TranslateAffordance(
         // A dropped connection or a server that was briefly away - tapping again once there is a
         // connection is the fix, so this stays a live link rather than dead text.
         PostTranslationService.TranslationState.Failed ->
-            TranslateLink("Translation unavailable - try again", onTranslate)
+            TranslateLink(stringResource(R.string.l53_translation_unavailable_retry), onTranslate)
         // Nothing a second tap can change - the pair is not served, the post is too long, the post
         // was already in the reader's language. Say so instead of inviting a retry.
         is PostTranslationService.TranslationState.Unavailable -> {
             Spacer(modifier = Modifier.height(4.dp))
+            // The service's own reasons are English keys; a server message falls through as is
+            // (iOS 369794e `AppLocalization.string(reason)`).
             Text(
-                state.reason,
+                when (state.reason) {
+                    "Already in your language" -> stringResource(R.string.l53_already_in_your_language)
+                    "Not available in your language" -> stringResource(R.string.l53_not_available_in_your_language)
+                    "Translation unavailable" -> stringResource(R.string.l53_translation_unavailable)
+                    else -> state.reason
+                },
                 color = colors.textSecondary,
                 fontSize = 13.sp,
             )
@@ -7671,10 +7799,16 @@ private fun KaPostTipRow(
  * tapped, in the app's currency (USD unless changed in Settings): then each tip sends that much
  * worth of KAS at the price of the moment. Mirrors iOS's KaPostsSettingsView (KaPosts 4c0d5a8).
  */
-/** Instant tips skip the device lock, so the most one may send: a bigger default tip opens the
- *  tip screen, whose swipe asks first (iOS e5a9b11 `instantTipLimitSompi`). */
+/** Instant tips go on one tap, with no swipe, so the most one may send: a bigger default tip
+ *  opens the tip screen, whose swipe is the confirmation (iOS 369794e `instantTipLimitSompi`). */
 internal const val KAPOST_INSTANT_TIP_LIMIT_SOMPI = 10L * 100_000_000L
 internal const val KAPOST_INSTANT_TIP_LIMIT_NOTICE = "Instant tips are limited to 10 KAS. Swipe up to send this one."
+/** The smallest default tip: Kaspa's storage mass (KIP-9) refuses a payment output much under
+ *  0.1 KAS whatever coins pay for it, so 0.0021 KAS could never go out. 0.2 KAS, the wallet's
+ *  dust threshold, leaves room for the change output too (iOS b78fdb0 `instantTipMinimumSompi`). */
+internal const val KAPOST_INSTANT_TIP_MINIMUM_SOMPI = 20_000_000L
+/** "0.2 KAS" (iOS `instantTipMinimumText`). */
+internal fun kaPostInstantTipMinimumText(): String = "${KaspaUnit.plain(KAPOST_INSTANT_TIP_MINIMUM_SOMPI)} ${KaspaUnit.symbol}"
 
 @Composable
 fun KaPostsSettingsOverlay(
@@ -7700,7 +7834,6 @@ fun KaPostsSettingsOverlay(
     val livePrice by portfolioViewModel.currentPriceUsd.collectAsState()
 
     var instantTipEnabled by remember { mutableStateOf(false) }
-    val tipToggleContext = LocalContext.current
     var tipText by remember { mutableStateOf("") }
     /** The default tip is typed in [tipCurrency] rather than KAS. */
     var tipInFiat by remember { mutableStateOf(false) }
@@ -7730,11 +7863,59 @@ fun KaPostsSettingsOverlay(
         seeded = true
     }
 
+    /** The tip amount is being typed: a checkmark beside it locks it in, then it's read-only with
+     *  a pencil to change it (iOS b78fdb0 `editingTip`). */
+    var editingTip by remember { mutableStateOf(false) }
+    val tipFocus = remember { FocusRequester() }
+    var tipFieldFocused by remember { mutableStateOf(false) }
+    val tipFocusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    // A turn later, once the field is enabled and can take focus.
+    LaunchedEffect(editingTip) {
+        if (editingTip) runCatching { tipFocus.requestFocus() }
+    }
+
     /** The amount typed, as a number (either unit). */
     fun typedAmount(): Double? = KaspaUnit.sompiFromUserText(tipText)?.let { it / 100_000_000.0 }
 
+    /** The KAS price a currency tip is measured at here: the fresh one tips are sent at when
+     *  there is one, else the last known (iOS b78fdb0 `tipPrice`). */
+    fun tipPrice(currency: String): Double? =
+        portfolioViewModel.freshPriceIn(currency) ?: portfolioViewModel.priceIn(currency)
+
+    /** The typed tip in sompi: as typed in KAS, or worked out at today's price for a currency
+     *  (null without a price). */
+    fun typedSompi(): Long? {
+        val amount = typedAmount()?.takeIf { it > 0 } ?: return null
+        if (!tipInFiat) return KaspaUnit.sompiFromUserText(tipText)
+        val price = tipPrice(tipCurrency)?.takeIf { it > 0 } ?: return null
+        return Math.round(amount / price * 100_000_000.0)
+    }
+
+    /** Under the smallest tip the network takes ([KAPOST_INSTANT_TIP_MINIMUM_SOMPI]): not saved. */
+    fun tipBelowMinimum(): Boolean {
+        val sompi = typedSompi() ?: return false
+        return sompi < KAPOST_INSTANT_TIP_MINIMUM_SOMPI
+    }
+
+    /** An amount that can be saved: above zero and not under the network's minimum. */
+    fun tipAmountIsValid(): Boolean = (typedAmount() ?: 0.0) > 0 && !tipBelowMinimum()
+
+    /** The saved default tip, in the unit it was saved in. */
+    fun showSavedTip() {
+        val fiat = defaultTipFiat
+        val sompi = defaultTipSompi
+        if (fiat != null && fiat.first > 0) {
+            tipInFiat = true
+            pickedCurrency = fiat.second
+            tipText = kaPostsFiatTipText(fiat.first)
+        } else if (sompi != null && sompi > 0) {
+            tipInFiat = false
+            tipText = kasAmountText(sompi)
+        }
+    }
+
     fun commitTip() {
-        if (!instantTipEnabled) return
+        if (!instantTipEnabled || tipBelowMinimum()) return
         seeded = true
         if (tipInFiat) {
             val amount = typedAmount()?.takeIf { it > 0 } ?: return
@@ -7745,20 +7926,36 @@ fun KaPostsSettingsOverlay(
         }
     }
 
+    /** The checkmark (or the keyboard's Done): saves the amount and closes the keyboard. One
+     *  that can't go out (empty, zero, under the minimum) isn't saved: the saved tip comes back,
+     *  so the keyboard can always be closed (iOS b78fdb0 `lockTip`). */
+    fun lockTip() {
+        haptic(com.kachat.app.util.IosHaptic.SELECTION)
+        if (tipAmountIsValid()) commitTip() else showSavedTip()
+        editingTip = false
+        tipFocusManager.clearFocus()
+    }
+
     /** Flips the tip between KAS and the app's currency, carrying the amount over at today's
-     *  price (the number stays as typed when there is no price yet). */
+     *  price (the number stays as typed when there is no price yet). Saved at once unless the
+     *  amount is being typed (then the checkmark saves it). An amount that comes out under the
+     *  network's minimum (a currency amount rounds to the cent) puts the saved tip back instead. */
     fun switchTipUnit() {
         haptic(com.kachat.app.util.IosHaptic.SELECTION)
         val toFiat = !tipInFiat
         val currency = if (toFiat) appCurrency else tipCurrency
-        val price = portfolioViewModel.priceIn(currency)
+        val price = tipPrice(currency)
         val amount = typedAmount()
         if (amount != null && amount > 0 && price != null && price > 0) {
             tipText = if (toFiat) kaPostsFiatTipText(amount * price) else formatKasAmount(amount / price)
         }
         pickedCurrency = currency
         tipInFiat = toFiat
-        commitTip()
+        if (tipBelowMinimum()) {
+            showSavedTip()
+            return
+        }
+        if (!editingTip) commitTip()
     }
 
     KaPostsOverlayScaffold(title = "KaPost Settings", onClose = onClose) {
@@ -7786,17 +7983,16 @@ fun KaPostsSettingsOverlay(
                     SettingsSwitchItem("Send a default tip instantly", instantTipEnabled) { enabled ->
                         instantTipEnabled = enabled
                         if (enabled) {
-                            // Sends without asking from then on, so turning it on asks once
-                            // (iOS e5a9b11).
+                            // No device lock: sends don't ask (owner's call, 2026-11-13; iOS 369794e).
                             if (defaultTipSompi == null && defaultTipFiat == null) {
-                                tipToggleContext.authenticateWithDeviceCredential(
-                                    title = "Turn on instant tips",
-                                    onSuccess = {
-                                        if (tipText.isBlank()) tipText = "1"
-                                        commitTip()
-                                    },
-                                    onFailure = { instantTipEnabled = false },
-                                )
+                                // starts at 0.2 KAS (anything left from before that the network
+                                // wouldn't take is replaced too; iOS b78fdb0)
+                                if (tipText.isBlank() || (typedAmount() ?: 0.0) <= 0 || tipBelowMinimum()) {
+                                    tipInFiat = false
+                                    tipText = kasAmountText(KAPOST_INSTANT_TIP_MINIMUM_SOMPI)
+                                }
+                                editingTip = false
+                                commitTip()
                             }
                         } else {
                             seeded = true
@@ -7828,15 +8024,62 @@ fun KaPostsSettingsOverlay(
                             }
                             com.kachat.app.ui.theme.IosTextField(
                                 value = tipText,
+                                // Nothing is saved while typing: the checkmark saves, and so does
+                                // the keyboard closing some other way, with an amount that can go
+                                // out (iOS b78fdb0).
                                 onValueChange = { input ->
                                     tipText = input.filter { it.isDigit() || it == '.' || it == ',' }
-                                    commitTip()
                                 },
+                                enabled = editingTip,
+                                textStyle = androidx.compose.material3.LocalTextStyle.current.copy(
+                                    color = if (editingTip) colors.textPrimary else colors.textSecondary,
+                                ),
                                 placeholder = { Text("1", color = colors.textSecondary) },
                                 singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                modifier = Modifier.weight(1f),
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Decimal,
+                                    imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                                ),
+                                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { lockTip() }),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .focusRequester(tipFocus)
+                                    .onFocusChanged { state ->
+                                        val was = tipFieldFocused
+                                        tipFieldFocused = state.isFocused
+                                        if (!was || state.isFocused || !editingTip) return@onFocusChanged
+                                        editingTip = false
+                                        // left empty, zero or too small: show the saved tip again
+                                        if (tipAmountIsValid()) commitTip() else showSavedTip()
+                                    },
                             )
+                            // Beside the value: a checkmark locks the amount in (or, with an amount
+                            // that can't go out, puts the saved one back) and closes the keyboard,
+                            // then a pencil opens it again (iOS b78fdb0).
+                            val tipEditLabel = stringResource(if (editingTip) R.string.done else R.string.ab_edit)
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(if (editingTip) KaspaTeal else KaspaTeal.copy(alpha = 0.12f))
+                                    .clickable {
+                                        if (editingTip) {
+                                            lockTip()
+                                        } else {
+                                            haptic(com.kachat.app.util.IosHaptic.SELECTION)
+                                            editingTip = true
+                                        }
+                                    }
+                                    .semantics { contentDescription = tipEditLabel },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    if (editingTip) Icons.Default.Check else Icons.Default.Edit,
+                                    contentDescription = null,
+                                    tint = if (editingTip) Color.Black else KaspaTeal,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
                             // Tap to set the tip in the other unit.
                             Row(
                                 modifier = Modifier
@@ -7886,13 +8129,20 @@ fun KaPostsSettingsOverlay(
                     val amountFooter = if (!tipInFiat) {
                         "Tap the unit to set the tip in your currency instead."
                     } else {
-                        val price = livePrice.let { portfolioViewModel.priceIn(tipCurrency) }
+                        val price = livePrice.let { tipPrice(tipCurrency) }
                         val amount = typedAmount()
                         if (amount != null && amount > 0 && price != null && price > 0) {
                             "Each tip sends ${formatFiatAmount(amount, tipCurrency)} worth of KAS at the price of the moment - about ${formatKasAmount(amount / price)} KAS now."
                         } else {
                             "Each tip sends this much worth of KAS at the price of the moment."
                         }
+                    }
+                    // Under the network's minimum: said in red above the usual footer (iOS b78fdb0).
+                    if (livePrice.let { tipBelowMinimum() }) {
+                        SettingsFormFooter(
+                            stringResource(R.string.feed54_tip_minimum_footer, kaPostInstantTipMinimumText()),
+                            color = colors.danger,
+                        )
                     }
                     SettingsFormFooter("$amountFooter Up to 10 KAS goes out without asking; a bigger tip opens the tip screen.")
                 }
@@ -7915,6 +8165,47 @@ fun KaPostsSettingsOverlay(
             },
             onClose = { showTipSource = false },
         )
+    }
+}
+
+/**
+ * Profile > Help (iOS b78fdb0 `ProfileHelpView`): one row, the Welcome Guide, which replays the
+ * first-run tour with Skip.
+ */
+@Composable
+private fun KaPostsProfileHelpOverlay(onClose: () -> Unit, onWelcomeGuide: () -> Unit) {
+    val colors = LocalAppColors.current
+    KaPostsOverlayScaffold(title = stringResource(R.string.help), onClose = onClose) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            KaPostsFixedTitle(stringResource(R.string.help))
+            Column(
+                Modifier
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(colors.surface),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onWelcomeGuide)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                ) {
+                    // iOS helpRow: a 20pt icon in a 30pt frame, 14 apart; subheadline semibold
+                    // over caption.
+                    Box(Modifier.width(30.dp), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.AutoAwesome, null, tint = KaspaTeal, modifier = Modifier.size(22.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(stringResource(R.string.feed54_help_welcome_guide), color = colors.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        Text(stringResource(R.string.feed54_help_welcome_guide_subtitle), color = colors.textSecondary, fontSize = 12.sp)
+                    }
+                    Icon(Icons.Default.KeyboardArrowRight, null, tint = colors.textSecondary, modifier = Modifier.size(24.dp))
+                }
+            }
+        }
     }
 }
 
@@ -7993,7 +8284,7 @@ fun KaPostsModerationOverlay(
                 )
                 Spacer(modifier = Modifier.height(14.dp))
                 Text(
-                    if (blocked) "No blocked accounts" else "No muted accounts",
+                    stringResource(if (blocked) R.string.l53_no_blocked_accounts else R.string.l53_no_muted_accounts),
                     color = colors.textPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp,
@@ -8046,7 +8337,7 @@ fun KaPostsModerationOverlay(
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                             modifier = Modifier.height(30.dp),
                         ) {
-                            Text(if (blocked) "Unblock" else "Unmute", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(stringResource(if (blocked) R.string.l53_unblock else R.string.l53_unmute), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
                     HorizontalDivider(color = colors.surfaceVariant, modifier = Modifier.padding(start = 64.dp))
@@ -8404,18 +8695,27 @@ fun KaPostsToastOverlay(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
+                        // Inside the screen's edges (iOS b78fdb0).
+                        .padding(horizontal = 16.dp)
                         // iOS's toastCapsule: .regularMaterial, a white hairline at 18%, and a shadow
-                        // (black at 15%, radius 10, 4 down).
-                        .iosShadow(24.dp, Color.Black.copy(alpha = 0.15f), 10.dp, 4.dp)
-                        .clip(RoundedCornerShape(24.dp))
+                        // (black at 15%, radius 10, 4 down). A rounded card rather than a capsule
+                        // since b78fdb0, so a two-line toast's ends aren't cut off.
+                        .iosShadow(20.dp, Color.Black.copy(alpha = 0.15f), 10.dp, 4.dp)
+                        .clip(RoundedCornerShape(20.dp))
                         .background(colors.surface)
-                        .border(0.8.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(24.dp))
+                        .border(0.8.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(20.dp))
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 ) {
-                    Text("${toast.label} in ${seconds}s", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        stringResource(R.string.l53_undo_in_seconds, toast.label, seconds.toInt()),
+                        color = colors.textPrimary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        "Undo",
+                        stringResource(R.string.l53_undo),
                         color = Color(0xFFFF9500),
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
@@ -8434,12 +8734,15 @@ fun KaPostsToastOverlay(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
+                        // Inside the screen's edges (iOS b78fdb0).
+                        .padding(horizontal = 16.dp)
                         // iOS's toastCapsule: .regularMaterial, a white hairline at 18%, and a shadow
-                        // (black at 15%, radius 10, 4 down).
-                        .iosShadow(24.dp, Color.Black.copy(alpha = 0.15f), 10.dp, 4.dp)
-                        .clip(RoundedCornerShape(24.dp))
+                        // (black at 15%, radius 10, 4 down). A rounded card rather than a capsule
+                        // since b78fdb0, so a two-line toast's ends aren't cut off.
+                        .iosShadow(20.dp, Color.Black.copy(alpha = 0.15f), 10.dp, 4.dp)
+                        .clip(RoundedCornerShape(20.dp))
                         .background(colors.surface)
-                        .border(0.8.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(24.dp))
+                        .border(0.8.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(20.dp))
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 ) {
                     Icon(
@@ -8448,7 +8751,15 @@ fun KaPostsToastOverlay(
                         modifier = Modifier.size(16.dp),
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(toast.message, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    // Localized where it is made; a long message wraps inside the screen instead
+                    // of running off it (iOS b78fdb0).
+                    Text(
+                        toast.message,
+                        color = colors.textPrimary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     // No transaction yet (a scheduled post), no View - as iOS's toast.
                     if (toast.txId.isNotEmpty()) {
                         Spacer(modifier = Modifier.width(8.dp))
@@ -8855,3 +9166,97 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawThreadConnector
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx()),
     )
 }
+
+/**
+ * The feed pager's own swipe (iOS 63c9861 `KaPostsFeedPager`). A touch commits to one direction
+ * once it has moved the touch slop and keeps it until the finger lifts: a clearly sideways first
+ * movement (more than [FEED_SWIPE_SIDEWAYS_BIAS] times as wide as tall) moves the pages and, from
+ * then on, takes every move before the lists see it, so the feed underneath doesn't drift up or
+ * down; anything else is the list's scroll and never moves the pages. A move a page already used
+ * (a list scrolling) is left to it. Let go past a third of the width, or flick, and it moves one
+ * page; otherwise it settles back. The end of a sideways touch counts by the direction it locked
+ * to, not where the finger drifted.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun Modifier.feedPagerSwipe(
+    state: androidx.compose.foundation.pager.PagerState,
+    scope: kotlinx.coroutines.CoroutineScope,
+): Modifier = pointerInput(state) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val slop = viewConfiguration.touchSlop
+        var totalX = 0f
+        var totalY = 0f
+        // The direction test runs in the Main pass, after the pages: a move a list already took
+        // is the list's.
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Main)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+            if (!change.pressed) return@awaitEachGesture
+            if (change.isConsumed) return@awaitEachGesture
+            totalX += change.position.x - change.previousPosition.x
+            totalY += change.position.y - change.previousPosition.y
+            if (kotlin.math.max(kotlin.math.abs(totalX), kotlin.math.abs(totalY)) < slop) continue
+            if (kotlin.math.abs(totalX) <= kotlin.math.abs(totalY) * FEED_SWIPE_SIDEWAYS_BIAS) {
+                return@awaitEachGesture
+            }
+            change.consume()
+            break
+        }
+        // Locked sideways: drive the pager by hand, ahead of the lists (Initial pass).
+        val width = size.width.toFloat().coerceAtLeast(1f)
+        val startPage = state.currentPage
+        val pageCount = state.pageCount
+        val deltas = kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val dragJob = scope.launch {
+            state.scroll(androidx.compose.foundation.MutatePriority.UserInput) {
+                for (delta in deltas) scrollBy(delta)
+            }
+        }
+        val tracker = VelocityTracker()
+        tracker.addPosition(down.uptimeMillis, down.position)
+        var translation = totalX
+        deltas.trySend(-totalX)
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            tracker.addPosition(change.uptimeMillis, change.position)
+            if (!change.pressed) {
+                change.consume()
+                break
+            }
+            val dx = change.position.x - change.previousPosition.x
+            change.consume()
+            if (dx != 0f) {
+                translation += dx
+                deltas.trySend(-dx)
+            }
+        }
+        deltas.close()
+        // iOS: past a third of the width, or a flick whose predicted end passes half of it.
+        val flick = translation + tracker.calculateVelocity().x * FEED_SWIPE_FLICK_SECONDS
+        var target = startPage
+        if ((translation < -width / 3 || flick < -width / 2) && startPage < pageCount - 1) {
+            target = startPage + 1
+        } else if ((translation > width / 3 || flick > width / 2) && startPage > 0) {
+            target = startPage - 1
+        }
+        scope.launch {
+            dragJob.join()
+            state.animateScrollToPage(
+                target,
+                animationSpec = androidx.compose.animation.core.spring(
+                    dampingRatio = 0.9f,
+                    stiffness = FEED_SWIPE_SPRING_STIFFNESS,
+                ),
+            )
+        }
+    }
+}
+
+/** How much wider than tall a first movement must be to change pages (iOS `sidewaysBias`). */
+private const val FEED_SWIPE_SIDEWAYS_BIAS = 1.3f
+/** How far ahead a flick's speed is projected (SwiftUI `predictedEndTranslation`, roughly). */
+private const val FEED_SWIPE_FLICK_SECONDS = 0.25f
+/** iOS's settle spring: response 0.3 s, damping 0.9 ((2π / 0.3)² ≈ 439). */
+private const val FEED_SWIPE_SPRING_STIFFNESS = 439f

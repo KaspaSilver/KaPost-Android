@@ -41,7 +41,7 @@ enum class Status(val raw: String) {
     companion object {
         fun of(expiresAt: Long, graceMs: Long, nowMs: Long): Status = when {
             nowMs < expiresAt -> ACTIVE
-            nowMs < expiresAt + graceMs -> GRACE
+            nowMs < KachatNames.clampedSum(expiresAt, graceMs) -> GRACE
             else -> LAPSED
         }
     }
@@ -141,14 +141,6 @@ class OfferInfo(
 ) {
     val id: String get() = "${hex(outpoint.txid)}:${outpoint.index}"
     val fields: OfferFields get() = OfferFields(key, buyer, seller, refundAfter)
-
-    fun refundable(atDaa: Long): Boolean = atDaa > maxOf(refundAfter, 0L)
-
-    /**
-     * Made to an earlier owner of the name (registry v3, iOS c150042): it can never be accepted
-     * and goes back to the buyer (withdraw, decline, or a refund once it expires).
-     */
-    fun isDeclined(currentOwner: ByteArray): Boolean = !seller.contentEquals(currentOwner)
 
     override fun equals(other: Any?): Boolean =
         other is OfferInfo && outpoint == other.outpoint && key.contentEquals(other.key) && name == other.name &&
@@ -738,14 +730,20 @@ class TxView(
             if (accepted != null && accepted.isJsonPrimitive && accepted.asJsonPrimitive.isBoolean && !accepted.asBoolean) return null
             val idHex = str(j.get("transaction_id")) ?: throw Failure("REST transaction without an id")
             val id = unhex32(idHex)
+            // a server's numbers are checked, never trusted to fit (iOS 369794e)
+            fun order(v: JsonElement?, k: Int): Int {
+                val n = num(v) ?: return k
+                if (n < Int.MIN_VALUE || n > Int.MAX_VALUE) throw Failure("$idHex: an index out of range")
+                return n.toInt()
+            }
             val inputs = ArrayList<Pair<Int, ViewInput>>()
             for ((k, any) in objects(j.get("inputs")).withIndex()) {
                 val prev = str(any.get("previous_outpoint_hash"))
                 val idx = num(any.get("previous_outpoint_index"))
                 if (prev == null || idx == null) throw Failure("$idHex: input without its outpoint")
                 val sig = unhex(str(any.get("signature_script")) ?: "")
-                val order = num(any.get("index"))?.toInt() ?: k
-                inputs.add(order to ViewInput(Outpoint(unhex32(prev), idx.toInt()), sig))
+                if (idx < 0 || idx > 0xFFFF_FFFFL) throw Failure("$idHex: an input index out of range")
+                inputs.add(order(any.get("index"), k) to ViewInput(Outpoint(unhex32(prev), idx.toInt()), sig))
             }
             val outputs = ArrayList<Pair<Int, TxOutput>>()
             for ((k, any) in objects(j.get("outputs")).withIndex()) {
@@ -755,13 +753,14 @@ class TxView(
                 var covenant: CovenantBinding? = null
                 val cid = str(any.get("covenant_id"))
                 if (cid != null && cid.isNotEmpty()) {
-                    val auth = num(any.get("covenant_authorizing_input"))
+                    val auth = num(any.get("covenant_authorizing_input"))?.takeIf { it in 0..0xFFFFL }
                         ?: throw Failure("$idHex: covenant output without its authorizing input")
                     covenant = CovenantBinding(auth.toInt(), unhex32(cid))
                 }
-                val order = num(any.get("index"))?.toInt() ?: k
-                outputs.add(order to TxOutput(value = amount, scriptVersion = 0, script = unhex(spk), covenant = covenant))
+                outputs.add(order(any.get("index"), k) to TxOutput(value = amount, scriptVersion = 0, script = unhex(spk), covenant = covenant))
             }
+            // the walker numbers inputs as UInt16
+            if (inputs.size > 0xFFFF) throw Failure("$idHex: too many inputs")
             val payload = unhex(str(j.get("payload")) ?: "")
             fun time(k: String): Long? = j.get(k)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong
             val at = time("accepting_block_time") ?: time("block_time")
@@ -908,14 +907,6 @@ data class RegistryState(
         return out
     }
 
-    // Offers this device made
-
-    fun trackOffer(o: OfferInfo, at: Long?) {
-        val txid = hex(o.outpoint.txid)
-        offers = offers.filterNot { it.txid == txid && it.index == o.outpoint.index } +
-            Offer(txid, o.outpoint.index, hex(o.key), hex(o.buyer), hex(o.seller), o.refundAfter, o.amount, o.name, at)
-    }
-
     // Applying a transaction (registry.rs `Registry::apply`)
 
     private sealed class Predicted {
@@ -990,7 +981,7 @@ data class RegistryState(
                     val name = String(nameBytes, Charsets.UTF_8)
                     val k = KachatNames.blake3(nameBytes)
                     val padded = nameBytes.copyOf(minOf(nameBytes.size, 32)).copyOf(32)
-                    val f = NameFields(k, padded, owner, 0, now, now + years * m.params.periodMs)
+                    val f = NameFields(k, padded, owner, 0, now, periodEnd(now, years, m.params.periodMs))
                     predicted.add(i to Predicted.GapP(g.lo, hex(k)))
                     predicted.add(i to Predicted.GapP(hex(k), g.hi))
                     predicted.add(i to Predicted.NameP(f, name))
@@ -1006,6 +997,9 @@ data class RegistryState(
                     val owner = arg32(sp.args, 1)
                     val periodStart = argInt(sp.args, 2)
                     val expiresAt = argInt(sp.args, 3)
+                    if (periodStart !in 0..KachatNames.MAX_TIME_MS || expiresAt !in 0..KachatNames.MAX_TIME_MS) {
+                        throw Failure("$short: import with a paid period out of range")
+                    }
                     val name = String(nameBytes, Charsets.UTF_8)
                     val k = KachatNames.blake3(nameBytes)
                     val padded = nameBytes.copyOf(minOf(nameBytes.size, 32)).copyOf(32)
@@ -1061,12 +1055,14 @@ data class RegistryState(
                 "extend" -> {
                     // periodStart kept, expiresAt + years (the contract checked the 2-year cap)
                     val years = argInt(sp.args, 0)
+                    periodEnd(f.expiresAt, years, m.params.periodMs)
                     predicted.add(i to Predicted.NameP(f.extended(years, m.params.periodMs), n.name))
                     events.add(Event(txId = id, op = "extend", name = n.name, at = tx.at, years = years))
                 }
                 "renew" -> {
                     // a new period from the old expiry
                     val years = argInt(sp.args, 0)
+                    periodEnd(f.expiresAt, years, m.params.periodMs)
                     predicted.add(i to Predicted.NameP(f.renewed(years, m.params.periodMs), n.name))
                     events.add(Event(txId = id, op = "renew", name = n.name, at = tx.at, years = years))
                 }
@@ -1335,6 +1331,18 @@ data class RegistryState(
             return Codec.scriptNum(a[i])
         }
 
+        /** `start + years * periodMs` from a transaction's own arguments, which can be anything:
+         *  a sum that doesn't fit is an error, never a wrap (iOS 369794e). */
+        fun periodEnd(start: Long, years: Long, periodMs: Long): Long {
+            val end = try {
+                Math.addExact(start, Math.multiplyExact(years, periodMs))
+            } catch (_: ArithmeticException) {
+                throw Failure("a paid period out of range")
+            }
+            if (end !in 0..KachatNames.MAX_TIME_MS) throw Failure("a paid period out of range")
+            return end
+        }
+
         /**
          * The offer a transaction announces with the registry v3 marker
          * `kchat:1:offer:<key>:<buyer>:<seller>:<refundAfter>`, if one of its outputs really is that
@@ -1454,6 +1462,9 @@ object IndexerApi {
             if (registered == false) return null
             val exp = expiresAt ?: return null
             val op = outpoint?.outpoint ?: return null
+            // a time no real record has would overflow the date sums (iOS 369794e)
+            if (exp !in 0..KachatNames.MAX_TIME_MS) return null
+            if (periodStart != null && periodStart !in 0..KachatNames.MAX_TIME_MS) return null
             val n = Codec.normalize(name)
             if (!Codec.isValid(n)) return null
             val ownerBytes = ownerKey?.let { runCatching { unhex32(it) }.getOrNull() } ?: owner?.let(keyOf) ?: return null
@@ -1487,9 +1498,6 @@ object IndexerApi {
 
             /** `{"names": [...]}` */
             fun parseNames(e: JsonElement): List<NameJson> = objectOf(e).array("names").map { from(objectOf(it)) }
-
-            /** `{"listings": [...], "next"}` */
-            fun parseListings(e: JsonElement): List<NameJson> = objectOf(e).array("listings").map { from(objectOf(it)) }
         }
     }
 
@@ -1513,13 +1521,6 @@ object IndexerApi {
 
             /** `{"events": [...], "next"}` */
             fun parseEvents(e: JsonElement): List<Event> = objectOf(e).array("events").map { from(objectOf(it)).event }
-
-            /** `{"events": [...], "next"}`: one page's events and the cursor of the next (iOS
-             *  `EventsJSON`). */
-            fun parseEventsPage(e: JsonElement): Pair<List<Event>, String?> {
-                val o = objectOf(e)
-                return o.array("events").map { from(objectOf(it)).event } to o.str("next")
-            }
         }
     }
 
@@ -1594,44 +1595,6 @@ object IndexerApi {
                     updatedAt = o.long("updatedAt"),
                     txId = o.str("txId")
                 )
-            }
-        }
-    }
-
-    /**
-     * `GET /stats/names`, the parts the app reads: transaction counts and fees (sompi as strings),
-     * each over 24 hours, 7 days and all time (iOS f5d34f4 `StatsJSON`).
-     */
-    class StatsJson(
-        val transactions: Counts?,
-        val activity: Map<String, Counts>?,
-        val fees: Fees?,
-    ) {
-        class Counts(val total: Long, val last24h: Long, val last7d: Long)
-        class Fees(val total: String, val last24h: String, val last7d: String)
-
-        companion object {
-            private fun counts(o: JsonObject?): Counts? {
-                o ?: return null
-                return Counts(
-                    o.long("total") ?: return null,
-                    o.long("last24h") ?: return null,
-                    o.long("last7d") ?: return null,
-                )
-            }
-
-            fun parse(e: JsonElement): StatsJson {
-                val o = objectOf(e)
-                val activity = o.obj("activity")?.entrySet()?.mapNotNull { (kind, v) ->
-                    counts(v?.takeIf { it.isJsonObject }?.asJsonObject)?.let { kind to it }
-                }?.toMap()
-                val fees = o.obj("fees")?.let { f ->
-                    val total = f.str("total")
-                    val day = f.str("last24h")
-                    val week = f.str("last7d")
-                    if (total != null && day != null && week != null) Fees(total, day, week) else null
-                }
-                return StatsJson(counts(o.obj("transactions")), activity, fees)
             }
         }
     }

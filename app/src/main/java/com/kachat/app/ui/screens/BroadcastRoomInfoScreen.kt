@@ -163,8 +163,8 @@ fun BroadcastRoomInfoScreen(
             )
 
             val is24Hour = com.kachat.app.util.is24HourClock()
-            InfoCard(title = "On this device") {
-                FeaturedBroadcastChannels.languageDisplayName(normalized)?.let { InfoRow("Language", it) }
+            InfoCard(title = stringResource(R.string.l53_room_on_this_device)) {
+                FeaturedBroadcastChannels.languageDisplayName(normalized)?.let { InfoRow(stringResource(R.string.language), it) }
                 InfoRow("Kind", if (isCurated) "Popular" else "Added by you")
                 channel?.joinedAt?.let { InfoRow("Joined", com.kachat.app.util.IosDateStyle.mediumDate(it)) }
                 InfoRow("Messages", messages.size.toString())
@@ -180,7 +180,8 @@ fun BroadcastRoomInfoScreen(
                 // nothing for anyone who was not there (see its info button). iOS 21c480d.
                 if (isTracked) {
                     val days = Math.round(com.kachat.app.models.BroadcastRetention.INDEXER_MILLIS / 86_400_000.0).toInt()
-                    InfoRow("Kept for", if (days == 1) "1 day" else "$days days")
+                    // In the app's language (iOS 369794e `retentionDescription`).
+                    InfoRow(stringResource(R.string.l53_room_kept_for), stringResource(if (days == 1) R.string.rooms53_day_one else R.string.rooms53_days, days))
                 }
             }
 

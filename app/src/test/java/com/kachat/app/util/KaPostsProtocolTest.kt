@@ -98,12 +98,29 @@ class KaPostsProtocolTest {
     fun `a poll read off the chain is its question, like any post`() {
         val question = KaPostsProtocol.b64(KaPostsProtocol.KACHAT_MARKER + "Which one?")
         val csv = KaPostsProtocol.pollOptionsCsv(listOf("A", "B"))
+        // Signed for real: a chain payload reads only when its Schnorr signature verifies against
+        // the key it names (iOS 369794e), signed the way KaPostsService signs.
+        val privateKey = ByteArray(32) { (it + 1).toByte() }
+        val pubkey = Secp256k1.G.multiply(java.math.BigInteger(1, privateKey)).normalize()
+            .getEncoded(true).joinToString("") { "%02x".format(it) }
+        val signature = KaspaMessageSigner.sign(
+            KaPostsProtocol.pollSigningString(question, csv, 1_790_300_000_000L, "[]"),
+            privateKey,
+            KaspaMessageSigner.SigningMode.KASPA_PERSONAL_MESSAGE,
+        )
         val parsed = KaPostsProtocol.parseChainPayload(
-            KaPostsProtocol.pollPayload("PK", "SIG", question, csv, 1_790_300_000_000L, "[]")
+            KaPostsProtocol.pollPayload(pubkey, signature, question, csv, 1_790_300_000_000L, "[]")
         )
         assertEquals("poll", parsed?.action)
         assertEquals("Which one?", parsed?.message)
         assertEquals(null, parsed?.referencedId)
+        // The placeholder key and signature the payload-shape test uses don't verify.
+        assertEquals(
+            null,
+            KaPostsProtocol.parseChainPayload(
+                KaPostsProtocol.pollPayload("PK", "SIG", question, csv, 1_790_300_000_000L, "[]")
+            ),
+        )
     }
 
     @Test

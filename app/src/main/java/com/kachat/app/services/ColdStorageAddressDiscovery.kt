@@ -478,7 +478,9 @@ class ColdStorageAddressDiscovery @Inject constructor(
     suspend fun getUtxosOrThrow(address: String): List<AddressUtxo> {
         val api = networkService.kaspaRestApi.value
             ?: throw IllegalStateException("Not connected to the Kaspa network yet. Try again in a moment.")
-        return api.getUtxos(address).map {
+        // The gateway can list one coin twice: the first wins, so the address page's keyed list
+        // can't crash (iOS ee5ec98).
+        return api.getUtxos(address).distinctBy { it.outpoint }.map {
             AddressUtxo(it.outpoint.transactionId, it.outpoint.index, it.utxoEntry.amount, it.utxoEntry.isCoinbase)
         }
     }

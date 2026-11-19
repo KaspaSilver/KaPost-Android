@@ -93,6 +93,25 @@ object KachatNames {
     val FF32: ByteArray get() = ByteArray(32) { 0xff.toByte() }
     const val SIGHASH_ALL: Byte = 0x01
 
+    /** The latest time (unix ms, year 2286) a server's answer may carry: anything past it is junk
+     *  (iOS 369794e `maxTimeMs`). */
+    const val MAX_TIME_MS: Long = 10_000_000_000_000L
+
+    /** [a] + [b], held at Long's ends instead of wrapping: times from an indexer, a REST server or
+     *  the chain can be anything (iOS 369794e `clampedSum`). */
+    fun clampedSum(a: Long, b: Long): Long {
+        val s = a + b
+        // overflow: both operands share a sign the sum lacks
+        return if (((a xor s) and (b xor s)) < 0) (if (b > 0) Long.MAX_VALUE else Long.MIN_VALUE) else s
+    }
+
+    /** [a] * [b], held at Long's ends instead of wrapping (iOS 369794e `clampedProduct`). */
+    fun clampedProduct(a: Long, b: Long): Long = try {
+        Math.multiplyExact(a, b)
+    } catch (_: ArithmeticException) {
+        if ((a < 0) != (b < 0)) Long.MIN_VALUE else Long.MAX_VALUE
+    }
+
     // Hex
 
     private val HEX_DIGITS = "0123456789abcdef".toCharArray()
@@ -493,11 +512,11 @@ class NameFields(
 
     /** What `extend(years)` leaves: the same period start, the expiry [years] periods later (iOS e1e3455). */
     fun extended(years: Long, periodMs: Long): NameFields =
-        NameFields(key, paddedName, owner, price, periodStart, expiresAt + years * periodMs)
+        NameFields(key, paddedName, owner, price, periodStart, KachatNames.clampedSum(expiresAt, KachatNames.clampedProduct(years, periodMs)))
 
     /** What `renew(years)` leaves: a new period from the old expiry, so no time is lost or gained. */
     fun renewed(years: Long, periodMs: Long): NameFields =
-        NameFields(key, paddedName, owner, price, expiresAt, expiresAt + years * periodMs)
+        NameFields(key, paddedName, owner, price, expiresAt, KachatNames.clampedSum(expiresAt, KachatNames.clampedProduct(years, periodMs)))
 
     override fun equals(other: Any?): Boolean =
         other is NameFields && key.contentEquals(other.key) && paddedName.contentEquals(other.paddedName) &&

@@ -69,6 +69,8 @@ class KaPostsScheduledStore @Inject constructor(
     private val kaPostsService: Provider<KaPostsService>,
     /** The local notification for a post only this phone holds (iOS `scheduleReminder`). */
     private val reminder: KaPostsScheduledReminder,
+    /** Whether a post the node turned down is on chain already (iOS 369794e). */
+    private val chainReader: KaPostChainReader,
 ) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -194,14 +196,28 @@ class KaPostsScheduledStore @Inject constructor(
         if (!inFlight.add(entry.txId)) return com.kachat.app.R.string.kaposts_scheduled_on_its_way
         try {
             val current = _entries.value.firstOrNull { it.txId == entry.txId } ?: entry
-            if (current.onServer && current.status == KaPostScheduledEntry.STATUS_SCHEDULED) {
+            if (current.status == KaPostScheduledEntry.STATUS_SCHEDULED) {
                 try {
                     kaPostsService.get().cancelScheduledOnServer(entry.txId)
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: KaPostsApiException) {
+                    // The indexer said it holds no such scheduled post: nothing there to cancel.
+                    // Any other answer (rate limit, bad signature, a 5xx with a body) leaves it
+                    // able to send the post, so it is handled as below (iOS b78fdb0 `isNotFound`).
+                    if (!e.isNotFound) {
+                        Log.w(TAG, "Cancelling a scheduled post failed", e)
+                        if (current.onServer) return com.kachat.app.R.string.kaposts_scheduled_cancel_unreachable
+                        rememberCancel(entry.txId)
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Cancelling a scheduled post failed", e)
-                    return com.kachat.app.R.string.kaposts_scheduled_cancel_unreachable
+                    if (current.onServer) return com.kachat.app.R.string.kaposts_scheduled_cancel_unreachable
+                    // Kept only here, but the indexer may have it anyway: a schedule whose answer
+                    // was lost reached it all the same. Cancelled here now, and told to the
+                    // indexer whenever it can be reached again, before the post's time if
+                    // possible (iOS 369794e).
+                    rememberCancel(entry.txId)
                 }
             }
             persist(_entries.value.filterNot { it.txId == entry.txId })
@@ -210,6 +226,40 @@ class KaPostsScheduledStore @Inject constructor(
         } finally {
             inFlight.remove(entry.txId)
         }
+    }
+
+    // MARK: - Cancels still owed to the indexer (iOS 369794e)
+
+    private fun pendingCancelsKey(): String? = loadedWallet?.let { "${key(it)}_pending_cancels" }
+
+    @Synchronized
+    private fun rememberCancel(txId: String) {
+        val key = pendingCancelsKey() ?: return
+        val ids = prefs.getStringSet(key, null)?.toMutableSet() ?: mutableSetOf()
+        if (ids.add(txId)) prefs.edit().putStringSet(key, ids).apply()
+    }
+
+    /** Tells the indexer about cancels it missed. An id leaves the list once the indexer has
+     *  cancelled it or said it doesn't hold it; any other answer keeps it for next time (iOS
+     *  b78fdb0). */
+    private suspend fun flushPendingCancels() {
+        val key = pendingCancelsKey() ?: return
+        val ids = prefs.getStringSet(key, null)?.toSet().orEmpty()
+        if (ids.isEmpty()) return
+        val left = mutableSetOf<String>()
+        for (id in ids) {
+            try {
+                kaPostsService.get().cancelScheduledOnServer(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: KaPostsApiException) {
+                // Answered that it doesn't hold it; any other answer keeps it for next time.
+                if (!e.isNotFound) left += id
+            } catch (_: Exception) {
+                left += id
+            }
+        }
+        prefs.edit().putStringSet(key, left).apply()
     }
 
     /** Forgets a submitted/failed row - nothing is reserved by it any more. */
@@ -229,6 +279,7 @@ class KaPostsScheduledStore @Inject constructor(
         // nothing goes out for an account behind the sign-in screen
         if (walletManager.isLoggedOut) return@withLock
         reloadIfNeeded()
+        flushPendingCancels()
         // What the indexer did with posts past their time comes first; with no answer from it,
         // the phone sends them (iOS ee5ec98).
         val now = System.currentTimeMillis()
@@ -294,8 +345,14 @@ class KaPostsScheduledStore @Inject constructor(
                 // coins held, for the next run.
                 throw e
             } catch (e: NodeRejectedTransactionException) {
-                Log.w(TAG, "Scheduled post rejected", e)
-                update(entry.copy(status = KaPostScheduledEntry.STATUS_FAILED, error = e.message), wallet)
+                // Rejected because it is already on chain (the indexer sent it after all, and its
+                // answer never reached the phone): that's a post that went out (iOS 369794e).
+                if (chainReader.fetch(entry.txId) != null) {
+                    update(entry.copy(status = KaPostScheduledEntry.STATUS_SUBMITTED, submittedAtMs = System.currentTimeMillis()), wallet)
+                } else {
+                    Log.w(TAG, "Scheduled post rejected", e)
+                    update(entry.copy(status = KaPostScheduledEntry.STATUS_FAILED, error = e.message), wallet)
+                }
             } catch (e: Exception) {
                 // Offline, still connecting, or no answer: it stays scheduled, its coins held,
                 // and goes again next time. The same signed transaction can't pay twice (iOS ee5ec98).
@@ -314,6 +371,7 @@ class KaPostsScheduledStore @Inject constructor(
     /** The indexer's view of this wallet's scheduled posts, then whatever is left for the phone. */
     suspend fun refreshFromServer(): Unit = sendDueMutex.withLock {
         reloadIfNeeded()
+        flushPendingCancels()
         pullServerOutcomes()
         if (!walletManager.isLoggedOut) submitDue(null)
     }
@@ -350,6 +408,12 @@ class KaPostsScheduledStore @Inject constructor(
             }
             val status = server.status?.takeIf { it in KNOWN_STATUSES } ?: entry.status
             if (status == entry.status && server.error == entry.error) return@map entry
+            // Sent by the indexer: this store stops holding its coins now, but the node lists them
+            // until the spend is in a block, so they stay held a while longer (iOS 369794e
+            // `reserveOutpointKeys`).
+            if (status == KaPostScheduledEntry.STATUS_SUBMITTED && entry.status == KaPostScheduledEntry.STATUS_SCHEDULED) {
+                holdAfterServerSubmit(entry.spentOutpoints)
+            }
             changed = true
             entry.copy(status = status, error = server.error, submittedAtMs = server.submittedAt ?: entry.submittedAtMs)
         }
@@ -380,7 +444,9 @@ class KaPostsScheduledStore @Inject constructor(
         @Volatile
         private var instance: KaPostsScheduledStore? = null
 
-        private fun key(wallet: String) = "scheduled_${wallet.replace(":", "_")}"
+        private const val KEY_PREFIX = "scheduled_"
+
+        private fun key(wallet: String) = "$KEY_PREFIX${wallet.replace(":", "_")}"
 
         private fun readEntries(prefs: android.content.SharedPreferences, wallet: String): List<KaPostScheduledEntry> {
             val raw = prefs.getString(key(wallet), null) ?: return emptyList()
@@ -391,6 +457,27 @@ class KaPostsScheduledStore @Inject constructor(
                 Log.w(TAG, "Could not read scheduled posts", e)
                 emptyList()
             }
+        }
+
+        /**
+         * The entry for [txId] in whichever account's stored list holds it, read straight from
+         * disk: a reminder for another saved account's post still has to fire (iOS's local
+         * notification does, whatever account is open). A deleted account's list is gone.
+         */
+        fun storedEntry(context: Context, txId: String): KaPostScheduledEntry? {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            for (storedKey in prefs.all.keys) {
+                if (!storedKey.startsWith(KEY_PREFIX)) continue
+                val entries = try {
+                    val raw = prefs.getString(storedKey, null) ?: continue
+                    val type = object : TypeToken<List<KaPostScheduledEntry>>() {}.type
+                    gson.fromJson<List<KaPostScheduledEntry>>(raw, type).orEmpty()
+                } catch (_: Exception) {
+                    continue
+                }
+                entries.firstOrNull { it.txId == txId }?.let { return it }
+            }
+            return null
         }
 
         /**
@@ -408,13 +495,34 @@ class KaPostsScheduledStore @Inject constructor(
             }
         }
 
-        /**
-         * The coins no other transaction may spend right now - every scheduled post's inputs.
-         * Read by [KaspaWalletEngine] before it selects inputs; written only here.
-         */
         @Volatile
-        var reservedOutpoints: Set<String> = emptySet()
-            private set
+        private var scheduledOutpoints: Set<String> = emptySet()
+
+        /** Coins of posts the indexer just sent, by when the hold ends (epoch ms). */
+        private val heldAfterSubmit = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+        /** How long a post the indexer sent keeps its coins held: as long as the send queue holds
+         *  any send's (iOS `reservedOutpointTTL`, 10 min). */
+        private const val HOLD_AFTER_SUBMIT_MS = 10 * 60_000L
+
+        private fun holdAfterServerSubmit(outpoints: List<String>) {
+            val until = System.currentTimeMillis() + HOLD_AFTER_SUBMIT_MS
+            outpoints.forEach { heldAfterSubmit[it] = until }
+        }
+
+        /**
+         * The coins no other transaction may spend right now - every scheduled post's inputs, and
+         * for a while those of a post the indexer just sent. Read by [KaspaWalletEngine] before it
+         * selects inputs; written only here.
+         */
+        var reservedOutpoints: Set<String>
+            get() {
+                val now = System.currentTimeMillis()
+                heldAfterSubmit.entries.removeIf { it.value <= now }
+                val scheduled = scheduledOutpoints
+                return if (heldAfterSubmit.isEmpty()) scheduled else scheduled + heldAfterSubmit.keys
+            }
+            private set(value) { scheduledOutpoints = value }
 
         /** Drops every coin a scheduled post is waiting to spend. */
         fun filterReserved(utxos: List<UtxoEntry>): List<UtxoEntry> {

@@ -164,11 +164,12 @@ private class AvatarSizeLimit : okhttp3.Interceptor {
     }
 }
 
-/** The app's Coil image loader (the same caches) with the avatar size limit on its downloads. */
+/** The app's Coil image loader (the same caches) with the avatar size limit on its downloads.
+ *  Banners and Rescan Profile use it too: iOS caps every profile picture download the same way. */
 @Volatile
 private var avatarImageLoader: coil.ImageLoader? = null
 
-private fun avatarImageLoader(context: android.content.Context): coil.ImageLoader =
+internal fun avatarImageLoader(context: android.content.Context): coil.ImageLoader =
     avatarImageLoader ?: synchronized(AvatarSizeLimit::class.java) {
         avatarImageLoader ?: context.applicationContext.imageLoader.newBuilder()
             .okHttpClient { okhttp3.OkHttpClient.Builder().addInterceptor(AvatarSizeLimit()).build() }

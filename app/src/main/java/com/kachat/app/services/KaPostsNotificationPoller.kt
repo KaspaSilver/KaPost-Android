@@ -149,6 +149,9 @@ class KaPostsNotificationPoller @Inject constructor(
                 pages++
             }
         }
+        // The account may have changed while the pages loaded: these rows (and `key`) belong to
+        // the old one, and counting them now would add them to the new account's bell (iOS 369794e).
+        if ((try { walletManager.getAddress() } catch (_: Exception) { null }) != address) return
         val newest = notifications.maxOfOrNull { it.timestamp } ?: return
         if (lastSeen == null) {
             // First run for this wallet: baseline silently instead of replaying history.
